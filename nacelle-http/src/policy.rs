@@ -108,7 +108,12 @@ pub(crate) fn validate_http_policy(
     request: &Request<Incoming>,
 ) -> Option<HttpRejection> {
     if let Some(max_uri_len) = policy.max_uri_len
-        && request.uri().to_string().len() > max_uri_len
+        && request
+            .uri()
+            .path_and_query()
+            .map(|pq| pq.as_str().len())
+            .unwrap_or_else(|| request.uri().path().len())
+            > max_uri_len
     {
         return Some(HttpRejection {
             status: StatusCode::URI_TOO_LONG,
