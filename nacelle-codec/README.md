@@ -71,4 +71,4 @@ message exceeds the threshold and the input is drained, the reader installs a
 fresh replacement buffer. The decoded message remains zero-copy and keeps its
 original allocation until it is dropped.
 
-The initial `0.1` API is experimental.
+The `0.2` API is experimental.
