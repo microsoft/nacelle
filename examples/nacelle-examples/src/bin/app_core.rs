@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
+use nacelle::core::TcpResponseMeta;
 use nacelle::prelude::*;
+use nacelle::tcp::Protocol;
 use nacelle_reference_protocol::{
     FrameErrorContext, FrameRequest, FrameResponseContext, LengthDelimitedProtocol,
     LengthDelimitedRequestDecoder,
