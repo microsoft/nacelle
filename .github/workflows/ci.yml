@@ -5,67 +5,159 @@ permissions:
   pull-requests: write
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+env:
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+  nightly: nightly-2026-04-16
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  rust:
-    name: Rust
+  # Check formatting
+  rustfmt:
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Format
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: Check formatting
         run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Clippy Raw TCP
-        run: cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings
-      - name: Clippy Raw TCP TLS
-        run: cargo clippy -p nacelle-tcp --features tls-self-signed --all-targets -- -D warnings
-      - name: Clippy Reference Protocol
-        run: cargo clippy -p nacelle --features reference_protocol --all-targets -- -D warnings
-      - name: Clippy HTTP
-        run: cargo clippy -p nacelle --no-default-features --features http --all-targets -- -D warnings
-      - name: Clippy Dual
-        run: cargo clippy -p nacelle --features reference_protocol,http --all-targets -- -D warnings
-      - name: Clippy Tower
-        run: cargo clippy -p nacelle --features reference_protocol,http,tower --all-targets -- -D warnings
-      - name: Clippy OTel
-        run: cargo clippy -p nacelle --features reference_protocol,http,tower,otel --all-targets -- -D warnings
-      - name: Clippy All Features
-        run: cargo clippy -p nacelle --features reference_protocol,http,tower,otel,tls-self-signed --all-targets -- -D warnings
-      - name: Test Raw TCP
-        run: cargo test --workspace --all-targets
-      - name: Test Raw TCP Without Reference Protocol
-        run: cargo test -p nacelle --no-default-features --features tcp --all-targets
-      - name: Test Raw TCP TLS
-        run: cargo test -p nacelle-tcp --features tls-self-signed --all-targets
-      - name: Test Reference Protocol TLS
-        run: cargo test -p nacelle --features reference_protocol,tls-self-signed --all-targets
-      - name: Test Reference Protocol
-        run: cargo test -p nacelle --features reference_protocol --all-targets
-      - name: Test HTTP
-        run: cargo test -p nacelle --no-default-features --features http --all-targets
-      - name: Test Dual
-        run: cargo test -p nacelle --features reference_protocol,http --all-targets
-      - name: Test Tower
-        run: cargo test -p nacelle --features reference_protocol,http,tower --all-targets
-      - name: Test OTel
-        run: cargo test -p nacelle --features reference_protocol,http,tower,otel --all-targets
-      - name: Test Stress Server
-        run: cargo test -p nacelle-stress-server --all-targets
-      - name: Test Stress Server Without Default Features
-        run: cargo test -p nacelle-stress-server --no-default-features --all-targets
-      - name: Ensure deprecated YAML stack is absent
-        run: |
-          ! cargo tree -i serde_yaml
-          ! cargo tree -i unsafe-libyaml
+
+  cargo-audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
       - name: Audit
         run: cargo audit
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust with Clippy
+        run: rustup update stable && rustup component add clippy
+      - name: Check workspace lints
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+
+  # This represents the minimum supported Rust version
+  minrust:
+    name: minrust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install OpenSSL build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Check
+        run: cargo hack check --feature-powerset --depth 2 --optional-deps --rust-version
+
+  # Stable
+  stable:
+    name: stable
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          # - macos-latest
+          # - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+        run: rustup update stable --no-self-update
+      - name: Install OpenSSL build dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - name: Install OpenSSL build dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          brew install pkg-config openssl@3
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - name: Install OpenSSL build dependencies (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          vcpkg install openssl:x64-windows
+          "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+          "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Test
+        run: .github/scripts/test-stable.sh test
+
+  # Nightly
+  nightly:
+    name: nightly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: Test
+        run: .github/scripts/test-stable.sh test
+
+  # Sanitizers
+  tsan:
+    name: tsan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Install rust-src
+        run: rustup component add rust-src
+      - name: ASAN / TSAN
+        run: .github/scripts/tsan.sh
+
+  miri:
+    name: miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Miri
+        run: .github/scripts/miri.sh
+
+  # Loom
+  loom:
+    name: loom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Loom tests
+        run: .github/scripts/loom.sh
+
+  panic-abort:
+    name: panic=abort tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Run tests with -Cpanic=abort
+        run: .github/scripts/panic-abort.sh
