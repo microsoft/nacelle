@@ -32,6 +32,20 @@ Suggested local benchmark:
 cargo bench -p nacelle --features bench,reference_protocol
 ```
 
+For the codec/TCP integration specifically, run both Criterion targets:
+
+```bash
+cargo bench -p nacelle-codec --bench framed_comparison --all-features
+cargo bench -p nacelle --bench critical_paths --features bench,reference_protocol
+```
+
+The codec target compares direct decoding with `MessageReader::decode_buffered`,
+measures incomplete-header calls, and separates the no-op buffer-rotation check
+from replacing an empty 256 KiB buffer. The TCP target measures per-connection
+decoder construction and compares direct reference-protocol decoding with the
+buffered 64-request head/body drain used by the connection loop. Treat the
+rotation replacement result as allocation cost, not per-request overhead.
+
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.

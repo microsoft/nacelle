@@ -37,6 +37,11 @@ the frame head before dispatch, then exposes the body to the handler as a
 `NacelleBody`. Small bodies are served from the connection read buffer. Larger
 bodies are streamed to the handler in configured chunks.
 
+Custom protocols provide a per-connection `MessageDecoder` through
+`Protocol::decoder`. Decoders follow the `nacelle-codec` progress contract:
+returning a request consumes at least one head byte, while requesting more input
+leaves the cumulative buffer unchanged.
+
 `opcode` is request metadata. The application handler decides whether to use it
 for routing, reject it, or ignore it. If the handler rejects an opcode after
 draining the body and returns an error, the server encodes that error as a

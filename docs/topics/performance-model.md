@@ -27,6 +27,12 @@ The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
 
+Enable the `buffer-rotation` feature for long-lived TCP connections that may
+occasionally receive large requests. Once an oversized cumulative input buffer
+is empty, Nacelle replaces it with a buffer sized to `read_buffer_capacity`.
+Leave the feature disabled when retaining peak buffer capacity is preferable to
+allocating again after traffic spikes.
+
 Suggested RPS comparison:
 
 ```bash

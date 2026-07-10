@@ -259,7 +259,14 @@ Generate Rust API docs:
 cargo doc --workspace --all-features --no-deps
 ```
 
+## Contributing
+
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information on how to contribute to this project.
+
 ## License
 
-Nacelle is licensed under either [MIT](LICENSE-MIT) or
-[Apache-2.0](LICENSE-APACHE), at your option.
+This project is licensed under the [MIT License](LICENSE.txt).
+
+## Trademarks
+
+This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft trademarks or logos is subject to and must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks). Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship. Any use of third-party trademarks or logos are subject to those third-party's policies.
