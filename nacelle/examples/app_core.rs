@@ -37,6 +37,7 @@ impl AppXProtocol {
 }
 
 impl Protocol<FrameRequest> for AppXProtocol {
+    type Decoder = LengthDelimitedRequestDecoder;
     type ResponseContext = FrameResponseContext;
     type ErrorContext = FrameErrorContext;
 
@@ -44,12 +45,8 @@ impl Protocol<FrameRequest> for AppXProtocol {
         self.name
     }
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<FrameRequest>>, NacelleError> {
-        self.inner.decode_head(src, max_frame_len)
+    fn decoder(&self, max_frame_len: usize) -> Self::Decoder {
+        self.inner.decoder(max_frame_len)
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {

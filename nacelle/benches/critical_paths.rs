@@ -1,9 +1,10 @@
 use bytes::{Bytes, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, NacelleInMemoryTelemetrySink, NacelleLimits,
-    NacelleRuntimeState, NacelleTelemetry, NacelleTransport, Protocol,
+    FrameRequest, LengthDelimitedProtocol, MessageDecoder, NacelleInMemoryTelemetrySink,
+    NacelleLimits, NacelleRuntimeState, NacelleTelemetry, NacelleTransport, Protocol,
 };
+use nacelle_codec::MessageReader;
 use std::hint::black_box;
 use std::net::IpAddr;
 use std::sync::{Arc, Barrier};
@@ -11,6 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const MEMORY_CONTENTION_CONNECTIONS: usize = 5_000;
+const PIPELINE_REQUESTS: usize = 64;
+const PIPELINE_BODY_LEN: usize = 32;
 
 fn protocol_frame_benches(c: &mut Criterion) {
     let protocol = LengthDelimitedProtocol;
@@ -31,6 +34,9 @@ fn protocol_frame_benches(c: &mut Criterion) {
     let response_chunk = Bytes::copy_from_slice(&large_body);
 
     let mut group = c.benchmark_group("protocol_frames");
+    group.bench_function("decoder_factory", |b| {
+        b.iter(|| black_box(protocol.decoder(black_box(1024))))
+    });
     group.bench_function("encode_request_small", |b| {
         b.iter(|| {
             black_box(
@@ -49,13 +55,13 @@ fn protocol_frame_benches(c: &mut Criterion) {
             )
         })
     });
-    group.bench_function("decode_head_small", |b| {
+    group.bench_function("decode_request_small", |b| {
         b.iter_batched(
-            || BytesMut::from(small_frame.as_ref()),
-            |mut buf| {
+            || (protocol.decoder(1024), BytesMut::from(small_frame.as_ref())),
+            |(mut decoder, mut buf)| {
                 black_box(
-                    protocol
-                        .decode_head(&mut buf, 1024)
+                    decoder
+                        .decode(&mut buf)
                         .expect("decode should succeed")
                         .expect("head should be present"),
                 )
@@ -63,16 +69,25 @@ fn protocol_frame_benches(c: &mut Criterion) {
             BatchSize::SmallInput,
         )
     });
-    group.bench_function("decode_head_large", |b| {
+    group.bench_function("decode_request_large", |b| {
         b.iter_batched(
-            || BytesMut::from(large_frame.as_ref()),
-            |mut buf| {
+            || (protocol.decoder(8192), BytesMut::from(large_frame.as_ref())),
+            |(mut decoder, mut buf)| {
                 black_box(
-                    protocol
-                        .decode_head(&mut buf, 8192)
+                    decoder
+                        .decode(&mut buf)
                         .expect("decode should succeed")
                         .expect("head should be present"),
                 )
+            },
+            BatchSize::SmallInput,
+        )
+    });
+    group.bench_function("decode_request_need_more", |b| {
+        b.iter_batched(
+            || (protocol.decoder(1024), BytesMut::from(&small_frame[..3])),
+            |(mut decoder, mut buf)| {
+                black_box(decoder.decode(&mut buf).expect("decode should succeed"))
             },
             BatchSize::SmallInput,
         )
@@ -94,6 +109,67 @@ fn protocol_frame_benches(c: &mut Criterion) {
             BatchSize::SmallInput,
         )
     });
+    group.finish();
+}
+
+fn protocol_pipeline_benches(c: &mut Criterion) {
+    let protocol = LengthDelimitedProtocol;
+    let body = [0xAB; PIPELINE_BODY_LEN];
+    let mut encoded = BytesMut::with_capacity(PIPELINE_REQUESTS * (24 + PIPELINE_BODY_LEN));
+    for request_id in 0..PIPELINE_REQUESTS {
+        let frame = protocol
+            .encode_request_frame(request_id as u64, 42, 0, &body)
+            .expect("pipeline frame should encode");
+        encoded.extend_from_slice(&frame);
+    }
+
+    let mut group = c.benchmark_group("protocol_pipeline_64x32_bytes");
+    group.throughput(Throughput::Elements(PIPELINE_REQUESTS as u64));
+
+    group.bench_function("decoder_direct", |b| {
+        b.iter_batched(
+            || (protocol.decoder(1024), encoded.clone()),
+            |(mut decoder, mut input)| {
+                for _ in 0..PIPELINE_REQUESTS {
+                    let decoded = decoder
+                        .decode(&mut input)
+                        .expect("pipeline decode should succeed")
+                        .expect("pipeline request should decode");
+                    let body_len = decoded.body_len;
+                    black_box(decoded);
+                    black_box(input.split_to(body_len));
+                }
+                assert!(input.is_empty());
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("message_reader_buffered", |b| {
+        b.iter_batched(
+            || {
+                MessageReader::with_buffer(
+                    tokio::io::empty(),
+                    protocol.decoder(1024),
+                    encoded.clone(),
+                )
+            },
+            |mut reader| {
+                for _ in 0..PIPELINE_REQUESTS {
+                    let decoded = reader
+                        .decode_buffered()
+                        .expect("buffered pipeline decode should succeed")
+                        .expect("buffered pipeline request should decode");
+                    let body_len = decoded.body_len;
+                    black_box(decoded);
+                    black_box(reader.buffer_mut().split_to(body_len));
+                }
+                assert!(reader.buffer().is_empty());
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
     group.finish();
 }
 
@@ -298,6 +374,7 @@ fn telemetry_benches(c: &mut Criterion) {
 criterion_group!(
     critical_paths,
     protocol_frame_benches,
+    protocol_pipeline_benches,
     runtime_limit_benches,
     memory_contention_benches,
     telemetry_benches

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
@@ -34,22 +35,31 @@ impl RequestMetadata for TestRequest {
 
 struct TestProtocol;
 
-impl Protocol<TestRequest> for TestProtocol {
-    type ResponseContext = ();
-    type ErrorContext = ();
+struct TestDecoder;
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        _max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<TestRequest>>, NacelleError> {
+impl MessageDecoder for TestDecoder {
+    type Message = DecodedRequest<TestRequest>;
+    type Error = NacelleError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
         }
+        drop(src.split_to(1));
         Ok(Some(DecodedRequest {
             request: TestRequest,
-            body_len: 1,
+            body_len: 0,
         }))
+    }
+}
+
+impl Protocol<TestRequest> for TestProtocol {
+    type Decoder = TestDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        TestDecoder
     }
 
     fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}

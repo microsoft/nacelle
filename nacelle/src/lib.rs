@@ -92,11 +92,11 @@ pub mod prelude {
     };
     #[cfg(feature = "tcp")]
     pub use crate::{
-        DecodedRequest, NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions,
+        DecodedRequest, MessageDecoder, NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions,
         NacelleTlsDetectionOptions, Protocol, TcpRequestMeta, TcpResponseMeta, TcpServer,
     };
     #[cfg(feature = "reference_protocol")]
-    pub use crate::{FrameRequest, LengthDelimitedProtocol};
+    pub use crate::{FrameRequest, LengthDelimitedProtocol, LengthDelimitedRequestDecoder};
     #[cfg(feature = "http")]
     pub use crate::{
         HttpRequestMeta, HttpResponseMeta, HyperServer, NacelleHttpLimits, NacelleHttpPolicy,
@@ -131,11 +131,12 @@ pub use nacelle_http::{HyperServer, NacelleHttpLimits, NacelleHttpPolicy};
 pub use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{
-    DecodedRequest, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
+    DecodedRequest, MessageDecoder, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
     NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol,
     TcpServer, serve_connection, serve_stream,
 };
 #[cfg(feature = "reference_protocol")]
 pub use reference_protocol::{
     FRAME_FLAG_END, FRAME_FLAG_ERROR, FRAME_FLAG_START, FrameRequest, LengthDelimitedProtocol,
+    LengthDelimitedRequestDecoder,
 };

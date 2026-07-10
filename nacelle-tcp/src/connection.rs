@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
+use nacelle_codec::MessageReader;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::limits::NacelleTcpLimits;
@@ -21,8 +22,8 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use framing::{allocate_connection_buffers, decode_next_request};
-use io::{read_buf_with_timeout, write_all_with_timeout};
+use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read_error};
+use io::{read_message_with_timeout, write_all_with_timeout};
 use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context};
 use request::run_request;
 
@@ -92,7 +93,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, H, R, W>(
-    mut reader: R,
+    reader: R,
     mut writer: W,
     protocol: Arc<P>,
     handler: H,
@@ -111,10 +112,16 @@ where
 {
     let _connection_permit = runtime_state.acquire_connection_tracked()?;
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
-    let mut read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
     let connection_metrics = tcp_metrics_context(protocol.as_ref(), &connection);
+    let decoder = InstrumentedDecoder::new(
+        protocol.decoder(config.max_frame_len),
+        &telemetry,
+        &connection_metrics,
+    );
+    let mut request_reader =
+        MessageReader::with_capacity(reader, decoder, config.read_buffer_capacity);
     telemetry.connection_accepted(&connection_metrics);
     telemetry.connection_opened(transport);
 
@@ -140,48 +147,38 @@ where
                 }
             }
 
-            if read_buf.is_empty() && read_buf.capacity() > config.read_buffer_capacity {
-                read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
-            }
+            #[cfg(feature = "buffer-rotation")]
+            request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
             let read_started = start_tcp_phase(&telemetry);
             let read_result =
-                read_buf_with_timeout(&mut reader, &mut read_buf, &tcp_limits, "tcp_read").await;
+                read_message_with_timeout(&mut request_reader, &tcp_limits, "tcp_read").await;
             finish_tcp_phase(
                 &telemetry,
                 Some(&connection_metrics),
                 "socket_read",
                 read_started,
             );
-            let bytes_read = match read_result {
-                Ok(bytes_read) => bytes_read,
+            let decoded = match read_result {
+                Ok(Some(decoded)) => decoded,
+                Ok(None) => break 'conn,
                 Err(error) => {
                     telemetry.operation_error(&connection_metrics, "socket_read", &error);
                     return Err(error);
                 }
             };
-            if bytes_read == 0 {
-                if read_buf.is_empty() {
-                    break 'conn;
-                }
-                return Err(NacelleError::UnexpectedEof);
-            }
 
-            while let Some(decoded) = decode_next_request(
-                protocol.as_ref(),
-                &mut read_buf,
-                config.max_frame_len,
-                &telemetry,
-                &connection_metrics,
-            )? {
-                let error_context = protocol.error_context(&decoded.request);
+            let mut decoded = Some(decoded);
+            while let Some(request) = decoded {
+                let (reader, read_buf) = request_reader.transport_and_buffer_mut();
+                let error_context = protocol.error_context(&request.request);
                 run_request(
-                    &mut reader,
-                    &mut read_buf,
+                    reader,
+                    read_buf,
                     &mut write_buf,
                     protocol.as_ref(),
                     &handler,
-                    decoded,
+                    request,
                     error_context,
                     &config,
                     &telemetry,
@@ -191,6 +188,9 @@ where
                     telemetry.metrics_enabled().then_some(&connection_metrics),
                 )
                 .await?;
+                decoded = request_reader
+                    .decode_buffered()
+                    .map_err(map_message_read_error)?;
             }
         }
 
@@ -415,10 +415,15 @@ where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
-    let mut read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
     let connection_metrics = tcp_metrics_context(protocol.as_ref(), &connection);
+    let decoder = InstrumentedDecoder::new(
+        protocol.decoder(config.max_frame_len),
+        &telemetry,
+        &connection_metrics,
+    );
+    let mut request_reader = MessageReader::with_capacity(io, decoder, config.read_buffer_capacity);
     telemetry.connection_accepted(&connection_metrics);
     telemetry.connection_opened(transport);
 
@@ -426,8 +431,13 @@ where
         'conn: loop {
             if !write_buf.is_empty() {
                 let write_started = start_tcp_phase(&telemetry);
-                let write_result =
-                    write_all_with_timeout(io, &write_buf, &tcp_limits, "tcp_write").await;
+                let write_result = write_all_with_timeout(
+                    request_reader.transport_mut(),
+                    &write_buf,
+                    &tcp_limits,
+                    "tcp_write",
+                )
+                .await;
                 finish_tcp_phase(
                     &telemetry,
                     Some(&connection_metrics),
@@ -444,48 +454,38 @@ where
                 }
             }
 
-            if read_buf.is_empty() && read_buf.capacity() > config.read_buffer_capacity {
-                read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
-            }
+            #[cfg(feature = "buffer-rotation")]
+            request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
             let read_started = start_tcp_phase(&telemetry);
             let read_result =
-                read_buf_with_timeout(io, &mut read_buf, &tcp_limits, "tcp_read").await;
+                read_message_with_timeout(&mut request_reader, &tcp_limits, "tcp_read").await;
             finish_tcp_phase(
                 &telemetry,
                 Some(&connection_metrics),
                 "socket_read",
                 read_started,
             );
-            let bytes_read = match read_result {
-                Ok(bytes_read) => bytes_read,
+            let decoded = match read_result {
+                Ok(Some(decoded)) => decoded,
+                Ok(None) => break 'conn,
                 Err(error) => {
                     telemetry.operation_error(&connection_metrics, "socket_read", &error);
                     return Err(error);
                 }
             };
-            if bytes_read == 0 {
-                if read_buf.is_empty() {
-                    break 'conn;
-                }
-                return Err(NacelleError::UnexpectedEof);
-            }
 
-            while let Some(decoded) = decode_next_request(
-                protocol.as_ref(),
-                &mut read_buf,
-                config.max_frame_len,
-                &telemetry,
-                &connection_metrics,
-            )? {
-                let error_context = protocol.error_context(&decoded.request);
+            let mut decoded = Some(decoded);
+            while let Some(request) = decoded {
+                let (io, read_buf) = request_reader.transport_and_buffer_mut();
+                let error_context = protocol.error_context(&request.request);
                 run_request(
                     io,
-                    &mut read_buf,
+                    read_buf,
                     &mut write_buf,
                     protocol.as_ref(),
                     &handler,
-                    decoded,
+                    request,
                     error_context,
                     &config,
                     &telemetry,
@@ -495,6 +495,9 @@ where
                     telemetry.metrics_enabled().then_some(&connection_metrics),
                 )
                 .await?;
+                decoded = request_reader
+                    .decode_buffered()
+                    .map_err(map_message_read_error)?;
             }
         }
 
@@ -504,8 +507,13 @@ where
 
     if !write_buf.is_empty() {
         let write_started = start_tcp_phase(&telemetry);
-        let final_write =
-            write_all_with_timeout(io, &write_buf, &tcp_limits, "tcp_final_write").await;
+        let final_write = write_all_with_timeout(
+            request_reader.transport_mut(),
+            &write_buf,
+            &tcp_limits,
+            "tcp_final_write",
+        )
+        .await;
         finish_tcp_phase(
             &telemetry,
             Some(&connection_metrics),

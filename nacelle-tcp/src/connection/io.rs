@@ -1,8 +1,30 @@
 use bytes::BytesMut;
+use nacelle_codec::{MessageDecoder, MessageReader};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use super::framing::map_message_read_error;
 use crate::limits::NacelleTcpLimits;
 use nacelle_core::error::NacelleError;
+
+pub(super) async fn read_message_with_timeout<R, D>(
+    reader: &mut MessageReader<R, D>,
+    tcp_limits: &NacelleTcpLimits,
+    name: &'static str,
+) -> Result<Option<D::Message>, NacelleError>
+where
+    R: AsyncRead + Unpin,
+    D: MessageDecoder<Error = NacelleError>,
+{
+    let future = reader.read_message();
+    let result = if let Some(timeout) = tcp_limits.read_timeout.or(tcp_limits.idle_timeout) {
+        tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| NacelleError::Timeout(name))?
+    } else {
+        future.await
+    };
+    result.map_err(map_message_read_error)
+}
 
 pub(super) async fn read_buf_with_timeout<R>(
     reader: &mut R,

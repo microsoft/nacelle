@@ -1,15 +1,16 @@
 #![cfg(feature = "reference_protocol")]
 
 use bytes::BytesMut;
-use nacelle::{LengthDelimitedProtocol, Protocol};
+use nacelle::{LengthDelimitedProtocol, MessageDecoder, Protocol};
 use proptest::prelude::*;
 
 proptest! {
     #[test]
     fn random_frame_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
         let protocol = LengthDelimitedProtocol;
+        let mut decoder = protocol.decoder(16 * 1024 * 1024);
         let mut buf = BytesMut::from(bytes.as_slice());
-        let _ = protocol.decode_head(&mut buf, 16 * 1024 * 1024);
+        let _ = decoder.decode(&mut buf);
     }
 
     #[test]
@@ -26,17 +27,18 @@ proptest! {
             .expect("valid frame should encode");
         let split = split.min(frame.len());
         let mut buf = BytesMut::from(&frame[..split]);
+        let mut decoder = protocol.decoder(16 * 1024 * 1024);
 
         if split < 24 {
-            prop_assert!(protocol
-                .decode_head(&mut buf, 16 * 1024 * 1024)
+            prop_assert!(decoder
+                .decode(&mut buf)
                 .expect("partial valid frame should not error")
                 .is_none());
         }
 
         buf.extend_from_slice(&frame[split..]);
-        let decoded = protocol
-            .decode_head(&mut buf, 16 * 1024 * 1024)
+        let decoded = decoder
+            .decode(&mut buf)
             .expect("complete valid frame should decode")
             .expect("complete frame head should decode");
 
@@ -50,11 +52,12 @@ proptest! {
     #[test]
     fn malformed_frame_lengths_are_rejected(length in 0u32..20) {
         let protocol = LengthDelimitedProtocol;
+        let mut decoder = protocol.decoder(16 * 1024 * 1024);
         let mut buf = BytesMut::new();
         buf.extend_from_slice(&length.to_le_bytes());
         buf.extend_from_slice(&[0_u8; 20]);
 
-        let result = protocol.decode_head(&mut buf, 16 * 1024 * 1024);
+        let result = decoder.decode(&mut buf);
         prop_assert!(result.is_err());
     }
 }

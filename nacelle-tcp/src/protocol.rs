@@ -1,4 +1,5 @@
 use bytes::{Bytes, BytesMut};
+use nacelle_codec::MessageDecoder;
 
 use nacelle_core::error::NacelleError;
 use nacelle_core::request::RequestMetadata;
@@ -20,6 +21,9 @@ pub trait Protocol<Req>: Send + Sync + 'static
 where
     Req: RequestMetadata,
 {
+    type Decoder: MessageDecoder<Message = DecodedRequest<Req>, Error = NacelleError>
+        + Send
+        + 'static;
     type ResponseContext: Send + 'static;
     type ErrorContext: Send + 'static;
 
@@ -27,11 +31,8 @@ where
         std::any::type_name::<Self>()
     }
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<Req>>, NacelleError>;
+    /// Create a decoder for one connection.
+    fn decoder(&self, max_frame_len: usize) -> Self::Decoder;
 
     fn response_context(&self, req: &Req) -> Self::ResponseContext;
 

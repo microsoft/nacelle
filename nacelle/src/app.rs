@@ -624,7 +624,7 @@ mod tests {
         use bytes::{Bytes, BytesMut};
         use nacelle_core::request::{NacelleRequest, RequestMetadata};
         use nacelle_core::response::NacelleResponse;
-        use nacelle_tcp::DecodedRequest;
+        use nacelle_tcp::{DecodedRequest, MessageDecoder};
 
         use super::*;
 
@@ -651,16 +651,27 @@ mod tests {
         #[derive(Clone)]
         struct TestProtocol;
 
+        struct TestDecoder;
+
+        impl MessageDecoder for TestDecoder {
+            type Message = DecodedRequest<TestRequest>;
+            type Error = NacelleError;
+
+            fn decode(
+                &mut self,
+                _src: &mut BytesMut,
+            ) -> Result<Option<Self::Message>, Self::Error> {
+                Ok(None)
+            }
+        }
+
         impl Protocol<TestRequest> for TestProtocol {
+            type Decoder = TestDecoder;
             type ResponseContext = ();
             type ErrorContext = ();
 
-            fn decode_head(
-                &self,
-                _src: &mut BytesMut,
-                _max_frame_len: usize,
-            ) -> Result<Option<DecodedRequest<TestRequest>>, NacelleError> {
-                Ok(None)
+            fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+                TestDecoder
             }
 
             fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}

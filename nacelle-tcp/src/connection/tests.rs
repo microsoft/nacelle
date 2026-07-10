@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use nacelle_codec::MessageDecoder;
 use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
@@ -57,15 +58,13 @@ impl RequestMetadata for PhaseRequest {
 
 struct PhaseProtocol;
 
-impl Protocol<PhaseRequest> for PhaseProtocol {
-    type ResponseContext = ();
-    type ErrorContext = ();
+struct PhaseDecoder;
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        _max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<PhaseRequest>>, NacelleError> {
+impl MessageDecoder for PhaseDecoder {
+    type Message = DecodedRequest<PhaseRequest>;
+    type Error = NacelleError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
         }
@@ -75,6 +74,16 @@ impl Protocol<PhaseRequest> for PhaseProtocol {
             request: PhaseRequest { body_len },
             body_len,
         }))
+    }
+}
+
+impl Protocol<PhaseRequest> for PhaseProtocol {
+    type Decoder = PhaseDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        PhaseDecoder
     }
 
     fn response_context(&self, _req: &PhaseRequest) -> Self::ResponseContext {}

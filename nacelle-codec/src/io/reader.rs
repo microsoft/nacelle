@@ -118,23 +118,19 @@ where
                 return Ok(None);
             }
 
-            let before = self.buffer.len();
             let message = if self.eof {
-                self.decoder.decode_eof(&mut self.buffer)
+                let before = self.buffer.len();
+                let message = self
+                    .decoder
+                    .decode_eof(&mut self.buffer)
+                    .map_err(MessageReadError::Decoder)?;
+                validate_decode_progress(message, before, self.buffer.len())?
             } else {
-                self.decoder.decode(&mut self.buffer)
-            }
-            .map_err(MessageReadError::Decoder)?;
-            let after = self.buffer.len();
+                self.decode_buffered()?
+            };
 
             if let Some(message) = message {
-                if after >= before {
-                    return Err(MessageReadError::MessageWithoutProgress);
-                }
                 return Ok(Some(message));
-            }
-            if after != before {
-                return Err(MessageReadError::ConsumedOnNeedMore { before, after });
             }
 
             if self.eof {
@@ -156,6 +152,20 @@ where
                 self.eof = true;
             }
         }
+    }
+
+    /// Decode one message from currently buffered bytes without reading the transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns a decoder or progress-contract error.
+    pub fn decode_buffered(&mut self) -> Result<Option<D::Message>, MessageReadError<D::Error>> {
+        let before = self.buffer.len();
+        let message = self
+            .decoder
+            .decode(&mut self.buffer)
+            .map_err(MessageReadError::Decoder)?;
+        validate_decode_progress(message, before, self.buffer.len())
     }
 
     /// Return a shared reference to the transport.
@@ -191,9 +201,36 @@ where
         &mut self.buffer
     }
 
+    /// Return mutable references to the transport and input buffer.
+    pub const fn transport_and_buffer_mut(&mut self) -> (&mut R, &mut BytesMut) {
+        (&mut self.reader, &mut self.buffer)
+    }
+
+    /// Replace an empty oversized input buffer with a fresh allocation.
+    #[cfg(feature = "buffer-rotation")]
+    pub fn rotate_empty_buffer(&mut self, capacity: usize) {
+        if self.buffer.is_empty() && self.buffer.capacity() > capacity {
+            self.buffer = BytesMut::with_capacity(capacity);
+        }
+    }
+
     /// Consume this reader and return its transport, decoder, and input buffer.
     #[must_use]
     pub fn into_parts(self) -> (R, D, BytesMut) {
         (self.reader, self.decoder, self.buffer)
     }
+}
+
+fn validate_decode_progress<M, E>(
+    message: Option<M>,
+    before: usize,
+    after: usize,
+) -> Result<Option<M>, MessageReadError<E>> {
+    if message.is_some() && after >= before {
+        return Err(MessageReadError::MessageWithoutProgress);
+    }
+    if message.is_none() && after != before {
+        return Err(MessageReadError::ConsumedOnNeedMore { before, after });
+    }
+    Ok(message)
 }

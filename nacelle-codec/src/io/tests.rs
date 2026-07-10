@@ -108,6 +108,47 @@ fn reader_accepts_caller_buffer() {
     assert_eq!(reader.buffer().len(), 4);
 }
 
+#[test]
+fn reader_decodes_buffered_messages_without_reading() {
+    let (_client, server) = tokio::io::duplex(64);
+    let buffer = BytesMut::from(
+        &[
+            0, 0, 0, 5, b'f', b'i', b'r', b's', b't', 0, 0, 0, 6, b's', b'e', b'c', b'o', b'n',
+            b'd',
+        ][..],
+    );
+    let mut reader = MessageReader::with_buffer(server, LengthDelimitedDecoder::new(32), buffer);
+
+    let first = reader
+        .decode_buffered()
+        .expect("first buffered decode")
+        .expect("first buffered message");
+    let second = reader
+        .decode_buffered()
+        .expect("second buffered decode")
+        .expect("second buffered message");
+
+    assert_eq!(&first[..], b"first");
+    assert_eq!(&second[..], b"second");
+    assert!(reader.buffer().is_empty());
+}
+
+#[cfg(feature = "buffer-rotation")]
+#[test]
+fn reader_rotates_only_empty_oversized_buffers() {
+    let (_client, server) = tokio::io::duplex(64);
+    let mut buffer = BytesMut::with_capacity(1024);
+    buffer.extend_from_slice(b"pending");
+    let mut reader = MessageReader::with_buffer(server, LengthDelimitedDecoder::new(32), buffer);
+
+    reader.rotate_empty_buffer(64);
+    assert!(reader.buffer().capacity() >= 1024);
+
+    reader.buffer_mut().clear();
+    reader.rotate_empty_buffer(64);
+    assert_eq!(reader.buffer().capacity(), 64);
+}
+
 #[tokio::test]
 async fn writer_feeds_and_sends_messages() {
     let (client, mut server) = tokio::io::duplex(32);

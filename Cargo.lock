@@ -773,6 +773,7 @@ dependencies = [
  "criterion",
  "crossbeam-epoch",
  "http",
+ "nacelle-codec",
  "nacelle-core",
  "nacelle-http",
  "nacelle-tcp",
@@ -871,6 +872,7 @@ name = "nacelle-tcp"
 version = "0.2.1"
 dependencies = [
  "bytes",
+ "nacelle-codec",
  "nacelle-core",
  "openssl",
  "opentelemetry",

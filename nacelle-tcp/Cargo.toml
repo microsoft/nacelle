@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 
 [features]
 default = []
+buffer-rotation = ["nacelle-codec/buffer-rotation"]
 tls = []
 rustls = ["tls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/rustls"]
 openssl = ["tls", "dep:openssl", "dep:tokio-openssl", "nacelle-core/openssl"]
@@ -22,6 +23,7 @@ otel = ["dep:opentelemetry", "nacelle-core/otel"]
 
 [dependencies]
 bytes = { workspace = true }
+nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }

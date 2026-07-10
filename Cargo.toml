@@ -20,6 +20,7 @@ rust-version = "1.95"
 [workspace.dependencies]
 # Internal crates
 nacelle = { path = "nacelle", version = "0.2.1" }
+nacelle-codec = { path = "nacelle-codec", version = "0.2.1" }
 nacelle-core = { path = "nacelle-core", version = "0.2.1" }
 nacelle-tcp = { path = "nacelle-tcp", version = "0.2.1" }
 nacelle-http = { path = "nacelle-http", version = "0.2.1" }

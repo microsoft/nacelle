@@ -1,5 +1,6 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
+use crate::MessageDecoder;
 use crate::util::checked_u32_len;
 use nacelle_core::error::NacelleError;
 use nacelle_core::request::{RequestMetadata, TcpRequestMeta};
@@ -37,6 +38,11 @@ impl RequestMetadata for FrameRequest {
 #[derive(Debug, Clone, Default)]
 pub struct LengthDelimitedProtocol;
 
+#[derive(Debug, Clone)]
+pub struct LengthDelimitedRequestDecoder {
+    max_frame_len: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FrameResponseContext {
     request_id: u64,
@@ -64,15 +70,11 @@ impl LengthDelimitedProtocol {
     }
 }
 
-impl Protocol<FrameRequest> for LengthDelimitedProtocol {
-    type ResponseContext = FrameResponseContext;
-    type ErrorContext = FrameErrorContext;
+impl MessageDecoder for LengthDelimitedRequestDecoder {
+    type Message = DecodedRequest<FrameRequest>;
+    type Error = NacelleError;
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<FrameRequest>>, NacelleError> {
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.len() < 4 {
             return Ok(None);
         }
@@ -84,10 +86,10 @@ impl Protocol<FrameRequest> for LengthDelimitedProtocol {
                 "frame length is smaller than the fixed header",
             ));
         }
-        if frame_len > max_frame_len {
+        if frame_len > self.max_frame_len {
             return Err(NacelleError::FrameTooLarge {
                 len: frame_len,
-                max: max_frame_len,
+                max: self.max_frame_len,
             });
         }
         if src.len() < HEADER_LEN {
@@ -109,6 +111,16 @@ impl Protocol<FrameRequest> for LengthDelimitedProtocol {
             },
             body_len,
         }))
+    }
+}
+
+impl Protocol<FrameRequest> for LengthDelimitedProtocol {
+    type Decoder = LengthDelimitedRequestDecoder;
+    type ResponseContext = FrameResponseContext;
+    type ErrorContext = FrameErrorContext;
+
+    fn decoder(&self, max_frame_len: usize) -> Self::Decoder {
+        LengthDelimitedRequestDecoder { max_frame_len }
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
@@ -231,18 +243,19 @@ mod tests {
         let frame = protocol
             .encode_request_frame(7, 42, 0, b"hello")
             .expect("frame encoded");
+        let mut decoder = protocol.decoder(1024);
 
         let mut buf = BytesMut::from(&frame[..10]);
         assert!(
-            protocol
-                .decode_head(&mut buf, 1024)
+            decoder
+                .decode(&mut buf)
                 .expect("decode should succeed")
                 .is_none()
         );
 
         buf.extend_from_slice(&frame[10..]);
-        let decoded = protocol
-            .decode_head(&mut buf, 1024)
+        let decoded = decoder
+            .decode(&mut buf)
             .expect("decode should succeed")
             .expect("head should decode");
         assert_eq!(decoded.request.request_id, 7);
@@ -254,10 +267,9 @@ mod tests {
     #[test]
     fn rejects_malformed_frame_lengths() {
         let protocol = LengthDelimitedProtocol;
+        let mut decoder = protocol.decoder(1024);
         let mut buf = BytesMut::from(&[4_u8, 0, 0, 0][..]);
-        let error = protocol
-            .decode_head(&mut buf, 1024)
-            .expect_err("frame must fail");
+        let error = decoder.decode(&mut buf).expect_err("frame must fail");
         assert!(matches!(error, NacelleError::InvalidFrame(_)));
     }
 }

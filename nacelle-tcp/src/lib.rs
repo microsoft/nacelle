@@ -1,5 +1,7 @@
 //! TCP transport for Nacelle.
 
+pub use nacelle_codec::MessageDecoder;
+
 pub mod connection;
 pub mod limits;
 pub mod options;

@@ -6,7 +6,7 @@ use std::hint::black_box;
 use std::pin::Pin;
 
 use bytes::{Bytes, BytesMut};
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use futures_core::Stream;
 #[cfg(feature = "buffer-rotation")]
 use nacelle_codec::RotatingMessageReader;
@@ -172,6 +172,23 @@ fn decode_comparison(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("nacelle_codec_buffered_reader", |b| {
+        b.iter(|| {
+            let mut reader = MessageReader::with_buffer(
+                tokio::io::empty(),
+                LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                BytesMut::from(encoded.as_slice()),
+            );
+            for _ in 0..MESSAGE_COUNT {
+                let message = reader
+                    .decode_buffered()
+                    .expect("benchmark decode")
+                    .expect("benchmark message");
+                black_box(message);
+            }
+        });
+    });
+
     group.bench_function("tokio_util_decoder", |b| {
         b.iter(|| {
             let mut input = BytesMut::from(encoded.as_slice());
@@ -191,5 +208,89 @@ fn decode_comparison(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, framed_read_comparison, decode_comparison);
+fn fragmented_decode_comparison(c: &mut Criterion) {
+    let partial_header = [0_u8; 3];
+    let mut group = c.benchmark_group("decode_need_more_3_byte_header");
+
+    group.bench_function("nacelle_codec", |b| {
+        b.iter_batched(
+            || {
+                (
+                    LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                    BytesMut::from(partial_header.as_slice()),
+                )
+            },
+            |(mut decoder, mut input)| {
+                black_box(decoder.decode(&mut input).expect("benchmark decode"));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.bench_function("nacelle_codec_buffered_reader", |b| {
+        b.iter_batched(
+            || {
+                MessageReader::with_buffer(
+                    tokio::io::empty(),
+                    LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                    BytesMut::from(partial_header.as_slice()),
+                )
+            },
+            |mut reader| {
+                black_box(reader.decode_buffered().expect("benchmark buffered decode"));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    group.finish();
+}
+
+fn buffer_rotation(c: &mut Criterion) {
+    #[cfg(feature = "buffer-rotation")]
+    {
+        const REPLACEMENT_CAPACITY: usize = 8 * 1024;
+        const OVERSIZED_CAPACITY: usize = 256 * 1024;
+
+        let mut group = c.benchmark_group("buffer_rotation");
+        group.bench_function("empty_buffer_noop", |b| {
+            let mut reader = MessageReader::with_capacity(
+                tokio::io::empty(),
+                LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                REPLACEMENT_CAPACITY,
+            );
+            b.iter(|| {
+                reader.rotate_empty_buffer(black_box(REPLACEMENT_CAPACITY));
+            });
+        });
+        group.bench_function("replace_empty_256k_with_8k", |b| {
+            b.iter_batched(
+                || {
+                    MessageReader::with_buffer(
+                        tokio::io::empty(),
+                        LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                        BytesMut::with_capacity(OVERSIZED_CAPACITY),
+                    )
+                },
+                |mut reader| {
+                    reader.rotate_empty_buffer(black_box(REPLACEMENT_CAPACITY));
+                    black_box(reader);
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+
+    #[cfg(not(feature = "buffer-rotation"))]
+    let _ = c;
+}
+
+criterion_group!(
+    benches,
+    framed_read_comparison,
+    decode_comparison,
+    fragmented_decode_comparison,
+    buffer_rotation
+);
 criterion_main!(benches);

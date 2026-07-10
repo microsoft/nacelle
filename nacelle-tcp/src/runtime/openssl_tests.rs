@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
+use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
@@ -28,15 +29,13 @@ impl RequestMetadata for PlainRequest {
 
 struct PlainProtocol;
 
-impl Protocol<PlainRequest> for PlainProtocol {
-    type ResponseContext = ();
-    type ErrorContext = ();
+struct PlainDecoder;
 
-    fn decode_head(
-        &self,
-        src: &mut BytesMut,
-        _max_frame_len: usize,
-    ) -> Result<Option<DecodedRequest<PlainRequest>>, NacelleError> {
+impl MessageDecoder for PlainDecoder {
+    type Message = DecodedRequest<PlainRequest>;
+    type Error = NacelleError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
         }
@@ -45,6 +44,16 @@ impl Protocol<PlainRequest> for PlainProtocol {
             request: PlainRequest,
             body_len: 0,
         }))
+    }
+}
+
+impl Protocol<PlainRequest> for PlainProtocol {
+    type Decoder = PlainDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        PlainDecoder
     }
 
     fn response_context(&self, _req: &PlainRequest) -> Self::ResponseContext {}
