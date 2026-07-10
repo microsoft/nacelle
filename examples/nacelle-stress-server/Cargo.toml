@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-stress-server"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version.workspace = true
 description = "Stress server binary for exercising Nacelle TCP throughput and runtime limits."
