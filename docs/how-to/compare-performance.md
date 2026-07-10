@@ -29,14 +29,14 @@ The current `main` branch has been observed around 1.9M RPS on Linux for the TCP
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle --features bench,reference_protocol
+cargo bench -p nacelle-examples --features bench
 ```
 
 For the codec/TCP integration specifically, run both Criterion targets:
 
 ```bash
 cargo bench -p nacelle-codec --bench framed_comparison --all-features
-cargo bench -p nacelle --bench critical_paths --features bench,reference_protocol
+cargo bench -p nacelle-examples --bench critical_paths --features bench
 ```
 
 The codec target compares direct decoding with `MessageReader::decode_buffered`,

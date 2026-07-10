@@ -20,7 +20,7 @@ The current `main` branch has been observed around 1.9M RPS on Linux for the TCP
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle --features bench,reference_protocol
+cargo bench -p nacelle-examples --features bench
 ```
 
 The `runtime_limits` benchmark group covers connection/request permit

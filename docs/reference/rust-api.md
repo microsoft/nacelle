@@ -21,6 +21,8 @@ target/doc/nacelle/index.html
 Start with these public entry points:
 
 - `nacelle::prelude::*` for common application imports.
+- `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`, and
+  `nacelle::runtime` for capability-oriented imports.
 - `NacelleApp`, `NacelleProtocols`, and `NacelleApp::serve(...)` for the
   app-first serving path.
 - `Handler` for the app-core boundary.

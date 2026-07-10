@@ -1,15 +1,16 @@
 # Getting started
 
-This tutorial gets a minimal TCP service running with the reference
+This tutorial gets a minimal TCP service running with the repository's example
 length-delimited protocol.
 
 ## Add nacelle
 
-In this workspace, the umbrella crate is `nacelle`. It re-exports the transport
-crates and owns the reference protocol:
+In this workspace, the umbrella crate is `nacelle`. The unpublished reference
+protocol package is an example consumer of its TCP and codec APIs:
 
 ```rust
 use nacelle::prelude::*;
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 ```
 
 ## Build a handler
@@ -43,7 +44,7 @@ NacelleApp::new(handler)
 
 ## Next steps
 
-- Run `cargo run --features reference_protocol --example app_core` to see one
+- Run `cargo run -p nacelle-examples --bin app_core` to see one
   app core served through multiple protocol adapters.
 - Read the [architecture guide](../topics/architecture.md) to understand the request path.
 - Read [runtime limits and backpressure](../topics/runtime-limits.md) before raising connection counts.

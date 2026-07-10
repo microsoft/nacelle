@@ -7,11 +7,15 @@ Nacelle is organized as a small core plus protocol-specific transport crates.
 - `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and TLS primitives.
 - `nacelle-tcp`: TCP/Unix socket server, protocol trait, connection loop, and listener runtime.
 - `nacelle-http`: Hyper HTTP/1 server, HTTP request policy, and HTTP TLS listener integration.
-- `nacelle`: convenience crate that re-exports the split crates and owns the reference length-delimited protocol.
+- `nacelle`: convenience crate with `core`, `codec`, `tcp`, `http`, and
+  `runtime` capability namespaces.
+- `examples/nacelle-reference-protocol`: unpublished length-delimited protocol
+  fixture used by examples, tests, benchmarks, and stress tools.
+- `examples/nacelle-examples`: unpublished runnable examples and benchmarks.
 
 The reference protocol intentionally stays out of `nacelle-core` and
-`nacelle-tcp`; it is a batteries-included implementation exported by the
-umbrella `nacelle` crate.
+`nacelle-tcp`. It demonstrates the public protocol and codec contracts without
+becoming part of the published library API.
 
 ## App Core And Protocol Adapters
 

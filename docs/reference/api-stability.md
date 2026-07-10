@@ -28,3 +28,12 @@ APIs remain available when a service needs direct listener/runtime control.
 Telemetry docs should teach the generic `NacelleTelemetry` API.
 
 Before `1.0`, minor releases may change defaults or builder methods when production safety requires it. After `1.0`, public API changes should follow semver, with migration notes for config/default changes.
+
+## Reference protocol migration
+
+The former `reference_protocol` feature and its facade/prelude exports have
+moved to the unpublished `examples/nacelle-reference-protocol` workspace
+package. Repository examples depend on that package directly. Application code
+should implement `nacelle::tcp::Protocol` or maintain its protocol in a separate
+application crate rather than depending on a protocol implementation from the
+Nacelle facade.

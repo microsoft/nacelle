@@ -30,14 +30,18 @@ Until you pin a released crate version, depend on this repository directly:
 
 ```toml
 [dependencies]
-nacelle = { git = "https://github.com/microsoft/nacelle", features = ["reference_protocol"] }
+nacelle = { git = "https://github.com/microsoft/nacelle" }
+nacelle-reference-protocol = { git = "https://github.com/microsoft/nacelle" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-Minimal TCP service using the reference length-delimited protocol:
+The unpublished `nacelle-reference-protocol` package is an example fixture from
+this repository, not part of Nacelle's library API. Minimal TCP service using
+that fixture:
 
 ```rust
 use nacelle::prelude::*;
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
@@ -67,28 +71,28 @@ Run the checked-in examples from a local checkout:
 
 ```bash
 # TCP echo with the reference protocol
-cargo run --features reference_protocol --example echo -- 127.0.0.1:8080
+cargo run -p nacelle-examples --bin echo -- 127.0.0.1:8080
 
 # One app core served through two TCP protocol adapters
-cargo run --features reference_protocol --example app_core -- 127.0.0.1:8080 127.0.0.1:8081
+cargo run -p nacelle-examples --bin app_core -- 127.0.0.1:8080 127.0.0.1:8081
 
 # HTTP echo
-cargo run --no-default-features --features http --example http_echo -- 127.0.0.1:8080
+cargo run -p nacelle-examples --no-default-features --features http --bin http_echo -- 127.0.0.1:8080
 
 # HTTP memory budget guard demo
-cargo run --no-default-features --features http --example memory_guard
+cargo run -p nacelle-examples --no-default-features --features http --bin memory_guard
 
 # TCP memory budget guard demo with the reference protocol
-cargo run --features reference_protocol --example tcp_memory_guard
+cargo run -p nacelle-examples --bin tcp_memory_guard
 
 # HTTPS echo with an ephemeral self-signed certificate
-cargo run --no-default-features --features http,tls-self-signed --example tls_http_echo -- 127.0.0.1:8443
+cargo run -p nacelle-examples --no-default-features --features http,tls-self-signed --bin tls_http_echo -- 127.0.0.1:8443
 
 # TCP echo with an ephemeral self-signed certificate
-cargo run --features reference_protocol,tls-self-signed --example tls_echo -- 127.0.0.1:8443
+cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0.0.1:8443
 
 # TCP and HTTP listeners sharing one handler and host
-cargo run --features reference_protocol,http --example dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
+cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
 
 ## What Nacelle Provides
@@ -108,20 +112,20 @@ cargo run --features reference_protocol,http --example dual_echo -- 127.0.0.1:80
 Choose the smallest feature set that matches the transports you actually run:
 
 ```toml
-# TCP with the built-in reference protocol
-nacelle = { version = "0.2", features = ["reference_protocol"] }
+# TCP with a custom protocol (enabled by default)
+nacelle = { version = "0.2" }
 
 # HTTP only
 nacelle = { version = "0.2", default-features = false, features = ["http"] }
 
 # TCP + HTTP + OpenTelemetry metrics
-nacelle = { version = "0.2", features = ["reference_protocol", "http", "otel"] }
+nacelle = { version = "0.2", features = ["http", "otel"] }
 
 # Include setup hints in NacelleError Display output
-nacelle = { version = "0.2", features = ["reference_protocol", "error-hints"] }
+nacelle = { version = "0.2", features = ["error-hints"] }
 
 # Local self-signed TLS for tests
-nacelle = { version = "0.2", features = ["reference_protocol", "tls-self-signed"] }
+nacelle = { version = "0.2", features = ["tls-self-signed"] }
 
 # TCP with OpenSSL, without Rustls
 nacelle = { version = "0.2", default-features = false, features = ["tcp", "openssl"] }
@@ -130,7 +134,6 @@ nacelle = { version = "0.2", default-features = false, features = ["tcp", "opens
 | Feature | Purpose |
 | --- | --- |
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
-| `reference_protocol` | Optional length-delimited example protocol. |
 | `error-hints` | Include actionable setup hints in `NacelleError` display output. |
 | `http` | Hyper HTTP/1 server transport. |
 | `tls` | Provider-neutral TLS capability. |
@@ -152,7 +155,11 @@ OpenSSL builds need native OpenSSL development files unless you enable
 - `nacelle-tcp` contains the TCP transport, protocol runtime, and TCP limits.
 - `nacelle-http` contains the Hyper HTTP/1 transport, HTTP limits, and HTTP edge
     policy.
-- `nacelle` is the convenience crate with re-exports and the reference protocol.
+- `nacelle` is the convenience crate with `core`, `codec`, `tcp`, `http`, and
+    `runtime` capability namespaces.
+- `examples/nacelle-examples` owns unpublished runnable examples and benchmarks.
+- `examples/nacelle-reference-protocol` is an unpublished protocol fixture used
+    by examples, tests, benchmarks, and stress tools.
 - `examples/nacelle-stress-*` contains the stress harness.
 
 ## Production Notes

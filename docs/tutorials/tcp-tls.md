@@ -5,9 +5,9 @@ certificate immediately. It implies the `rustls` provider.
 
 ```rust
 use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, NacelleTlsConfig, TcpServer,
-    handler_fn,
+    NacelleTlsConfig, TcpServer, handler_fn,
 };
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 
 let generated = NacelleTlsConfig::self_signed(["localhost", "127.0.0.1"])?;
 let server = TcpServer::<FrameRequest, ()>::builder()
