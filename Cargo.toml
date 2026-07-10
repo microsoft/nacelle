@@ -15,6 +15,43 @@ resolver = "2"
 license = "MIT"
 repository = "https://github.com/microsoft/nacelle"
 homepage = "https://github.com/microsoft/nacelle"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# Internal crates
+nacelle = { path = "nacelle", version = "0.2.0" }
+nacelle-core = { path = "nacelle-core", version = "0.2.0" }
+nacelle-tcp = { path = "nacelle-tcp", version = "0.2.0" }
+nacelle-http = { path = "nacelle-http", version = "0.2.0" }
+nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.2.0" }
+
+# External dependencies
+bytes = "1.12.0"
+criterion = "0.8.2"
+crossbeam-epoch = "0.9.20"
+futures-core = "0.3.32"
+http = "1.4.2"
+http-body-util = "0.1.3"
+hyper = "1.10.1"
+hyper-util = "0.1.20"
+libmimalloc-sys = "0.1.49"
+mimalloc = "0.1.52"
+openssl = "0.10.81"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.1"
+pem = "3.0.6"
+proptest = "1.11.0"
+rcgen = "0.14.8"
+rustls = "0.23.41"
+serde = "1.0.228"
+socket2 = "0.6.4"
+tokio = "1.52.3"
+tokio-openssl = "0.6.5"
+tokio-rustls = "0.26.4"
+tokio-util = "0.7.18"
+toml = "1.1.2"
+tower = "0.5.3"
+tracing = "0.1.44"
 
 [profile.release]
 debug     = 0
