@@ -246,51 +246,54 @@ fn fragmented_decode_comparison(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "buffer-rotation")]
 fn buffer_rotation(c: &mut Criterion) {
-    #[cfg(feature = "buffer-rotation")]
-    {
-        const REPLACEMENT_CAPACITY: usize = 8 * 1024;
-        const OVERSIZED_CAPACITY: usize = 256 * 1024;
+    const REPLACEMENT_CAPACITY: usize = 8 * 1024;
+    const OVERSIZED_CAPACITY: usize = 256 * 1024;
 
-        let mut group = c.benchmark_group("buffer_rotation");
-        group.bench_function("empty_buffer_noop", |b| {
-            let mut reader = MessageReader::with_capacity(
-                tokio::io::empty(),
-                LengthDelimitedDecoder::new(MAX_FRAME_LEN),
-                REPLACEMENT_CAPACITY,
-            );
-            b.iter(|| {
+    let mut group = c.benchmark_group("buffer_rotation");
+    group.bench_function("empty_buffer_noop", |b| {
+        let mut reader = MessageReader::with_capacity(
+            tokio::io::empty(),
+            LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+            REPLACEMENT_CAPACITY,
+        );
+        b.iter(|| {
+            reader.rotate_empty_buffer(black_box(REPLACEMENT_CAPACITY));
+        });
+    });
+    group.bench_function("replace_empty_256k_with_8k", |b| {
+        b.iter_batched(
+            || {
+                MessageReader::with_buffer(
+                    tokio::io::empty(),
+                    LengthDelimitedDecoder::new(MAX_FRAME_LEN),
+                    BytesMut::with_capacity(OVERSIZED_CAPACITY),
+                )
+            },
+            |mut reader| {
                 reader.rotate_empty_buffer(black_box(REPLACEMENT_CAPACITY));
-            });
-        });
-        group.bench_function("replace_empty_256k_with_8k", |b| {
-            b.iter_batched(
-                || {
-                    MessageReader::with_buffer(
-                        tokio::io::empty(),
-                        LengthDelimitedDecoder::new(MAX_FRAME_LEN),
-                        BytesMut::with_capacity(OVERSIZED_CAPACITY),
-                    )
-                },
-                |mut reader| {
-                    reader.rotate_empty_buffer(black_box(REPLACEMENT_CAPACITY));
-                    black_box(reader);
-                },
-                BatchSize::SmallInput,
-            );
-        });
-        group.finish();
-    }
-
-    #[cfg(not(feature = "buffer-rotation"))]
-    let _ = c;
+                black_box(reader);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
 }
 
+#[cfg(feature = "buffer-rotation")]
 criterion_group!(
     benches,
     framed_read_comparison,
     decode_comparison,
     fragmented_decode_comparison,
     buffer_rotation
+);
+#[cfg(not(feature = "buffer-rotation"))]
+criterion_group!(
+    benches,
+    framed_read_comparison,
+    decode_comparison,
+    fragmented_decode_comparison
 );
 criterion_main!(benches);
