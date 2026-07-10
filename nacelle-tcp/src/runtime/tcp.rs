@@ -8,13 +8,9 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
-use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
+use nacelle_core::request::RequestMetadata;
 
-use super::common::{
-    bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
-    record_connection_rejection,
-};
+use super::common::{bind_tcp_listener, run_accept_loop};
 
 /// Listen on `addr` and serve each accepted TCP connection in its own task.
 pub async fn serve_tcp<Req, P, H>(
@@ -226,7 +222,7 @@ pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<Req, P, H>(
     server: Arc<NacelleServer<Req, P, H>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
-    mut shutdown: NacelleShutdownToken,
+    shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
@@ -234,48 +230,23 @@ where
     P: Protocol<Req> + Send + Sync + 'static,
     H: Handler,
 {
-    let mut connections = tokio::task::JoinSet::new();
-    let local_addr = listener.local_addr().ok();
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::Tcp);
-                continue;
-            }
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        record_connection_rejection(server.as_ref(), NacelleTransport::Tcp, "none", &error);
-                        server
-                            .telemetry()
-                            .connection_rejected(NacelleTransport::Tcp, connection_rejection_reason(&error));
-                        continue;
-                    }
-                };
-                let server = server.clone();
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
-            }
-        }
-    }
-    server.telemetry().shutdown_event(
-        NacelleTelemetryEventKind::ListenerStoppedAccepting,
-        NacelleTransport::Tcp,
-    );
-    drain_connection_tasks(
-        connections,
-        drain_deadline.get(),
-        NacelleTransport::Tcp,
-        server.telemetry().clone(),
+    run_accept_loop(
+        server,
+        listener,
+        "none",
+        shutdown,
+        drain_deadline,
+        move |stream| {
+            tcp_options
+                .apply_to_stream(stream)
+                .map_err(NacelleError::from)
+        },
+        |server, stream, connection, connection_permit| async move {
+            let _connection_permit = connection_permit;
+            server
+                .serve_io_without_connection_limit(stream, connection)
+                .await
+        },
     )
-    .await;
-    Ok(())
+    .await
 }

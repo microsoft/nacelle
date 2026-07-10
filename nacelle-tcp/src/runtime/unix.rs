@@ -201,7 +201,7 @@ where
             biased;
             _ = shutdown.changed() => break,
             joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::UnixSocket);
+                log_connection_result(joined, NacelleTransport::new("unix_socket"));
                 continue;
             }
             accepted = listener.accept() => {
@@ -212,13 +212,13 @@ where
                     Err(error) => {
                         record_connection_rejection(
                             server.as_ref(),
-                            NacelleTransport::UnixSocket,
+                            NacelleTransport::new("unix_socket"),
                             "none",
                             &error,
                         );
                         server
                             .telemetry()
-                            .connection_rejected(NacelleTransport::UnixSocket, connection_rejection_reason(&error));
+                            .connection_rejected(NacelleTransport::new("unix_socket"), connection_rejection_reason(&error));
                         continue;
                     }
                 };
@@ -232,12 +232,12 @@ where
     }
     server.telemetry().shutdown_event(
         NacelleTelemetryEventKind::ListenerStoppedAccepting,
-        NacelleTransport::UnixSocket,
+        NacelleTransport::new("unix_socket"),
     );
     drain_connection_tasks(
         connections,
         drain_deadline.get(),
-        NacelleTransport::UnixSocket,
+        NacelleTransport::new("unix_socket"),
         server.telemetry().clone(),
     )
     .await;

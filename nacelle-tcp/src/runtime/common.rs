@@ -4,11 +4,17 @@ use std::time::Duration;
 use crate::options::NacelleTcpBindOptions;
 use crate::protocol::Protocol;
 use crate::server::NacelleServer;
-use crate::telemetry::NacelleTcpMetricsContext;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
-use nacelle_core::request::RequestMetadata;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport};
+use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
+use nacelle_core::limits::TrackedPermit;
+use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::telemetry::{
+    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport,
+};
+use std::future::Future;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
 
 pub(super) fn bind_tcp_listener(
     addr: SocketAddr,
@@ -65,13 +71,15 @@ pub(super) fn record_connection_rejection<Req, P, H>(
     P: Protocol<Req> + Send + Sync + 'static,
     H: Handler,
 {
-    let context = NacelleTcpMetricsContext::new(
+    let context = NacelleMetricsContext::new(
         transport,
         server.listener_label(),
         server.protocol().name(),
         tls,
     );
-    server.tcp_telemetry().error(&context, "accept", error);
+    server
+        .telemetry()
+        .operation_error(&context, "accept", error);
 }
 
 pub(super) async fn drain_connection_tasks(
@@ -101,4 +109,80 @@ pub(super) async fn drain_connection_tasks(
     while let Some(result) = connections.join_next().await {
         log_connection_result(Some(result), transport);
     }
+}
+
+/// Shared TCP accept loop for the plain and TLS listener variants.
+///
+/// Accepts connections until `shutdown` fires, enforcing the connection limit
+/// and per-connection setup. The two per-variant differences are injected as
+/// closures: `prepare_stream` applies socket options (and decides whether to
+/// propagate failures), and `serve_connection` turns an accepted stream into
+/// the future spawned onto the connection task set (performing the TLS
+/// handshake where applicable). `tls_label` is used only for rejection
+/// telemetry.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_accept_loop<Req, P, H, Prepare, Serve, Fut>(
+    server: Arc<NacelleServer<Req, P, H>>,
+    listener: TcpListener,
+    tls_label: &'static str,
+    mut shutdown: NacelleShutdownToken,
+    drain_deadline: NacelleDrainDeadline,
+    prepare_stream: Prepare,
+    mut serve_connection: Serve,
+) -> Result<(), NacelleError>
+where
+    Req: RequestMetadata + Send + 'static,
+    P: Protocol<Req> + Send + Sync + 'static,
+    H: Handler,
+    Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
+    Serve: FnMut(
+        Arc<NacelleServer<Req, P, H>>,
+        TcpStream,
+        NacelleConnectionMeta,
+        TrackedPermit,
+    ) -> Fut,
+    Fut: Future<Output = Result<(), NacelleError>> + Send + 'static,
+{
+    let transport = NacelleTransport::new("tcp");
+    let mut connections = tokio::task::JoinSet::new();
+    let local_addr = listener.local_addr().ok();
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_connection_result(joined, transport);
+                continue;
+            }
+            accepted = listener.accept() => {
+                let (stream, peer_addr) = accepted?;
+                prepare_stream(&stream)?;
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
+                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        record_connection_rejection(server.as_ref(), transport, tls_label, &error);
+                        server
+                            .telemetry()
+                            .connection_rejected(transport, connection_rejection_reason(&error));
+                        continue;
+                    }
+                };
+                let task = serve_connection(server.clone(), stream, connection, connection_permit);
+                connections.spawn(task);
+            }
+        }
+    }
+    server.telemetry().shutdown_event(
+        NacelleTelemetryEventKind::ListenerStoppedAccepting,
+        transport,
+    );
+    drain_connection_tasks(
+        connections,
+        drain_deadline.get(),
+        transport,
+        server.telemetry().clone(),
+    )
+    .await;
+    Ok(())
 }

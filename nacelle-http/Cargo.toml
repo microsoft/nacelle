@@ -1,7 +1,8 @@
 [package]
 name = "nacelle-http"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version.workspace = true
 description = "Hyper HTTP/1 transport and HTTP edge policy runtime for Nacelle streaming handlers."
 license.workspace = true
 repository.workspace = true
@@ -17,14 +18,14 @@ rustls = ["tls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/rustls"]
 tls-self-signed = ["rustls", "nacelle-core/tls-self-signed"]
 
 [dependencies]
-bytes = "1.10.1"
-futures-core = "0.3.31"
-http = "1"
-http-body-util = "0.1"
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["server", "tokio"] }
-nacelle-core = { path = "../nacelle-core", features = ["http-types"] }
-rustls = { version = "0.23.40", optional = true }
-tokio = { version = "1.47.1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = { version = "0.26.4", optional = true }
-tracing = "0.1.44"
+bytes = { workspace = true }
+futures-core = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["server", "tokio"] }
+nacelle-core = { workspace = true, features = ["http-types"] }
+rustls = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }
+tracing = { workspace = true }

@@ -33,7 +33,7 @@ cargo bench -p nacelle --features bench,reference_protocol
 ```
 
 The `runtime_limits` benchmark group covers connection/request permit
-acquire/drop and memory reservation overhead. Watch it closely after changes to
+acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
 
 Suggested RPS comparison:
@@ -43,14 +43,13 @@ Suggested RPS comparison:
 ```
 
 The default stress server build also prints a compact OTel console snapshot every
-5 seconds. TCP request metrics are grouped under the telemetry
-`request_metrics` config; request started/completed counters and wire-byte
-counters are on by default, while in-flight and duration metrics remain opt-in.
-Core request duration metrics are opt-in as well, which avoids request `Instant`
-work on core/HTTP paths unless duration metrics or HTTP access logs are enabled.
-Use `--no-wire-byte-metrics` when comparing the cost of wire-byte accounting,
-and use `--no-default-features` with the plain TCP config for a metrics-free
-baseline.
+5 seconds. Request metrics are grouped under the generic telemetry
+`request_metrics` config; started/completed counters and byte counters are on by
+default, while in-flight and duration metrics remain opt-in. Request duration
+metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
+paths unless duration metrics or HTTP access logs are enabled. Use
+`--no-byte-metrics` when comparing the cost of byte accounting, and use
+`--no-default-features` with the plain TCP config for a metrics-free baseline.
 
 The checked-in root `config.toml` enables self-signed TCP TLS for local
 stress runs. For the plain TCP throughput baseline, use

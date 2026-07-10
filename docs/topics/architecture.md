@@ -13,6 +13,19 @@ The reference protocol intentionally stays out of `nacelle-core` and
 `nacelle-tcp`; it is a batteries-included implementation exported by the
 umbrella `nacelle` crate.
 
+## App Core And Protocol Adapters
+
+Nacelle is organized so application behavior lives behind the `Handler`
+boundary. A handler receives a transport-neutral `NacelleRequest` and returns a
+`NacelleResponse`.
+
+TCP `Protocol` implementations are adapters: they decode a wire format into
+request metadata and encode responses back into frames. Swapping protocols
+should not require rewriting the app core. The app-first serving path wires
+those pieces together with `NacelleApp`, `NacelleProtocols`, and
+`NacelleApp::serve(...)`; lower-level `TcpServer` and `NacelleHost` APIs remain
+available for services that need direct listener control.
+
 TLS lives in `nacelle-core` because the configuration and provider metadata are
 shared. `tls` is provider-neutral. `rustls` enables the Rustls provider used by
 HTTP and TCP. `openssl` enables the OpenSSL provider for TCP without
@@ -52,7 +65,7 @@ shared lifecycle/limit enforcement in core.
 
 `NacelleRuntimeState` owns shared budgets and counters. Connection, request, and
 streaming-task limits are non-blocking atomic bounded counters. Memory uses a
-checked reservation object that releases on drop.
+checked allocation guard that releases on drop.
 
 This keeps the common request path allocation-light while still enforcing
 bounded defaults.
@@ -89,17 +102,16 @@ Task tracking is at the connection boundary, not the per-request hot path.
 Telemetry is deliberately low-cardinality. Reasons are static strings such as
 `connections`, `request_body_bytes`, or `http_body_read`.
 
-With `otel`, active gauges are observable instruments backed by runtime-state
+With `otel`, runtime gauges are observable instruments backed by runtime-state
 atomics, so collection reads current values without per-request metric writes.
-Core telemetry owns shared lifecycle and request events. Core request duration
-metrics are disabled by default through `NacelleTelemetryConfig`, so core/HTTP
-request paths do not start a request timer unless duration metrics or HTTP
-access logging are enabled. The TCP transport owns its TCP-specific metrics in
-`nacelle-tcp`: listener/protocol/TLS-labeled lifecycle counters, grouped request
-counters, request/response wire-byte counters, request duration histograms, and
-error/rejection counters. Request metric switches live under
-`NacelleTcpTelemetryConfig::request_metrics`. Started/completed counters and
-wire-byte counters are on by default; in-flight gauges and duration histograms
-are disabled by default. Enable them deliberately with
-`NacelleTcpTelemetry::default()` builder methods on the TCP server or app when
-you need diagnostic detail and can afford the extra per-request metric writes.
+`NacelleTelemetry` owns lifecycle, request, phase, error, and byte metrics for
+all transports. Transports that can provide extra low-cardinality detail attach
+a `NacelleMetricsContext` with listener, protocol, transport, and TLS labels.
+
+Request metric switches live under `NacelleTelemetryConfig::request_metrics`.
+Started/completed counters and byte counters are on by default; in-flight
+counters, duration histograms, and phase histograms are disabled by default.
+Enable them deliberately with `NacelleTelemetry::default()` builder methods on
+the server or app when you need diagnostic detail and can afford the extra
+per-request metric writes. Core/HTTP request paths do not start a request timer
+unless duration metrics or HTTP access logging are enabled.

@@ -9,10 +9,7 @@ In this workspace, the umbrella crate is `nacelle`. It re-exports the transport
 crates and owns the reference protocol:
 
 ```rust
-use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, NacelleError, NacelleRequest,
-    NacelleResponse, TcpServer, handler_fn,
-};
+use nacelle::prelude::*;
 ```
 
 ## Build a handler
@@ -29,21 +26,25 @@ let handler = handler_fn(|mut request: NacelleRequest| async move {
 });
 ```
 
-## Start a TCP server
+## Start the app
 
 ```rust
-let server = TcpServer::<FrameRequest, ()>::builder()
-    .protocol(LengthDelimitedProtocol)
-    .handler(handler)
-    .build()?;
+let addr = "127.0.0.1:8080".parse().map_err(NacelleError::protocol)?;
+let protocols = NacelleProtocols::new()
+    .tcp::<FrameRequest, _>("echo", addr, LengthDelimitedProtocol);
 
-server.serve_tcp("127.0.0.1:8080".parse()?).await?;
+NacelleApp::new(handler)
+    .with_telemetry(NacelleTelemetry::default())
+    .with_ctrl_c_shutdown()
+    .serve(protocols)
+    .await?;
 # Ok::<(), NacelleError>(())
 ```
 
 ## Next steps
 
+- Run `cargo run --features reference_protocol --example app_core` to see one
+  app core served through multiple protocol adapters.
 - Read the [architecture guide](../topics/architecture.md) to understand the request path.
 - Read [runtime limits and backpressure](../topics/runtime-limits.md) before raising connection counts.
 - Use [Run the stress harness](stress-harness.md) to validate a local build.
-

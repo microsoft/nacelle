@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "nacelle-codec",
     "nacelle-core",
     "nacelle-tcp",
     "nacelle-http",
@@ -16,7 +17,190 @@ repository = "https://github.com/microsoft/nacelle"
 homepage = "https://github.com/microsoft/nacelle"
 
 [profile.release]
+debug     = 0
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+
+# Required as per gungraun:
+# https://gungraun.github.io/gungraun/latest/html/installation/prerequisites.html
+[profile.bench]
+debug = true
+
+[workspace.lints.clippy]
+# We are targeting a pre-let-else MSRV so we can't use it
+manual_let_else = "allow"
+
+# `map_or` and `map_or_else` are less readable than `map` followed
+# by `unwrap_or` or `unwrap_or_else`
+map_unwrap_or = "allow"
+
+# Turn on lints that are allow by default in `clippy`.
+#
+# We set them to a `warn` level instead of `deny` to prevent clippy from
+# exiting early if it encounters a lint violation. On CI, however, we treat
+# warnings as errors. However, it means on CI clippy exits early if it encounters
+# a lint violation due to https://github.com/rust-lang/rust-clippy/issues/1209
+#
+# Clippy mostly allows lints if they may produce considerable false positives.
+# However, the specifics of our codebase here do allow us to turn these
+# lints on and ignore the false positives on a case-by-case basis,
+# because the experience shows that there are little-to-no false positives for
+# these in our codebase.
+assertions_on_result_states       = "warn"
+await_holding_refcell_ref         = "warn"
+bool_to_int_with_if               = "warn"
+borrow_as_ptr                     = "warn"
+branches_sharing_code             = "warn"
+cast_lossless                     = "warn"
+cast_ptr_alignment                = "warn"
+checked_conversions               = "warn"
+clear_with_drain                  = "warn"
+cloned_instead_of_copied          = "warn"
+collection_is_never_read          = "warn"
+copy_iterator                     = "warn"
+dbg_macro                         = "warn"
+debug_assert_with_mut_call        = "warn"
+default_union_representation      = "warn"
+doc_link_with_quotes              = "warn"
+doc_markdown                      = "warn"
+empty_drop                        = "warn"
+empty_line_after_doc_comments     = "warn"
+empty_line_after_outer_attr       = "warn"
+expl_impl_clone_on_copy           = "warn"
+explicit_into_iter_loop           = "warn"
+explicit_iter_loop                = "warn"
+filter_map_next                   = "warn"
+flat_map_option                   = "warn"
+float_cmp                         = "warn"
+fn_params_excessive_bools         = "warn"
+fn_to_numeric_cast_any            = "warn"
+format_push_string                = "warn"
+if_then_some_else_none            = "warn"
+implicit_clone                    = "warn"
+implicit_saturating_sub           = "warn"
+imprecise_flops                   = "warn"
+index_refutable_slice             = "warn"
+indexing_slicing                  = "warn"
+invalid_upcast_comparisons        = "warn"
+iter_not_returning_iterator       = "warn"
+iter_on_empty_collections         = "warn"
+iter_with_drain                   = "warn"
+large_include_file                = "warn"
+linkedlist                        = "warn"
+lossy_float_literal               = "warn"
+manual_clamp                      = "warn"
+manual_instant_elapsed            = "warn"
+manual_ok_or                      = "warn"
+many_single_char_names            = "warn"
+map_flatten                       = "warn"
+match_wild_err_arm                = "warn"
+maybe_infinite_iter               = "warn"
+mixed_read_write_in_expression    = "warn"
+mut_mut                           = "warn"
+naive_bytecount                   = "warn"
+needless_bitwise_bool             = "warn"
+needless_collect                  = "warn"
+needless_for_each                 = "warn"
+negative_feature_names            = "warn"
+no_effect_underscore_binding      = "warn"
+no_mangle_with_rust_abi           = "warn"
+non_send_fields_in_send_ty        = "warn"
+nonstandard_macro_braces          = "warn"
+or_fun_call                       = "warn"
+path_buf_push_overwrite           = "warn"
+ptr_as_ptr                        = "warn"
+range_minus_one                   = "warn"
+range_plus_one                    = "warn"
+rc_buffer                         = "warn"
+rc_mutex                          = "warn"
+read_zero_byte_vec                = "warn"
+redundant_clone                   = "warn"
+redundant_feature_names           = "warn"
+ref_binding_to_reference          = "warn"
+ref_option_ref                    = "warn"
+rest_pat_in_fully_bound_structs   = "warn"
+same_functions_in_if_condition    = "warn"
+string_lit_as_bytes               = "warn"
+suboptimal_flops                  = "warn"
+suspicious_operation_groupings    = "warn"
+suspicious_xor_used_as_pow        = "warn"
+trailing_empty_array              = "warn"
+trait_duplication_in_bounds       = "warn"
+transmute_ptr_to_ptr              = "warn"
+transmute_undefined_repr          = "warn"
+try_err                           = "warn"
+type_repetition_in_bounds         = "warn"
+unchecked_time_subtraction        = "warn"
+unicode_not_nfc                   = "warn"
+unnecessary_join                  = "warn"
+unnecessary_self_imports          = "warn"
+unnecessary_struct_initialization = "warn"
+unnecessary_wraps                 = "warn"
+unnested_or_patterns              = "warn"
+unused_async                      = "warn"
+unused_peekable                   = "warn"
+unused_rounding                   = "warn"
+useless_let_if_seq                = "warn"
+useless_transmute                 = "warn"
+verbose_bit_mask                  = "warn"
+wildcard_dependencies             = "warn"
+zero_sized_map_values             = "warn"
+
+# Priorities are used not because we override lints from these lint groups
+# but just to order them from the less noisy to the more noisy in the output
+nursery  = { level = "warn", priority = -2 }
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+missing_crate_level_docs = "warn"
+unescaped_backticks      = "warn"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(nightly)'] }
+
+# This lint is used only to warn about the changes in drop order during the
+# transition from Rust 2021 to Rust 2024. There are too many instances of this
+# lint in our code base and some of them may be false positives. So we just allow
+# this lint globally.
+tail_expr_drop_order = { level = "allow", priority = 2 }
+
+unsafe_code       = "warn"
+unstable_features = "warn"
+
+deprecated_safe                = "warn"
+elided_lifetimes_in_paths      = "warn"
+explicit_outlives_requirements = "warn"
+ffi_unwind_calls               = "warn"
+let_underscore_drop            = "warn"
+macro_use_extern_crate         = "warn"
+meta_variable_misuse           = "warn"
+missing_abi                    = "warn"
+missing_debug_implementations  = "warn"
+missing_docs                   = "warn"
+missing_unsafe_on_extern       = "warn"
+non_ascii_idents               = "warn"
+non_local_definitions          = "warn"
+redundant_lifetimes            = "warn"
+single_use_lifetimes           = "warn"
+trivial_casts                  = "warn"
+trivial_numeric_casts          = "warn"
+unit_bindings                  = "warn"
+unnameable_types               = "warn"
+unreachable_pub                = "warn"
+unused_extern_crates           = "warn"
+unused_import_braces           = "warn"
+unused_lifetimes               = "warn"
+unused_macro_rules             = "warn"
+unused_qualifications          = "warn"
+variant_size_differences       = "warn"
+
+rust_2024_compatibility = { level = "warn", priority = 1 }
+
+# Unstable but desirable lints.
+# [workspace.lints.rust]
+# must_not_suspend           = "warn"
+# rust_2024_incompatible_pat = "warn"
+# lossy_provenance_casts     = "warn"
+# fuzzy_provenance_casts     = "warn"

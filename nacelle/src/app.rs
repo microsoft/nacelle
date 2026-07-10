@@ -24,20 +24,18 @@ use nacelle_tcp::NacelleTlsDetectionOptions;
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{
-    NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions, NacelleTcpTelemetry, Protocol,
-    TcpServer,
+    NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions, Protocol, TcpServer,
 };
 
 pub struct NacelleApp<H> {
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    #[cfg(feature = "tcp")]
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     #[cfg(feature = "tcp")]
     tcp_limits: NacelleTcpLimits,
     shutdown: NacelleShutdown,
+    ctrl_c_shutdown: bool,
     drain_timeout: std::time::Duration,
     connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
 }
@@ -46,17 +44,17 @@ impl<H> NacelleApp<H>
 where
     H: Handler,
 {
+    /// Create an app from the handler used by every configured transport.
     pub fn new(handler: H) -> Self {
         Self {
             handler,
             config: NacelleConfig::default(),
             telemetry: NacelleTelemetry::default(),
-            #[cfg(feature = "tcp")]
-            tcp_telemetry: NacelleTcpTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
             #[cfg(feature = "tcp")]
             tcp_limits: NacelleTcpLimits::default(),
             shutdown: NacelleShutdown::new(),
+            ctrl_c_shutdown: false,
             drain_timeout: std::time::Duration::from_secs(30),
             connection_extension_factory: None,
         }
@@ -69,12 +67,6 @@ where
 
     pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
         self.telemetry = telemetry;
-        self
-    }
-
-    #[cfg(feature = "tcp")]
-    pub fn with_tcp_telemetry(mut self, tcp_telemetry: NacelleTcpTelemetry) -> Self {
-        self.tcp_telemetry = tcp_telemetry;
         self
     }
 
@@ -96,6 +88,20 @@ where
 
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
+        self
+    }
+
+    /// Request graceful shutdown when the process receives Ctrl-C.
+    ///
+    /// This is a convenience for binaries that want the common local/production
+    /// signal path without manually wiring a [`NacelleShutdown`] handle.
+    pub fn with_ctrl_c_shutdown(mut self) -> Self {
+        self.ctrl_c_shutdown = true;
+        self
+    }
+
+    pub fn with_ctrl_c_shutdown_enabled(mut self, enabled: bool) -> Self {
+        self.ctrl_c_shutdown = enabled;
         self
     }
 
@@ -128,6 +134,11 @@ where
 
     pub fn handler(&self) -> &H {
         &self.handler
+    }
+
+    /// Install the configured protocols and run the app until shutdown.
+    pub async fn serve(self, protocols: NacelleProtocols<H>) -> Result<(), NacelleError> {
+        serve(protocols, self).await
     }
 }
 
@@ -546,6 +557,9 @@ pub async fn serve<H>(
 where
     H: Handler,
 {
+    let ctrl_c_task = app
+        .ctrl_c_shutdown
+        .then(|| spawn_ctrl_c_shutdown(app.shutdown.clone()));
     let mut host = NacelleHost::new()
         .with_telemetry(app.telemetry.clone())
         .with_runtime_state(app.runtime_state.clone())
@@ -554,7 +568,18 @@ where
     for installer in protocols.installers {
         installer(&mut host, &app)?;
     }
-    host.wait().await
+    let result = host.wait().await;
+    if let Some(task) = ctrl_c_task {
+        task.abort();
+    }
+    result
+}
+
+fn spawn_ctrl_c_shutdown(shutdown: NacelleShutdown) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        shutdown.shutdown();
+    })
 }
 
 #[cfg(feature = "tcp")]
@@ -571,7 +596,6 @@ where
         .protocol(protocol)
         .config(app.config.clone())
         .telemetry(app.telemetry.clone())
-        .tcp_telemetry(app.tcp_telemetry.clone())
         .runtime_state(app.runtime_state.clone());
     let builder = builder.tcp_limits(app.tcp_limits);
     let builder = if let Some(factory) = app.connection_extension_factory.clone() {
@@ -702,6 +726,13 @@ mod tests {
                 .expect("extension should have expected type");
 
             assert_eq!(context.connection_id, meta.connection_id);
+        }
+
+        #[test]
+        fn app_can_enable_ctrl_c_shutdown() {
+            let app = NacelleApp::new(TestHandler).with_ctrl_c_shutdown();
+
+            assert!(app.ctrl_c_shutdown);
         }
     }
 }

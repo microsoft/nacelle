@@ -1,7 +1,8 @@
 [package]
 name = "nacelle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version.workspace = true
 description = "Convenience crate for Nacelle streaming handlers, transport re-exports, and the reference TCP protocol."
 license.workspace = true
 repository.workspace = true
@@ -13,6 +14,7 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = ["tcp"]
 tcp = ["dep:nacelle-tcp"]
+error-hints = ["nacelle-core/error-hints"]
 reference_protocol = ["tcp"]
 http = ["dep:http", "dep:nacelle-http", "nacelle-core/http-types"]
 tls = ["nacelle-core/tls", "nacelle-http?/tls", "nacelle-tcp?/tls"]
@@ -27,16 +29,17 @@ bench = []
 fuzzing = []
 
 [dependencies]
-bytes = "1.10.1"
-http = { version = "1", optional = true }
-nacelle-core = { path = "../nacelle-core" }
-nacelle-http = { path = "../nacelle-http", optional = true }
-nacelle-tcp = { path = "../nacelle-tcp", optional = true }
-tokio = { version = "1.47.1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+bytes = { workspace = true }
+http = { workspace = true, optional = true }
+nacelle-core = { workspace = true }
+nacelle-http = { workspace = true, optional = true }
+nacelle-tcp = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 
 [dev-dependencies]
-criterion = "0.8.2"
-proptest = "1.11.0"
+criterion = { workspace = true }
+proptest = { workspace = true }
+crossbeam-epoch = { workspace = true }
 
 [[bench]]
 name = "critical_paths"
@@ -49,9 +52,24 @@ path = "examples/echo.rs"
 required-features = ["reference_protocol"]
 
 [[example]]
+name = "app_core"
+path = "examples/app_core.rs"
+required-features = ["reference_protocol"]
+
+[[example]]
 name = "http_echo"
 path = "examples/http_echo.rs"
 required-features = ["http"]
+
+[[example]]
+name = "memory_guard"
+path = "examples/memory_guard.rs"
+required-features = ["http"]
+
+[[example]]
+name = "tcp_memory_guard"
+path = "examples/tcp_memory_guard.rs"
+required-features = ["reference_protocol"]
 
 [[example]]
 name = "tls_http_echo"

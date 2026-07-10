@@ -5,7 +5,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::Protocol;
-use crate::telemetry::NacelleTcpTelemetry;
 use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
@@ -22,7 +21,7 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use framing::{decode_next_request, reserve_connection_buffers};
+use framing::{allocate_connection_buffers, decode_next_request};
 use io::{read_buf_with_timeout, write_all_with_timeout};
 use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context};
 use request::run_request;
@@ -51,7 +50,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         NacelleConnectionMeta::tcp(None, None),
@@ -85,7 +83,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         connection,
@@ -101,7 +98,6 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, 
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -114,28 +110,28 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let _connection_permit = runtime_state.acquire_connection_tracked()?;
-    let _buffer_reservation = reserve_connection_buffers(&config, &runtime_state)?;
+    let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
     let connection_metrics = tcp_metrics_context(protocol.as_ref(), &connection);
-    tcp_telemetry.connection_accepted(&connection_metrics);
+    telemetry.connection_accepted(&connection_metrics);
     telemetry.connection_opened(transport);
 
     let result: Result<(), NacelleError> = async {
         'conn: loop {
             if !write_buf.is_empty() {
-                let write_started = start_tcp_phase(&tcp_telemetry);
+                let write_started = start_tcp_phase(&telemetry);
                 let write_result =
                     write_all_with_timeout(&mut writer, &write_buf, &tcp_limits, "tcp_write").await;
                 finish_tcp_phase(
-                    &tcp_telemetry,
+                    &telemetry,
                     Some(&connection_metrics),
                     "socket_write",
                     write_started,
                 );
                 if let Err(error) = write_result {
-                    tcp_telemetry.error(&connection_metrics, "socket_write", &error);
+                    telemetry.operation_error(&connection_metrics, "socket_write", &error);
                     return Err(error);
                 }
                 write_buf.clear();
@@ -148,11 +144,11 @@ where
                 read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
             }
 
-            let read_started = start_tcp_phase(&tcp_telemetry);
+            let read_started = start_tcp_phase(&telemetry);
             let read_result =
                 read_buf_with_timeout(&mut reader, &mut read_buf, &tcp_limits, "tcp_read").await;
             finish_tcp_phase(
-                &tcp_telemetry,
+                &telemetry,
                 Some(&connection_metrics),
                 "socket_read",
                 read_started,
@@ -160,7 +156,7 @@ where
             let bytes_read = match read_result {
                 Ok(bytes_read) => bytes_read,
                 Err(error) => {
-                    tcp_telemetry.error(&connection_metrics, "socket_read", &error);
+                    telemetry.operation_error(&connection_metrics, "socket_read", &error);
                     return Err(error);
                 }
             };
@@ -175,7 +171,7 @@ where
                 protocol.as_ref(),
                 &mut read_buf,
                 config.max_frame_len,
-                &tcp_telemetry,
+                &telemetry,
                 &connection_metrics,
             )? {
                 let error_context = protocol.error_context(&decoded.request);
@@ -189,13 +185,10 @@ where
                     error_context,
                     &config,
                     &telemetry,
-                    &tcp_telemetry,
                     &runtime_state,
                     &tcp_limits,
                     &connection,
-                    tcp_telemetry
-                        .metrics_enabled()
-                        .then_some(&connection_metrics),
+                    telemetry.metrics_enabled().then_some(&connection_metrics),
                 )
                 .await?;
             }
@@ -206,21 +199,21 @@ where
     .await;
 
     if !write_buf.is_empty() {
-        let write_started = start_tcp_phase(&tcp_telemetry);
+        let write_started = start_tcp_phase(&telemetry);
         let final_write =
             write_all_with_timeout(&mut writer, &write_buf, &tcp_limits, "tcp_final_write").await;
         finish_tcp_phase(
-            &tcp_telemetry,
+            &telemetry,
             Some(&connection_metrics),
             "socket_write",
             write_started,
         );
         if let Err(error) = &final_write {
-            tcp_telemetry.error(&connection_metrics, "socket_write", error);
+            telemetry.operation_error(&connection_metrics, "socket_write", error);
         }
     }
 
-    tcp_telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
+    telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
     result
 }
 
@@ -245,7 +238,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         NacelleConnectionMeta::tcp(None, None),
@@ -275,7 +267,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         connection,
@@ -290,7 +281,6 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<Req, P, H, I
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -308,7 +298,6 @@ where
         handler,
         config,
         telemetry,
-        tcp_telemetry,
         runtime_state,
         tcp_limits,
         connection,
@@ -337,7 +326,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         NacelleConnectionMeta::tcp(None, None),
@@ -367,7 +355,6 @@ where
         handler,
         config,
         telemetry,
-        NacelleTcpTelemetry::default(),
         runtime_state,
         NacelleTcpLimits::default(),
         connection,
@@ -387,7 +374,6 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -404,7 +390,6 @@ where
         handler,
         config,
         telemetry,
-        tcp_telemetry,
         runtime_state,
         tcp_limits,
         connection,
@@ -419,7 +404,6 @@ async fn serve_stream_inner<Req, P, H, IO>(
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -430,28 +414,28 @@ where
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let _buffer_reservation = reserve_connection_buffers(&config, &runtime_state)?;
+    let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
     let connection_metrics = tcp_metrics_context(protocol.as_ref(), &connection);
-    tcp_telemetry.connection_accepted(&connection_metrics);
+    telemetry.connection_accepted(&connection_metrics);
     telemetry.connection_opened(transport);
 
     let result: Result<(), NacelleError> = async {
         'conn: loop {
             if !write_buf.is_empty() {
-                let write_started = start_tcp_phase(&tcp_telemetry);
+                let write_started = start_tcp_phase(&telemetry);
                 let write_result =
                     write_all_with_timeout(io, &write_buf, &tcp_limits, "tcp_write").await;
                 finish_tcp_phase(
-                    &tcp_telemetry,
+                    &telemetry,
                     Some(&connection_metrics),
                     "socket_write",
                     write_started,
                 );
                 if let Err(error) = write_result {
-                    tcp_telemetry.error(&connection_metrics, "socket_write", &error);
+                    telemetry.operation_error(&connection_metrics, "socket_write", &error);
                     return Err(error);
                 }
                 write_buf.clear();
@@ -464,11 +448,11 @@ where
                 read_buf = BytesMut::with_capacity(config.read_buffer_capacity);
             }
 
-            let read_started = start_tcp_phase(&tcp_telemetry);
+            let read_started = start_tcp_phase(&telemetry);
             let read_result =
                 read_buf_with_timeout(io, &mut read_buf, &tcp_limits, "tcp_read").await;
             finish_tcp_phase(
-                &tcp_telemetry,
+                &telemetry,
                 Some(&connection_metrics),
                 "socket_read",
                 read_started,
@@ -476,7 +460,7 @@ where
             let bytes_read = match read_result {
                 Ok(bytes_read) => bytes_read,
                 Err(error) => {
-                    tcp_telemetry.error(&connection_metrics, "socket_read", &error);
+                    telemetry.operation_error(&connection_metrics, "socket_read", &error);
                     return Err(error);
                 }
             };
@@ -491,7 +475,7 @@ where
                 protocol.as_ref(),
                 &mut read_buf,
                 config.max_frame_len,
-                &tcp_telemetry,
+                &telemetry,
                 &connection_metrics,
             )? {
                 let error_context = protocol.error_context(&decoded.request);
@@ -505,13 +489,10 @@ where
                     error_context,
                     &config,
                     &telemetry,
-                    &tcp_telemetry,
                     &runtime_state,
                     &tcp_limits,
                     &connection,
-                    tcp_telemetry
-                        .metrics_enabled()
-                        .then_some(&connection_metrics),
+                    telemetry.metrics_enabled().then_some(&connection_metrics),
                 )
                 .await?;
             }
@@ -522,20 +503,20 @@ where
     .await;
 
     if !write_buf.is_empty() {
-        let write_started = start_tcp_phase(&tcp_telemetry);
+        let write_started = start_tcp_phase(&telemetry);
         let final_write =
             write_all_with_timeout(io, &write_buf, &tcp_limits, "tcp_final_write").await;
         finish_tcp_phase(
-            &tcp_telemetry,
+            &telemetry,
             Some(&connection_metrics),
             "socket_write",
             write_started,
         );
         if let Err(error) = &final_write {
-            tcp_telemetry.error(&connection_metrics, "socket_write", error);
+            telemetry.operation_error(&connection_metrics, "socket_write", error);
         }
     }
 
-    tcp_telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
+    telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
     result
 }

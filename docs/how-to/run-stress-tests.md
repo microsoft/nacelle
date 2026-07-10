@@ -42,11 +42,11 @@ PowerShell example:
 ```
 
 OpenTelemetry metrics are enabled in the default stress server build. That build
-prints a compact OTel console snapshot every 5 seconds and enables TCP
-request started/completed counters plus request/response wire-byte counters by
-default. The TCP telemetry API groups those switches under `request_metrics`;
-the stress server exposes wire-byte accounting as `wire_byte_metrics = true`.
-Use `--no-wire-byte-metrics` for a lower-overhead OTel run, or use
+prints a compact OTel console snapshot every 5 seconds and enables request
+started/completed counters plus request/response byte counters by default. The
+generic telemetry API groups those switches under `request_metrics`; the stress
+server exposes byte accounting as `byte_metrics = true`.
+Use `--no-byte-metrics` for a lower-overhead OTel run, or use
 `--no-default-features` with the plain TCP config when you intentionally want a
 metrics-free peak throughput baseline.
 

@@ -27,7 +27,7 @@ pub struct ServerConfig {
     pub request_body_chunk_size: usize,
     pub request_body_channel_capacity: usize,
     pub low_memory: bool,
-    pub wire_byte_metrics: bool,
+    pub byte_metrics: bool,
     pub tls_self_signed: bool,
     pub limits: nacelle::NacelleLimits,
     pub tcp_limits: NacelleTcpLimits,
@@ -47,7 +47,7 @@ impl Default for ServerConfig {
             request_body_chunk_size: 16 * 1024,
             request_body_channel_capacity: 8,
             low_memory: false,
-            wire_byte_metrics: true,
+            byte_metrics: true,
             tls_self_signed: false,
             limits: nacelle::NacelleLimits::default(),
             tcp_limits: NacelleTcpLimits::default(),
@@ -66,7 +66,7 @@ struct ServerConfigFile {
     request_body_chunk_size: Option<usize>,
     request_body_channel_capacity: Option<usize>,
     low_memory: Option<bool>,
-    wire_byte_metrics: Option<bool>,
+    byte_metrics: Option<bool>,
     tls_self_signed: Option<bool>,
     limits: Option<LimitsConfigFile>,
     tcp_limits: Option<TcpLimitsConfigFile>,
@@ -132,8 +132,8 @@ impl ServerConfig {
         if let Some(low_memory) = file.low_memory {
             self.low_memory = low_memory;
         }
-        if let Some(wire_byte_metrics) = file.wire_byte_metrics {
-            self.wire_byte_metrics = wire_byte_metrics;
+        if let Some(byte_metrics) = file.byte_metrics {
+            self.byte_metrics = byte_metrics;
         }
         if let Some(tls_self_signed) = file.tls_self_signed {
             self.tls_self_signed = tls_self_signed;
@@ -310,11 +310,11 @@ fn parse_args_with_default_config(
             "--low-memory" => {
                 config.low_memory = true;
             }
-            "--wire-byte-metrics" => {
-                config.wire_byte_metrics = true;
+            "--byte-metrics" => {
+                config.byte_metrics = true;
             }
-            "--no-wire-byte-metrics" => {
-                config.wire_byte_metrics = false;
+            "--no-byte-metrics" => {
+                config.byte_metrics = false;
             }
             "--tls-self-signed" => {
                 config.tls_self_signed = true;
@@ -358,7 +358,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         config.request_body_channel_capacity
     );
     println!("  low_memory: {}", config.low_memory);
-    println!("  wire_byte_metrics: {}", config.wire_byte_metrics);
+    println!("  byte_metrics: {}", config.byte_metrics);
     println!("  tls_self_signed: {}", config.tls_self_signed);
     println!("  limits:");
     println!("    max_connections: {}", config.limits.max_connections);
@@ -498,8 +498,8 @@ pub fn print_help(runtime: &str) {
                                                      Equivalent env vars (no recompile required):\n\
                                                        MIMALLOC_PURGE_DELAY=0\n\
                                                        MIMALLOC_ARENA_EAGER_COMMIT=0\n\
-           --wire-byte-metrics                       Enable OTel request/response wire byte counters.\n\
-           --no-wire-byte-metrics                    Disable OTel request/response wire byte counters.\n\
+           --byte-metrics                            Enable OTel request/response byte counters.\n\
+           --no-byte-metrics                         Disable OTel request/response byte counters.\n\
            --tls-self-signed                         Serve TCP over TLS with an ephemeral\n\
                                                      self-signed certificate. The stress server\n\
                                                      default build includes this capability, but\n\
@@ -528,7 +528,7 @@ response_buffer_capacity = 2048
 request_body_chunk_size = 1024
 request_body_channel_capacity = 2
 low_memory = true
-wire_byte_metrics = true
+byte_metrics = true
 tls_self_signed = true
 
 [limits]
@@ -559,7 +559,7 @@ idle_timeout_ms = 120000
         assert_eq!(config.request_body_chunk_size, 1024);
         assert_eq!(config.request_body_channel_capacity, 2);
         assert!(config.low_memory);
-        assert!(config.wire_byte_metrics);
+        assert!(config.byte_metrics);
         assert!(config.tls_self_signed);
         assert_eq!(config.limits.max_connections, 128_000);
         assert_eq!(config.limits.max_connections_per_peer, Some(4_096));

@@ -1,8 +1,5 @@
 use bytes::BytesMut;
-use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, NacelleError, NacelleRequest, NacelleResponse,
-    TcpServer, handler_fn,
-};
+use nacelle::prelude::*;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
@@ -12,24 +9,24 @@ async fn main() -> Result<(), NacelleError> {
         .parse()
         .map_err(NacelleError::protocol)?;
 
-    let server = TcpServer::<FrameRequest, ()>::builder()
-        .protocol(LengthDelimitedProtocol)
-        .handler(handler_fn(|mut request: NacelleRequest| async move {
-            let opcode = request.tcp_opcode().unwrap_or_default();
-            let mut echoed = BytesMut::new();
-            while let Some(chunk) = request.body.next_chunk().await {
-                echoed.extend_from_slice(&chunk?);
-            }
-            if opcode != 1 {
-                return Err(NacelleError::handler(std::io::Error::other(format!(
-                    "unknown opcode {}",
-                    opcode
-                ))));
-            }
-            Ok(NacelleResponse::tcp_bytes(echoed.freeze()))
-        }))
-        .build()?;
+    let protocols =
+        NacelleProtocols::new().tcp::<FrameRequest, _>("echo", addr, LengthDelimitedProtocol);
+    let app = NacelleApp::new(handler_fn(|mut request: NacelleRequest| async move {
+        let opcode = request.tcp_opcode().unwrap_or_default();
+        let mut echoed = BytesMut::new();
+        while let Some(chunk) = request.body.next_chunk().await {
+            echoed.extend_from_slice(&chunk?);
+        }
+        if opcode != 1 {
+            return Err(NacelleError::handler(std::io::Error::other(format!(
+                "unknown opcode {}",
+                opcode
+            ))));
+        }
+        Ok(NacelleResponse::tcp_bytes(echoed.freeze()))
+    }))
+    .with_ctrl_c_shutdown();
 
     println!("nacelle echo server listening on {addr}");
-    server.serve_tcp(addr).await
+    app.serve(protocols).await
 }

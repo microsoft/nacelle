@@ -6,7 +6,7 @@ response_buffer_capacity = 16384
 request_body_chunk_size = 16384
 request_body_channel_capacity = 8
 low_memory = false
-wire_byte_metrics = true
+byte_metrics = true
 tls_self_signed = false
 
 [limits]

@@ -1,20 +1,19 @@
 use std::time::{Duration, Instant};
 
 use crate::protocol::Protocol;
-use crate::telemetry::{NacelleTcpMetricsContext, NacelleTcpTelemetry};
 use nacelle_core::error::NacelleError;
 use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTransport};
+use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTransport};
 
 pub(super) fn tcp_metrics_context<Req, P>(
     protocol: &P,
     connection: &NacelleConnectionMeta,
-) -> NacelleTcpMetricsContext
+) -> NacelleMetricsContext
 where
     Req: RequestMetadata,
     P: Protocol<Req> + Send + Sync + 'static,
 {
-    NacelleTcpMetricsContext::new(
+    NacelleMetricsContext::new(
         connection.transport,
         connection.listener.clone(),
         protocol.name(),
@@ -22,31 +21,31 @@ where
     )
 }
 
-pub(super) fn start_tcp_phase(tcp_telemetry: &NacelleTcpTelemetry) -> Option<Instant> {
-    tcp_telemetry
+pub(super) fn start_tcp_phase(telemetry: &NacelleTelemetry) -> Option<Instant> {
+    telemetry
         .phase_duration_metrics_enabled()
         .then(Instant::now)
 }
 
 pub(super) fn finish_tcp_phase(
-    tcp_telemetry: &NacelleTcpTelemetry,
-    metrics_context: Option<&NacelleTcpMetricsContext>,
+    telemetry: &NacelleTelemetry,
+    metrics_context: Option<&NacelleMetricsContext>,
     phase: &'static str,
     started: Option<Instant>,
 ) {
     if let (Some(started), Some(metrics_context)) = (started, metrics_context) {
-        tcp_telemetry.phase_duration(metrics_context, phase, started.elapsed());
+        telemetry.phase_duration(metrics_context, phase, started.elapsed());
     }
 }
 
 pub(super) fn record_tcp_error(
-    tcp_telemetry: &NacelleTcpTelemetry,
-    metrics_context: Option<&NacelleTcpMetricsContext>,
+    telemetry: &NacelleTelemetry,
+    metrics_context: Option<&NacelleMetricsContext>,
     phase: &'static str,
     error: &NacelleError,
 ) {
     if let Some(metrics_context) = metrics_context {
-        tcp_telemetry.error(metrics_context, phase, error);
+        telemetry.operation_error(metrics_context, phase, error);
     }
 }
 
@@ -103,8 +102,8 @@ fn elapsed_since(started: Option<Instant>) -> Duration {
 }
 
 pub(super) struct TcpRequestMetricsGuard<'a> {
-    telemetry: &'a NacelleTcpTelemetry,
-    context: Option<NacelleTcpMetricsContext>,
+    telemetry: &'a NacelleTelemetry,
+    context: Option<NacelleMetricsContext>,
     request_bytes: usize,
     started: Option<Instant>,
     completed: bool,
@@ -112,13 +111,13 @@ pub(super) struct TcpRequestMetricsGuard<'a> {
 
 impl<'a> TcpRequestMetricsGuard<'a> {
     pub(super) fn new(
-        telemetry: &'a NacelleTcpTelemetry,
-        context: Option<NacelleTcpMetricsContext>,
+        telemetry: &'a NacelleTelemetry,
+        context: Option<NacelleMetricsContext>,
         request_bytes: usize,
         started: Option<Instant>,
     ) -> Self {
         if let Some(context) = &context {
-            telemetry.request_started(context);
+            telemetry.request_started_with_context(context);
         }
         Self {
             telemetry,
@@ -131,7 +130,7 @@ impl<'a> TcpRequestMetricsGuard<'a> {
 
     pub(super) fn complete(&mut self, status: &'static str, response_bytes: usize) {
         if let Some(context) = &self.context {
-            self.telemetry.request_completed(
+            self.telemetry.request_finished_with_context(
                 context,
                 status,
                 self.request_bytes,
@@ -148,7 +147,7 @@ impl Drop for TcpRequestMetricsGuard<'_> {
         if !self.completed
             && let Some(context) = &self.context
         {
-            self.telemetry.request_completed(
+            self.telemetry.request_finished_with_context(
                 context,
                 "error",
                 self.request_bytes,

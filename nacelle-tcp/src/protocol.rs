@@ -10,6 +10,12 @@ pub struct DecodedRequest<Req> {
     pub body_len: usize,
 }
 
+/// Translates one TCP wire protocol into Nacelle's app-facing request/response model.
+///
+/// Implementations decode request heads from bytes, expose low-cardinality
+/// request metadata to the app core, and encode [`nacelle_core::response::NacelleResponse`]
+/// bodies back into protocol frames. Protocols should stay focused on wire
+/// translation; application behavior belongs in the [`nacelle_core::handler::Handler`].
 pub trait Protocol<Req>: Send + Sync + 'static
 where
     Req: RequestMetadata,

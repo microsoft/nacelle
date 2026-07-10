@@ -7,14 +7,11 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta, RequestMetadata};
-use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
+use nacelle_core::request::{NacelleConnectionTlsMeta, RequestMetadata};
+use nacelle_core::telemetry::NacelleTransport;
 use nacelle_core::tls::NacelleTlsConfig;
 
-use super::common::{
-    bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
-    record_connection_rejection,
-};
+use super::common::{bind_tcp_listener, run_accept_loop};
 
 pub async fn serve_tcp_tls<Req, P, H>(
     server: Arc<NacelleServer<Req, P, H>>,
@@ -96,7 +93,7 @@ pub async fn serve_tcp_tls_listener_with_shutdown_deadline<Req, P, H>(
     server: Arc<NacelleServer<Req, P, H>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleTlsConfig,
-    mut shutdown: NacelleShutdownToken,
+    shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
@@ -105,60 +102,37 @@ where
     H: Handler,
 {
     let handshake_timeout = tls_config.handshake_timeout();
-    let mut connections = tokio::task::JoinSet::new();
-    let local_addr = listener.local_addr().ok();
-    loop {
-        tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::Tcp);
-                continue;
-            }
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                let _ = stream.set_nodelay(true);
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        record_connection_rejection(server.as_ref(), NacelleTransport::Tcp, "rustls", &error);
-                        server
-                            .telemetry()
-                            .connection_rejected(NacelleTransport::Tcp, connection_rejection_reason(&error));
-                        continue;
-                    }
-                };
-                let server = server.clone();
-                let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    let stream = match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+    run_accept_loop(
+        server,
+        listener,
+        "rustls",
+        shutdown,
+        drain_deadline,
+        |stream| {
+            let _ = stream.set_nodelay(true);
+            Ok(())
+        },
+        move |server, stream, connection, connection_permit| {
+            let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+            async move {
+                let _connection_permit = connection_permit;
+                let stream =
+                    match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
                         Ok(Ok(stream)) => stream,
                         Ok(Err(error)) => return Err(NacelleError::Io(error)),
                         Err(_) => {
                             server
                                 .telemetry()
-                                .timeout(NacelleTransport::Tcp, "tls_handshake");
+                                .timeout(NacelleTransport::new("tcp"), "tls_handshake");
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     };
-                    let connection = connection.with_tls(NacelleConnectionTlsMeta::new("rustls"));
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
+                let connection = connection.with_tls(NacelleConnectionTlsMeta::new("rustls"));
+                server
+                    .serve_io_without_connection_limit(stream, connection)
+                    .await
             }
-        }
-    }
-    server.telemetry().shutdown_event(
-        NacelleTelemetryEventKind::ListenerStoppedAccepting,
-        NacelleTransport::Tcp,
-    );
-    drain_connection_tasks(
-        connections,
-        drain_deadline.get(),
-        NacelleTransport::Tcp,
-        server.telemetry().clone(),
+        },
     )
-    .await;
-    Ok(())
+    .await
 }

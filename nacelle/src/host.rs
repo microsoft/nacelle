@@ -100,7 +100,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_tcp_with_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -110,7 +110,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -137,7 +142,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_tcp_with_options_and_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -148,7 +153,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -175,7 +185,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_tcp_with_bind_options_and_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -186,7 +196,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -214,7 +229,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::UnixSocket, &name, &path_label);
+        telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_unix_with_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -224,7 +239,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::UnixSocket, &name, &path_label, error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("unix_socket"),
+                    &name,
+                    &path_label,
+                    error,
+                );
             }
             result
         });
@@ -253,7 +273,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::UnixSocket, &name, &path_label);
+        telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_unix_with_options_and_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -264,7 +284,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::UnixSocket, &name, &path_label, error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("unix_socket"),
+                    &name,
+                    &path_label,
+                    error,
+                );
             }
             result
         });
@@ -291,7 +316,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = nacelle_tcp::runtime::serve_tcp_tls_with_shutdown_deadline(
                 std::sync::Arc::new(server),
@@ -302,7 +327,12 @@ impl NacelleHost {
             )
             .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -375,7 +405,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result =
                 nacelle_tcp::runtime::serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
@@ -388,7 +418,12 @@ impl NacelleHost {
                 )
                 .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -465,7 +500,7 @@ impl NacelleHost {
         let server = server
             .with_runtime_state(self.runtime_state.clone())
             .with_listener_label(name.clone());
-        telemetry.listener_configured(NacelleTransport::Tcp, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result =
                 nacelle_tcp::runtime::serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
@@ -479,7 +514,7 @@ impl NacelleHost {
                 )
                 .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Tcp, &name, &addr.to_string(), error);
+                telemetry.listener_failed(NacelleTransport::new("tcp"), &name, &addr.to_string(), error);
             }
             result
         });
@@ -501,13 +536,18 @@ impl NacelleHost {
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server.with_runtime_state(self.runtime_state.clone());
-        telemetry.listener_configured(NacelleTransport::Http, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = server
                 .serve_with_shutdown_deadline(addr, shutdown, drain_deadline)
                 .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Http, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("http"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });
@@ -530,7 +570,7 @@ impl NacelleHost {
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server.with_runtime_state(self.runtime_state.clone());
-        telemetry.listener_configured(NacelleTransport::Http, &name, &addr.to_string());
+        telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let listener = tokio::net::TcpListener::bind(addr).await?;
             let result = server
@@ -542,7 +582,12 @@ impl NacelleHost {
                 )
                 .await;
             if let Err(error) = &result {
-                telemetry.listener_failed(NacelleTransport::Http, &name, &addr.to_string(), error);
+                telemetry.listener_failed(
+                    NacelleTransport::new("http"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });

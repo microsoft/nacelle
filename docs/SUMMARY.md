@@ -27,8 +27,8 @@
 # Reference
 
 - [Reference protocol](reference/protocol.md)
+- [Codec primitives](reference/nacelle-codec.md)
 - [HTTP hardening reference](reference/http-hardening.md)
 - [Production configuration reference](reference/production-configuration.md)
 - [API stability](reference/api-stability.md)
 - [Rust API reference](reference/rust-api.md)
-

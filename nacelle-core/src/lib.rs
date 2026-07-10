@@ -18,7 +18,9 @@ pub use config::{NacelleConfig, RequestBodyMode};
 pub use error::{BoxError, NacelleError};
 pub use handler::{Handler, HandlerFn, handler_fn};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
-pub use limits::{MemoryReservation, NacelleLimits, NacelleRuntimeState, TrackedPermit};
+pub use limits::{
+    NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget, NacelleRuntimeState, TrackedPermit,
+};
 #[cfg(feature = "http-types")]
 pub use request::HttpRequestMeta;
 pub use request::{
@@ -30,8 +32,9 @@ pub use request::{
 pub use response::HttpResponseMeta;
 pub use response::{NacelleResponse, NacelleResponseMeta, TcpResponseMeta};
 pub use telemetry::{
-    NacelleInMemoryTelemetrySink, NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent,
-    NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport,
+    NacelleInMemoryTelemetrySink, NacelleMetricsContext, NacelleRequestMetricsConfig,
+    NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
+    NacelleTelemetrySink, NacelleTransport,
 };
 #[cfg(feature = "tls-self-signed")]
 pub use tls::NacelleGeneratedTlsConfig;

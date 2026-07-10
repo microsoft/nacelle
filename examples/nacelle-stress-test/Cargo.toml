@@ -1,12 +1,14 @@
 [package]
 name = "nacelle-stress-test"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version.workspace = true
 description = "Stress client binary for measuring Nacelle TCP throughput and latency."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "../../README.md"
+publish = false
 keywords = ["networking", "tokio", "benchmark"]
 categories = ["asynchronous", "network-programming"]
 
@@ -19,10 +21,10 @@ name = "nacelle-stress-test"
 path = "src/main.rs"
 
 [dependencies]
-nacelle = { path = "../../nacelle", features = ["reference_protocol", "otel"] }
-nacelle-stress-common = { path = "../nacelle-stress-common" }
-bytes = "1.10.1"
-mimalloc = { version = "0.1", default-features = false }
-rustls = { version = "0.23.40", optional = true }
-tokio = { version = "1.47.1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-rustls = { version = "0.26.4", optional = true }
+nacelle = { workspace = true, features = ["reference_protocol", "otel"] }
+nacelle-stress-common = { workspace = true }
+bytes = { workspace = true }
+mimalloc = { workspace = true }
+rustls = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+tokio-rustls = { workspace = true, optional = true }

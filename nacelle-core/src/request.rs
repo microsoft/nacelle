@@ -12,7 +12,7 @@ use futures_core::Stream;
 use tokio::sync::mpsc;
 
 use crate::error::NacelleError;
-use crate::limits::MemoryReservation;
+use crate::limits::NacelleMemoryAllocation;
 use crate::telemetry::NacelleTransport;
 
 pub type NacelleConnectionExtension = Arc<dyn Any + Send + Sync>;
@@ -102,7 +102,7 @@ impl NacelleConnectionMeta {
     pub fn tcp(peer_addr: Option<SocketAddr>, local_addr: Option<SocketAddr>) -> Self {
         Self {
             connection_id: next_connection_id(),
-            transport: NacelleTransport::Tcp,
+            transport: NacelleTransport::new("tcp"),
             listener: default_listener(),
             peer_ip: peer_addr.map(|addr| addr.ip()),
             peer_addr,
@@ -116,7 +116,7 @@ impl NacelleConnectionMeta {
     pub fn unix_socket(local_path: Option<PathBuf>) -> Self {
         Self {
             connection_id: next_connection_id(),
-            transport: NacelleTransport::UnixSocket,
+            transport: NacelleTransport::new("unix_socket"),
             listener: default_listener(),
             peer_addr: None,
             peer_ip: None,
@@ -130,7 +130,7 @@ impl NacelleConnectionMeta {
     pub fn http(peer_ip: Option<IpAddr>) -> Self {
         Self {
             connection_id: next_connection_id(),
-            transport: NacelleTransport::Http,
+            transport: NacelleTransport::new("http"),
             listener: default_listener(),
             peer_addr: None,
             peer_ip,
@@ -277,7 +277,7 @@ enum NacelleBodySource {
 pub struct NacelleBody {
     source: NacelleBodySource,
     remaining_bytes: usize,
-    _memory_reservation: Option<MemoryReservation>,
+    _memory_allocation: Option<NacelleMemoryAllocation>,
 }
 
 impl NacelleBody {
@@ -289,7 +289,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::Streaming { receiver },
             remaining_bytes,
-            _memory_reservation: None,
+            _memory_allocation: None,
         }
     }
 
@@ -300,7 +300,7 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes: 0,
-            _memory_reservation: None,
+            _memory_allocation: None,
         }
     }
 
@@ -313,7 +313,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
-            _memory_reservation: None,
+            _memory_allocation: None,
         }
     }
 
@@ -327,7 +327,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
-            _memory_reservation: None,
+            _memory_allocation: None,
         }
     }
 
@@ -339,13 +339,13 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes,
-            _memory_reservation: None,
+            _memory_allocation: None,
         }
     }
 
     #[doc(hidden)]
-    pub fn with_memory_reservation(mut self, reservation: MemoryReservation) -> Self {
-        self._memory_reservation = Some(reservation);
+    pub fn with_memory_allocation(mut self, allocation: NacelleMemoryAllocation) -> Self {
+        self._memory_allocation = Some(allocation);
         self
     }
 
@@ -363,14 +363,14 @@ impl NacelleBody {
                     Err(Self {
                         source: NacelleBodySource::Buffered { chunks, next_index },
                         remaining_bytes: self.remaining_bytes,
-                        _memory_reservation: self._memory_reservation,
+                        _memory_allocation: self._memory_allocation,
                     })
                 }
             }
             NacelleBodySource::Streaming { receiver } => Err(Self {
                 source: NacelleBodySource::Streaming { receiver },
                 remaining_bytes: self.remaining_bytes,
-                _memory_reservation: self._memory_reservation,
+                _memory_allocation: self._memory_allocation,
             }),
         }
     }
@@ -444,7 +444,7 @@ mod tests {
         let meta = NacelleConnectionMeta::unix_socket(Some(path.clone()));
 
         assert_ne!(meta.connection_id, 0);
-        assert_eq!(meta.transport, NacelleTransport::UnixSocket);
+        assert_eq!(meta.transport, NacelleTransport::new("unix_socket"));
         assert_eq!(meta.local_path, Some(path));
         assert_eq!(meta.peer_addr, None);
         assert_eq!(meta.peer_ip, None);

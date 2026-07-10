@@ -1,7 +1,8 @@
 [package]
 name = "nacelle-stress-common"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version.workspace = true
 description = "Shared utilities for Nacelle stress examples."
 license.workspace = true
 repository.workspace = true
@@ -9,6 +10,6 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
-bytes = "1.10.1"
-nacelle = { path = "../../nacelle", features = ["reference_protocol"] }
-tokio = { version = "1.47.1", features = ["io-util", "net"] }
+bytes = { workspace = true }
+nacelle = { workspace = true, features = ["reference_protocol"] }
+tokio = { workspace = true, features = ["io-util", "net"] }

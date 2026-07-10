@@ -80,6 +80,29 @@ pub mod util;
 
 pub use app::{NacelleApp, NacelleProtocols, serve};
 pub use host::NacelleHost;
+
+pub mod prelude {
+    pub use crate::{
+        BoxError, Handler, HandlerFn, NacelleApp, NacelleBody, NacelleConfig,
+        NacelleConnectionMeta, NacelleError, NacelleLimits, NacelleMemoryBudget, NacelleProtocols,
+        NacelleRequest, NacelleRequestMeta, NacelleRequestMetricsConfig, NacelleResponse,
+        NacelleResponseMeta, NacelleRuntimeState, NacelleShutdown, NacelleShutdownToken,
+        NacelleTelemetry, NacelleTelemetryConfig, NacelleTransport, RequestBodyMode,
+        RequestMetadata, handler_fn, serve,
+    };
+    #[cfg(feature = "tcp")]
+    pub use crate::{
+        DecodedRequest, NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions,
+        NacelleTlsDetectionOptions, Protocol, TcpRequestMeta, TcpResponseMeta, TcpServer,
+    };
+    #[cfg(feature = "reference_protocol")]
+    pub use crate::{FrameRequest, LengthDelimitedProtocol};
+    #[cfg(feature = "http")]
+    pub use crate::{
+        HttpRequestMeta, HttpResponseMeta, HyperServer, NacelleHttpLimits, NacelleHttpPolicy,
+    };
+}
+
 #[cfg(feature = "tls-self-signed")]
 pub use nacelle_core::NacelleGeneratedTlsConfig;
 #[cfg(feature = "openssl")]
@@ -91,10 +114,11 @@ pub use nacelle_core::NacelleTlsProvider;
 #[cfg(feature = "tower")]
 pub use nacelle_core::handler_from_tower_service;
 pub use nacelle_core::{
-    BoxError, Handler, HandlerFn, MemoryReservation, NacelleBody, NacelleConfig,
-    NacelleConnectionExtension, NacelleConnectionExtensionFactory, NacelleConnectionMeta,
-    NacelleConnectionTlsMeta, NacelleError, NacelleInMemoryTelemetrySink, NacelleLimits,
-    NacelleRequest, NacelleRequestMeta, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,
+    BoxError, Handler, HandlerFn, NacelleBody, NacelleConfig, NacelleConnectionExtension,
+    NacelleConnectionExtensionFactory, NacelleConnectionMeta, NacelleConnectionTlsMeta,
+    NacelleError, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation,
+    NacelleMemoryBudget, NacelleMetricsContext, NacelleRequest, NacelleRequestMeta,
+    NacelleRequestMetricsConfig, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,
     NacelleShutdown, NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig,
     NacelleTelemetryEvent, NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport,
     RequestBodyMode, RequestMetadata, TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
@@ -108,9 +132,8 @@ pub use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{
     DecodedRequest, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
-    NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpMetricsContext, NacelleTcpOptions,
-    NacelleTcpRequestMetricsConfig, NacelleTcpTelemetry, NacelleTcpTelemetryConfig,
-    NacelleTlsDetectionOptions, Protocol, TcpServer, serve_connection, serve_stream,
+    NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol,
+    TcpServer, serve_connection, serve_stream,
 };
 #[cfg(feature = "reference_protocol")]
 pub use reference_protocol::{

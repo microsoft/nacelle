@@ -15,7 +15,7 @@ use std::time::Duration;
 #[cfg(feature = "tls-self-signed")]
 use nacelle::NacelleTlsConfig;
 use nacelle::{
-    FrameRequest, Handler, LengthDelimitedProtocol, NacelleError, NacelleTcpTelemetry, TcpServer,
+    FrameRequest, Handler, LengthDelimitedProtocol, NacelleError, NacelleTelemetry, TcpServer,
 };
 use nacelle_stress_common::make_tcp_socket;
 #[cfg(feature = "otel")]
@@ -226,14 +226,14 @@ fn init_otel_console_exporter(_config: &shared::ServerConfig) -> DisabledOtelCon
 #[cfg(feature = "otel")]
 #[derive(Debug, Clone, Copy)]
 struct StressOtelByteMetrics {
-    wire_bytes: bool,
+    byte_counts: bool,
 }
 
 #[cfg(feature = "otel")]
 impl From<&shared::ServerConfig> for StressOtelByteMetrics {
     fn from(config: &shared::ServerConfig) -> Self {
         Self {
-            wire_bytes: config.wire_byte_metrics,
+            byte_counts: config.byte_metrics,
         }
     }
 }
@@ -297,10 +297,10 @@ struct StressOtelSnapshot {
     completed_requests: u64,
     ok_requests: u64,
     failed_requests: u64,
-    tcp_errors: u64,
+    operation_errors: u64,
     resource_limit_rejections: u64,
-    request_wire_bytes: u64,
-    response_wire_bytes: u64,
+    request_bytes: u64,
+    response_bytes: u64,
 }
 
 #[cfg(feature = "otel")]
@@ -322,36 +322,36 @@ impl StressOtelSnapshot {
                     "nacelle.memory.used_bytes" => {
                         snapshot.memory_used_bytes += gauge_u64(metric.data());
                     }
-                    "nacelle.tcp.connections.active" => {
+                    "nacelle.connections.in_flight" => {
                         snapshot.active_connection_delta += sum_i64(metric.data());
                     }
-                    "nacelle.tcp.connections.accepted" => {
+                    "nacelle.connections.accepted" => {
                         snapshot.accepted_connections += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.connections.closed" => {
+                    "nacelle.connections.closed" => {
                         snapshot.closed_connections += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.requests.started" => {
+                    "nacelle.requests.started" => {
                         snapshot.started_requests += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.requests.completed" => {
+                    "nacelle.requests.completed" => {
                         snapshot.completed_requests += sum_u64(metric.data());
                         snapshot.ok_requests +=
                             sum_u64_with_attribute(metric.data(), "status", "ok");
                         snapshot.failed_requests +=
                             sum_u64_with_attribute(metric.data(), "status", "error");
                     }
-                    "nacelle.tcp.errors" => {
-                        snapshot.tcp_errors += sum_u64(metric.data());
+                    "nacelle.errors" => {
+                        snapshot.operation_errors += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.resource_limit.rejections" => {
+                    "nacelle.resource_limit.rejections" => {
                         snapshot.resource_limit_rejections += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.request.bytes" => {
-                        snapshot.request_wire_bytes += sum_u64(metric.data());
+                    "nacelle.request.bytes" => {
+                        snapshot.request_bytes += sum_u64(metric.data());
                     }
-                    "nacelle.tcp.response.bytes" => {
-                        snapshot.response_wire_bytes += sum_u64(metric.data());
+                    "nacelle.response.bytes" => {
+                        snapshot.response_bytes += sum_u64(metric.data());
                     }
                     _ => {}
                 }
@@ -375,7 +375,7 @@ fn print_otel_snapshot(snapshot: StressOtelSnapshot, byte_metrics: StressOtelByt
         snapshot.closed_connections as f64 / interval_secs,
     );
     println!(
-        "  requests     active={} started={} ({:.2}/s) completed={} ({:.2}/s) ok={} failed={} ({:.2}/s) tcp_errors={} resource_limit_rejections={}",
+        "  requests     active={} started={} ({:.2}/s) completed={} ({:.2}/s) ok={} failed={} ({:.2}/s) operation_errors={} resource_limit_rejections={}",
         snapshot.active_requests,
         snapshot.started_requests,
         snapshot.started_requests as f64 / interval_secs,
@@ -384,19 +384,19 @@ fn print_otel_snapshot(snapshot: StressOtelSnapshot, byte_metrics: StressOtelByt
         snapshot.ok_requests,
         snapshot.failed_requests,
         snapshot.failed_requests as f64 / interval_secs,
-        snapshot.tcp_errors,
+        snapshot.operation_errors,
         snapshot.resource_limit_rejections,
     );
-    if byte_metrics.wire_bytes {
+    if byte_metrics.byte_counts {
         println!(
-            "  bytes        request_wire={} ({:.2} MiB/s) response_wire={} ({:.2} MiB/s)",
-            format_bytes(snapshot.request_wire_bytes),
-            bytes_to_mib(snapshot.request_wire_bytes) / interval_secs,
-            format_bytes(snapshot.response_wire_bytes),
-            bytes_to_mib(snapshot.response_wire_bytes) / interval_secs,
+            "  bytes        request={} ({:.2} MiB/s) response={} ({:.2} MiB/s)",
+            format_bytes(snapshot.request_bytes),
+            bytes_to_mib(snapshot.request_bytes) / interval_secs,
+            format_bytes(snapshot.response_bytes),
+            bytes_to_mib(snapshot.response_bytes) / interval_secs,
         );
     } else {
-        println!("  bytes        wire_byte_metrics=off");
+        println!("  bytes        byte_metrics=off");
     }
     println!(
         "  runtime      streaming_tasks_active={} memory_used={}",
@@ -494,9 +494,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(not(feature = "otel"))]
     let meter_provider = init_otel_console_exporter(&config);
 
-    let tcp_telemetry =
-        NacelleTcpTelemetry::default().with_wire_byte_metrics(config.wire_byte_metrics);
-    let server = build_server(&config)?.with_tcp_telemetry(tcp_telemetry);
+    let telemetry = NacelleTelemetry::default().with_byte_count_metrics(config.byte_metrics);
+    let server = build_server(&config)?.with_telemetry(telemetry);
     let tls_config = build_tls_config(&config)?;
 
     #[cfg(not(target_os = "linux"))]

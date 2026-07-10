@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -9,31 +8,29 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
-use futures_core::Stream;
-use http::header::{HeaderName, HeaderValue};
-use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
-use hyper::body::{Body, Frame, Incoming};
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
-use nacelle_core::error::{BoxError, NacelleError};
+pub use crate::policy::NacelleHttpPolicy;
+use crate::policy::validate_http_policy;
+use crate::rate_limit::{PeerRateWindow, allow_peer_request, forwarded_peer_ip};
+use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::{
-    HttpRequestMeta, NacelleBody, NacelleConnectionMeta, NacelleRequest, NacelleRequestMeta,
+    HttpRequestMeta, NacelleConnectionMeta, NacelleRequest, NacelleRequestMeta,
 };
-use nacelle_core::response::{NacelleResponse, NacelleResponseMeta};
+use nacelle_core::response::NacelleResponse;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport};
 #[cfg(feature = "rustls")]
 use nacelle_core::tls::NacelleTlsConfig;
-
-type HttpBody = BoxBody<Bytes, BoxError>;
 
 pub struct HyperServer<H = ()> {
     handler: H,
@@ -43,103 +40,6 @@ pub struct HyperServer<H = ()> {
     http_policy: NacelleHttpPolicy,
     access_log_enabled: bool,
     peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct NacelleHttpPolicy {
-    allowed_hosts: Option<Vec<String>>,
-    allowed_methods: Option<Vec<Method>>,
-    max_uri_len: Option<usize>,
-    max_header_count: Option<usize>,
-    max_header_bytes: Option<usize>,
-    max_requests_per_peer_per_second: Option<usize>,
-    trusted_proxy_ips: Option<Vec<IpAddr>>,
-    security_headers: Vec<(HeaderName, HeaderValue)>,
-}
-
-#[derive(Debug, Clone)]
-struct PeerRateWindow {
-    started_at: Instant,
-    count: usize,
-}
-
-impl NacelleHttpPolicy {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_allowed_hosts(
-        mut self,
-        hosts: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Self {
-        self.allowed_hosts = Some(
-            hosts
-                .into_iter()
-                .map(|host| host.into().trim_end_matches('.').to_ascii_lowercase())
-                .collect(),
-        );
-        self
-    }
-
-    pub fn with_allowed_methods(mut self, methods: impl IntoIterator<Item = Method>) -> Self {
-        self.allowed_methods = Some(methods.into_iter().collect());
-        self
-    }
-
-    pub fn with_max_uri_len(mut self, max: usize) -> Self {
-        self.max_uri_len = Some(max);
-        self
-    }
-
-    pub fn with_max_header_count(mut self, max: usize) -> Self {
-        self.max_header_count = Some(max);
-        self
-    }
-
-    pub fn with_max_header_bytes(mut self, max: usize) -> Self {
-        self.max_header_bytes = Some(max);
-        self
-    }
-
-    pub fn with_max_requests_per_peer_per_second(mut self, max: usize) -> Self {
-        self.max_requests_per_peer_per_second = Some(max.max(1));
-        self
-    }
-
-    pub fn with_trusted_proxy_ips(mut self, ips: impl IntoIterator<Item = IpAddr>) -> Self {
-        self.trusted_proxy_ips = Some(ips.into_iter().collect());
-        self
-    }
-
-    pub fn with_security_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
-        self.security_headers.push((name, value));
-        self
-    }
-
-    pub fn with_default_security_headers(self) -> Self {
-        self.with_security_header(
-            http::header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        )
-        .with_security_header(
-            HeaderName::from_static("x-frame-options"),
-            HeaderValue::from_static("deny"),
-        )
-        .with_security_header(
-            HeaderName::from_static("referrer-policy"),
-            HeaderValue::from_static("no-referrer"),
-        )
-        .with_security_header(
-            HeaderName::from_static("cross-origin-resource-policy"),
-            HeaderValue::from_static("same-origin"),
-        )
-    }
-
-    pub fn with_strict_transport_security(mut self, value: HeaderValue) -> Self {
-        self.security_headers
-            .push((http::header::STRICT_TRANSPORT_SECURITY, value));
-        self
-    }
 }
 
 impl<H> Clone for HyperServer<H>
@@ -304,11 +204,11 @@ where
                         Err(error) => {
                             server
                                 .telemetry
-                                .connection_rejected(NacelleTransport::Http, connection_rejection_reason(&error));
+                                .connection_rejected(NacelleTransport::new("http"), connection_rejection_reason(&error));
                             continue;
                         }
                     };
-                    server.telemetry.connection_opened(NacelleTransport::Http);
+                    server.telemetry.connection_opened(NacelleTransport::new("http"));
                     connections.spawn(run_http_connection(
                         server,
                         stream,
@@ -320,7 +220,7 @@ where
         }
         server.telemetry.shutdown_event(
             NacelleTelemetryEventKind::ListenerStoppedAccepting,
-            NacelleTransport::Http,
+            NacelleTransport::new("http"),
         );
         drain_http_connection_tasks(connections, drain_deadline.get(), server.telemetry.clone())
             .await;
@@ -424,11 +324,11 @@ where
                         Err(error) => {
                             server
                                 .telemetry
-                                .connection_rejected(NacelleTransport::Http, connection_rejection_reason(&error));
+                                .connection_rejected(NacelleTransport::new("http"), connection_rejection_reason(&error));
                             continue;
                         }
                     };
-                    server.telemetry.connection_opened(NacelleTransport::Http);
+                    server.telemetry.connection_opened(NacelleTransport::new("http"));
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     connections.spawn(async move {
                         let tls_stream = match tokio::time::timeout(
@@ -442,7 +342,7 @@ where
                             Err(_) => {
                                 server
                                     .telemetry
-                                    .timeout(NacelleTransport::Http, "tls_handshake");
+                                    .timeout(NacelleTransport::new("http"), "tls_handshake");
                                 return Err(NacelleError::Timeout("tls_handshake"));
                             }
                         };
@@ -459,7 +359,7 @@ where
         }
         server.telemetry.shutdown_event(
             NacelleTelemetryEventKind::ListenerStoppedAccepting,
-            NacelleTransport::Http,
+            NacelleTransport::new("http"),
         );
         drain_http_connection_tasks(connections, drain_deadline.get(), server.telemetry.clone())
             .await;
@@ -477,7 +377,7 @@ where
         let effective_peer_ip = self.effective_peer_ip(peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
             self.telemetry
-                .request_rejected(NacelleTransport::Http, rejection.reason);
+                .request_rejected(NacelleTransport::new("http"), rejection.reason);
             self.access_log(HttpAccessLog {
                 method: &method,
                 uri: &uri,
@@ -498,7 +398,7 @@ where
             && !self.allow_peer_request(peer_ip)
         {
             self.telemetry
-                .request_rejected(NacelleTransport::Http, "peer_rate");
+                .request_rejected(NacelleTransport::new("http"), "peer_rate");
             self.access_log(HttpAccessLog {
                 method: &method,
                 uri: &uri,
@@ -519,7 +419,7 @@ where
             Ok(permit) => permit,
             Err(error) => {
                 self.telemetry.request_failed(
-                    NacelleTransport::Http,
+                    NacelleTransport::new("http"),
                     elapsed_since(request_started),
                     &error,
                 );
@@ -594,7 +494,7 @@ where
                     });
                 }
                 self.telemetry.request_completed(
-                    NacelleTransport::Http,
+                    NacelleTransport::new("http"),
                     request_bytes,
                     0,
                     elapsed_since(request_started),
@@ -603,7 +503,7 @@ where
             }
             Err(error) => {
                 self.telemetry.request_failed(
-                    NacelleTransport::Http,
+                    NacelleTransport::new("http"),
                     elapsed_since(request_started),
                     &error,
                 );
@@ -629,7 +529,7 @@ where
                     });
                 }
                 self.telemetry.request_completed(
-                    NacelleTransport::Http,
+                    NacelleTransport::new("http"),
                     request_bytes,
                     0,
                     elapsed_since(request_started),
@@ -647,27 +547,7 @@ where
         let Some(limit) = self.http_policy.max_requests_per_peer_per_second else {
             return true;
         };
-        let now = Instant::now();
-        let mut peers = self
-            .peer_rate_limits
-            .lock()
-            .expect("HTTP peer rate map poisoned");
-        peers.retain(|_peer, window| {
-            now.duration_since(window.started_at) < Duration::from_secs(60)
-        });
-        let window = peers.entry(peer_ip).or_insert(PeerRateWindow {
-            started_at: now,
-            count: 0,
-        });
-        if now.duration_since(window.started_at) >= Duration::from_secs(1) {
-            window.started_at = now;
-            window.count = 0;
-        }
-        if window.count >= limit {
-            return false;
-        }
-        window.count += 1;
-        true
+        allow_peer_request(&self.peer_rate_limits, limit, peer_ip)
     }
 
     fn effective_peer_ip(
@@ -718,274 +598,6 @@ fn elapsed_since(started: Option<Instant>) -> Duration {
     started.map_or(Duration::ZERO, |started| started.elapsed())
 }
 
-fn incoming_to_body(
-    mut incoming: Incoming,
-    body_len_hint: Option<usize>,
-    request_body_bytes: Arc<AtomicUsize>,
-    runtime_state: NacelleRuntimeState,
-    http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry,
-) -> NacelleBody {
-    let (tx, body) = NacelleBody::channel(8);
-    tokio::spawn(async move {
-        if let Some(body_len_hint) = body_len_hint
-            && body_len_hint > runtime_state.limits().max_request_body_bytes
-        {
-            let _ = tx
-                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                .await;
-            return;
-        }
-        let _body_reservation = match body_len_hint {
-            Some(bytes) => match runtime_state.reserve_memory(bytes) {
-                Ok(reservation) => Some(reservation),
-                Err(error) => {
-                    let _ = tx.send(Err(error)).await;
-                    return;
-                }
-            },
-            None => None,
-        };
-        let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
-            Ok(permit) => permit,
-            Err(error) => {
-                let _ = tx.send(Err(error)).await;
-                return;
-            }
-        };
-        let mut body_bytes = 0_usize;
-        loop {
-            let frame = {
-                let next = incoming.frame();
-                if let Some(timeout) = http_limits.request_body_read_timeout {
-                    match tokio::time::timeout(timeout, next).await {
-                        Ok(frame) => frame,
-                        Err(_) => {
-                            telemetry.timeout(NacelleTransport::Http, "http_body_read");
-                            let _ = tx.send(Err(NacelleError::Timeout("http_body_read"))).await;
-                            break;
-                        }
-                    }
-                } else {
-                    next.await
-                }
-            };
-            let Some(frame) = frame else {
-                break;
-            };
-            match frame {
-                Ok(frame) => {
-                    if let Some(data) = frame.data_ref() {
-                        let Some(next) = body_bytes.checked_add(data.len()) else {
-                            let _ = tx
-                                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                                .await;
-                            break;
-                        };
-                        if next > runtime_state.limits().max_request_body_bytes {
-                            let _ = tx
-                                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                                .await;
-                            break;
-                        }
-                        body_bytes = next;
-                        request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
-                        if tx.send(Ok(data.clone())).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(NacelleError::protocol(error))).await;
-                    break;
-                }
-            }
-        }
-    });
-    body
-}
-
-fn response_to_http(
-    response: NacelleResponse,
-    runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
-    policy: &NacelleHttpPolicy,
-) -> Result<Response<HttpBody>, NacelleError> {
-    let (status, headers) = match response.meta {
-        NacelleResponseMeta::Http(meta) => (meta.status, meta.headers),
-        NacelleResponseMeta::Tcp(_) => (StatusCode::OK, http::HeaderMap::new()),
-    };
-
-    let mut builder = Response::builder().status(status);
-    let Some(builder_headers) = builder.headers_mut() else {
-        return Err(NacelleError::protocol("failed to build response headers"));
-    };
-    *builder_headers = headers;
-    apply_security_headers(builder_headers, policy);
-    builder
-        .body(nacelle_body_to_http(
-            response.body,
-            runtime_state,
-            telemetry,
-        ))
-        .map_err(NacelleError::protocol)
-}
-
-fn apply_security_headers(headers: &mut http::HeaderMap, policy: &NacelleHttpPolicy) {
-    for (name, value) in &policy.security_headers {
-        if !headers.contains_key(name) {
-            headers.insert(name.clone(), value.clone());
-        }
-    }
-}
-
-fn nacelle_body_to_http(
-    body: NacelleBody,
-    runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
-) -> HttpBody {
-    StreamBody::new(HttpBodyStream {
-        body,
-        runtime_state,
-        telemetry,
-        response_body_bytes: 0,
-    })
-    .map_err(|error| -> BoxError { Box::new(error) })
-    .boxed()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct HttpRejection {
-    status: StatusCode,
-    reason: &'static str,
-}
-
-fn validate_http_policy(
-    policy: &NacelleHttpPolicy,
-    request: &Request<Incoming>,
-) -> Option<HttpRejection> {
-    if let Some(max_uri_len) = policy.max_uri_len
-        && request.uri().to_string().len() > max_uri_len
-    {
-        return Some(HttpRejection {
-            status: StatusCode::URI_TOO_LONG,
-            reason: "uri_too_long",
-        });
-    }
-
-    if let Some(methods) = &policy.allowed_methods
-        && !methods.iter().any(|method| method == request.method())
-    {
-        return Some(HttpRejection {
-            status: StatusCode::METHOD_NOT_ALLOWED,
-            reason: "method_not_allowed",
-        });
-    }
-
-    if let Some(max_header_count) = policy.max_header_count
-        && request.headers().len() > max_header_count
-    {
-        return Some(HttpRejection {
-            status: StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-            reason: "header_count",
-        });
-    }
-
-    if let Some(max_header_bytes) = policy.max_header_bytes {
-        let header_bytes = request
-            .headers()
-            .iter()
-            .try_fold(0_usize, |total, (name, value)| {
-                total
-                    .checked_add(name.as_str().len())?
-                    .checked_add(value.as_bytes().len())
-            });
-        if header_bytes.is_none_or(|bytes| bytes > max_header_bytes) {
-            return Some(HttpRejection {
-                status: StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                reason: "header_bytes",
-            });
-        }
-    }
-
-    if let Some(hosts) = &policy.allowed_hosts
-        && !host_allowed(hosts, request)
-    {
-        return Some(HttpRejection {
-            status: StatusCode::MISDIRECTED_REQUEST,
-            reason: "host",
-        });
-    }
-
-    None
-}
-
-fn host_allowed(allowed_hosts: &[String], request: &Request<Incoming>) -> bool {
-    let Some(host) = request
-        .headers()
-        .get(http::header::HOST)
-        .and_then(|host| host.to_str().ok())
-    else {
-        return false;
-    };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let host_without_port = host
-        .split_once(':')
-        .map(|(host, _port)| host)
-        .unwrap_or(host.as_str());
-    allowed_hosts
-        .iter()
-        .any(|allowed| allowed == &host || allowed == host_without_port)
-}
-
-fn forwarded_peer_ip(request: &Request<Incoming>) -> Option<IpAddr> {
-    request
-        .headers()
-        .get(http::header::FORWARDED)
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_forwarded_header_for)
-        .or_else(|| {
-            request
-                .headers()
-                .get(HeaderName::from_static("x-forwarded-for"))
-                .and_then(|value| value.to_str().ok())
-                .and_then(parse_x_forwarded_for)
-        })
-}
-
-fn parse_forwarded_header_for(value: &str) -> Option<IpAddr> {
-    let first = value.split(',').next()?.trim();
-    for part in first.split(';') {
-        let (name, value) = part.trim().split_once('=')?;
-        if name.trim().eq_ignore_ascii_case("for") {
-            return parse_forwarded_ip(value.trim().trim_matches('"'));
-        }
-    }
-    None
-}
-
-fn parse_x_forwarded_for(value: &str) -> Option<IpAddr> {
-    parse_forwarded_ip(value.split(',').next()?.trim())
-}
-
-fn parse_forwarded_ip(value: &str) -> Option<IpAddr> {
-    let value = value.trim();
-    if let Ok(ip) = value.parse::<IpAddr>() {
-        return Some(ip);
-    }
-    if let Some(stripped) = value.strip_prefix('[')
-        && let Some((ip, _rest)) = stripped.split_once(']')
-    {
-        return ip.parse().ok();
-    }
-    if let Some((ip, _port)) = value.rsplit_once(':')
-        && !ip.contains(':')
-    {
-        return ip.parse().ok();
-    }
-    None
-}
-
 fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     match error {
         NacelleError::ResourceLimit(reason) => reason,
@@ -1022,7 +634,7 @@ where
             Err(_) => {
                 server
                     .telemetry
-                    .timeout(NacelleTransport::Http, "http_max_connection_age");
+                    .timeout(NacelleTransport::new("http"), "http_max_connection_age");
                 Err(NacelleError::Timeout("http_max_connection_age"))
             }
         }
@@ -1164,7 +776,7 @@ async fn drain_http_connection_tasks(
 ) {
     telemetry.shutdown_event(
         NacelleTelemetryEventKind::DrainStarted,
-        NacelleTransport::Http,
+        NacelleTransport::new("http"),
     );
     let drain = async {
         while let Some(result) = connections.join_next().await {
@@ -1176,7 +788,7 @@ async fn drain_http_connection_tasks(
         tracing::info!(target: "nacelle", transport = "http", "connection drain completed");
         telemetry.shutdown_event(
             NacelleTelemetryEventKind::DrainCompleted,
-            NacelleTransport::Http,
+            NacelleTransport::new("http"),
         );
         return;
     }
@@ -1185,69 +797,22 @@ async fn drain_http_connection_tasks(
     tracing::warn!(target: "nacelle", transport = "http", aborted, "connection drain timed out; aborting active tasks");
     telemetry.shutdown_event(
         NacelleTelemetryEventKind::DrainTimedOut,
-        NacelleTransport::Http,
+        NacelleTransport::new("http"),
     );
-    telemetry.connections_aborted(NacelleTransport::Http, aborted);
+    telemetry.connections_aborted(NacelleTransport::new("http"), aborted);
     connections.abort_all();
     while let Some(result) = connections.join_next().await {
         log_http_connection_result(Some(result));
     }
 }
 
-struct HttpBodyStream {
-    body: NacelleBody,
-    runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
-    response_body_bytes: usize,
-}
-
-impl Stream for HttpBodyStream {
-    type Item = Result<Frame<Bytes>, NacelleError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        match Pin::new(&mut this.body).poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
-                let Some(next) = this.response_body_bytes.checked_add(chunk.len()) else {
-                    return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
-                        "response_body_bytes",
-                    ))));
-                };
-                if next > this.runtime_state.limits().max_response_body_bytes {
-                    return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
-                        "response_body_bytes",
-                    ))));
-                }
-                this.response_body_bytes = next;
-                Poll::Ready(Some(Ok(Frame::data(chunk))))
-            }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl Drop for HttpBodyStream {
-    fn drop(&mut self) {
-        self.telemetry
-            .response_body_bytes(NacelleTransport::Http, self.response_body_bytes);
-    }
-}
-
-#[allow(dead_code)]
-fn empty_body() -> HttpBody {
-    Full::new(Bytes::new())
-        .map_err(|never: Infallible| match never {})
-        .boxed()
-}
-
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use nacelle_core::handler::handler_fn;
-    use nacelle_core::request::NacelleRequest;
+    use nacelle_core::request::{NacelleBody, NacelleRequest};
 
     use super::*;
 
@@ -1333,7 +898,7 @@ mod tests {
 
         assert!(sink.events().iter().any(|event| {
             event.kind == nacelle_core::NacelleTelemetryEventKind::ResponseBodyBytes
-                && event.transport == Some(NacelleTransport::Http)
+                && event.transport == Some(NacelleTransport::new("http"))
                 && event.count == "hello bytes".len() as u64
         }));
         server_task.abort();

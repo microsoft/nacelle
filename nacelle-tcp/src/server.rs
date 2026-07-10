@@ -8,7 +8,6 @@ use crate::connection::{
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::Protocol;
-use crate::telemetry::NacelleTcpTelemetry;
 use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
@@ -31,7 +30,6 @@ pub struct NacelleServer<Req, P, H = ()> {
     handler: H,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
@@ -51,7 +49,6 @@ where
             handler: self.handler.clone(),
             config: self.config.clone(),
             telemetry: self.telemetry.clone(),
-            tcp_telemetry: self.tcp_telemetry.clone(),
             runtime_state: self.runtime_state.clone(),
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
@@ -68,7 +65,6 @@ impl<Req> NacelleServer<Req, (), ()> {
             handler: None,
             config: NacelleConfig::default(),
             telemetry: NacelleTelemetry::default(),
-            tcp_telemetry: NacelleTcpTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: StdArc::from("direct"),
@@ -96,10 +92,6 @@ where
 
     pub fn telemetry(&self) -> &NacelleTelemetry {
         &self.telemetry
-    }
-
-    pub fn tcp_telemetry(&self) -> &NacelleTcpTelemetry {
-        &self.tcp_telemetry
     }
 
     pub fn tcp_limits(&self) -> &NacelleTcpLimits {
@@ -130,8 +122,9 @@ where
         self
     }
 
-    pub fn with_tcp_telemetry(mut self, tcp_telemetry: NacelleTcpTelemetry) -> Self {
-        self.tcp_telemetry = tcp_telemetry;
+    pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        self.telemetry = telemetry;
         self
     }
 
@@ -161,7 +154,6 @@ where
             self.handler.clone(),
             self.config.clone(),
             self.telemetry.clone(),
-            self.tcp_telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
             self.attach_connection_extension(NacelleConnectionMeta::tcp(None, None)),
@@ -187,7 +179,6 @@ where
             self.handler.clone(),
             self.config.clone(),
             self.telemetry.clone(),
-            self.tcp_telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
             self.attach_connection_extension(connection),
@@ -206,7 +197,6 @@ where
             self.handler.clone(),
             self.config.clone(),
             self.telemetry.clone(),
-            self.tcp_telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
             self.attach_connection_extension(NacelleConnectionMeta::tcp(None, None)),
@@ -229,7 +219,6 @@ where
             self.handler.clone(),
             self.config.clone(),
             self.telemetry.clone(),
-            self.tcp_telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
             self.attach_connection_extension(connection),
@@ -251,7 +240,6 @@ where
             self.handler.clone(),
             self.config.clone(),
             self.telemetry.clone(),
-            self.tcp_telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
             self.attach_connection_extension(connection),
@@ -265,7 +253,6 @@ pub struct NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H> {
     handler: Option<H>,
     config: NacelleConfig,
     telemetry: NacelleTelemetry,
-    tcp_telemetry: NacelleTcpTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
@@ -285,11 +272,6 @@ impl<Req, ProtocolState, HandlerState, P, H>
 
     pub fn telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
         self.telemetry = telemetry;
-        self
-    }
-
-    pub fn tcp_telemetry(mut self, tcp_telemetry: NacelleTcpTelemetry) -> Self {
-        self.tcp_telemetry = tcp_telemetry;
         self
     }
 
@@ -349,7 +331,6 @@ impl<Req, HandlerState, P, H> NacelleServerBuilder<Req, Missing, HandlerState, P
             handler: self.handler,
             config: self.config,
             telemetry: self.telemetry,
-            tcp_telemetry: self.tcp_telemetry,
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
@@ -371,7 +352,6 @@ impl<Req, ProtocolState, P, H> NacelleServerBuilder<Req, ProtocolState, Missing,
             handler: Some(handler),
             config: self.config,
             telemetry: self.telemetry,
-            tcp_telemetry: self.tcp_telemetry,
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
@@ -401,7 +381,6 @@ where
             handler,
             config: self.config,
             telemetry: self.telemetry,
-            tcp_telemetry: self.tcp_telemetry,
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,

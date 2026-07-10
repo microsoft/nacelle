@@ -9,7 +9,7 @@ Key budgets include:
 - in-flight requests
 - streaming body tasks
 - optional per-peer connections
-- memory reservations
+- memory budget allocations
 - request and response body size
 - core handler timeout
 - TCP read, write, and idle timeouts through `NacelleTcpLimits`
@@ -26,7 +26,7 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Memory reservation limiting is opt-in: the default
+and transport timeouts are bounded by default. Memory allocation budgeting is opt-in: the default
 `max_memory_bytes` is `usize::MAX`, which disables Nacelle memory-budget
 enforcement until you set an explicit byte limit.
 
@@ -53,9 +53,23 @@ total_budget =
 ```
 
 When memory limiting is enabled with `NacelleLimits::with_max_memory_bytes(...)`,
-Nacelle reserves from that budget for connection buffers and buffered or
-streaming request bodies. The limiter accounts for Nacelle-managed reservations,
+Nacelle allocates from that budget for connection buffers and buffered or
+streaming request bodies. The limiter accounts for Nacelle-managed allocations,
 not total process RSS, so keep process or container memory limits in place.
+Request body allocations wait in FIFO order when the budget is full. The default
+wait limit is `NacelleLimits::memory_allocation_timeout == Some(5s)`, and can
+be tuned with `with_memory_allocation_timeout(...)` or disabled with
+`without_memory_allocation_timeout()`. A timed-out waiter returns
+`NacelleError::Timeout("memory_allocation")`.
+
+The memory budget is an accounting guard, not a buffer allocator: it grants a
+`NacelleMemoryAllocation` that tracks bytes the transport or application intends to
+hold elsewhere, and releases those bytes when the guard is dropped.
+Applications can allocate from the same budget through
+`NacelleRuntimeState::memory_budget()`. Use `try_allocate(...)` for immediate
+admission, `allocate(...)` for FIFO waiting, or
+`allocate_with_timeout_and_shutdown(...)` when app work should stop waiting
+during shutdown.
 
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
 

@@ -4,7 +4,11 @@ use crate::error::NacelleError;
 use crate::request::NacelleRequest;
 use crate::response::NacelleResponse;
 
-/// Implemented by types that handle a single request/response cycle.
+/// The app-core boundary for a single request/response cycle.
+///
+/// A handler owns application behavior. Transports and protocols translate
+/// bytes into a [`NacelleRequest`] before the handler runs, then translate the
+/// returned [`NacelleResponse`] back onto the wire.
 ///
 /// For the common case of a plain async function or closure, prefer [`handler_fn`]. It returns a
 /// concrete handler type, so the server can monomorphize the handler call and future instead of

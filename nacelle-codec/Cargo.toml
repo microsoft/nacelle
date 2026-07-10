@@ -1,0 +1,34 @@
+[package]
+name = "nacelle-codec"
+version = "0.2.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Byte-to-message codec primitives for Tokio asynchronous transports."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["codec", "networking", "async", "framing"]
+categories = ["asynchronous", "network-programming"]
+
+[features]
+default = []
+buffer-rotation = []
+
+[dependencies]
+bytes = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+futures-core = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+tokio-util = { workspace = true, features = ["codec"] }
+
+[[bench]]
+name = "framed_comparison"
+harness = false
+
+[lints]
+workspace = true

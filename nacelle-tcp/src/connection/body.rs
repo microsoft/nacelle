@@ -24,7 +24,9 @@ where
         return Ok(NacelleBody::empty());
     }
 
-    let reservation = runtime_state.reserve_memory(body_len)?;
+    let allocation = runtime_state
+        .allocate_memory_with_timeout(body_len, runtime_state.limits().memory_allocation_timeout)
+        .await?;
     let mut body = BytesMut::with_capacity(body_len);
     if !read_buf.is_empty() {
         let take = body_len.min(read_buf.len());
@@ -39,10 +41,7 @@ where
         }
     }
 
-    Ok(
-        NacelleBody::from_single_chunk(body.freeze(), body_len)
-            .with_memory_reservation(reservation),
-    )
+    Ok(NacelleBody::from_single_chunk(body.freeze(), body_len).with_memory_allocation(allocation))
 }
 
 pub(super) async fn pump_request_body<R>(

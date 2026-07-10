@@ -46,7 +46,7 @@ Handlers also receive connection metadata through `NacelleRequest::connection`.
 TCP listeners populate a stable connection id, peer/local socket addresses, and
 TLS metadata when a TLS backend is active. OpenSSL metadata includes negotiated
 protocol, cipher name, and cipher bit counts when available. Unix socket
-listeners populate `transport = NacelleTransport::UnixSocket` and `local_path`.
+listeners populate the `unix_socket` transport label and `local_path`.
 Servers can attach typed per-connection state with
 `connection_extension_factory(...)`; handlers retrieve it with
 `request.connection.extension::<T>()`. Apps built with `serve(protocols, app)`
@@ -94,5 +94,5 @@ TCP request handling is sequential per connection. Pipelined frames can sit
 in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
-handler, and declared streaming body bytes are reserved against the memory
+handler, and declared streaming body bytes are allocated against the memory
 budget until the streaming request finishes.
