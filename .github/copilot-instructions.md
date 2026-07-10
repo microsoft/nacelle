@@ -21,10 +21,13 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 - Add or update focused tests for behavior changes and regressions. Cover feature-gated behavior under the relevant feature combinations.
 - Preserve bounded resource use, backpressure, graceful shutdown, and low-cardinality telemetry.
 - Update `nacelle-codec/README.md` and `docs/reference/nacelle-codec.md` when codec APIs or contracts change. Update the corresponding documentation for other public APIs, features, configuration, operator behavior, compatibility, or performance guidance.
+- `docs/internal/` is intentionally blanket-ignored. Keep documents local and untracked; do not add `.gitignore` exceptions for internal docs.
+- `.github/plans/` is intentionally blanket-ignored. Keep documents local and untracked; do not add `.gitignore` exceptions for plans.
 
 ## Validation
 
 - Run the narrowest relevant test or check first, then broaden validation to match the change's blast radius.
+- Do not make unqualified production-readiness claims. Scope them by audience, environment, workload, and rollback posture, and report correctness, security, performance, operability, compatibility, and documentation evidence separately.
 - For codec changes, start with `cargo test -p nacelle-codec --all-features` and run its benchmark comparison when making performance claims.
 - Follow `.github/instructions/rust.instructions.md` for Rust formatting, linting, and workspace tests.
 - Run `./scripts/validate-all.sh` when changes affect feature combinations, TLS providers, crate integration, or release readiness.
