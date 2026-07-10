@@ -19,6 +19,17 @@
 //!
 //! Additional operational notes live in the repository `docs/` directory.
 
+/// Framing, encoding, decoding, and asynchronous message I/O APIs.
+pub use nacelle_codec as codec;
+/// Transport-neutral request, response, handler, lifecycle, and limit APIs.
+pub use nacelle_core as core;
+/// HTTP transport APIs.
+#[cfg(feature = "http")]
+pub use nacelle_http as http;
+/// TCP and Unix socket transport APIs.
+#[cfg(feature = "tcp")]
+pub use nacelle_tcp as tcp;
+
 pub use nacelle_core::{config, error, handler, lifecycle, limits, request, response, telemetry};
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{connection, protocol, server};
@@ -27,9 +38,9 @@ pub mod app;
 pub mod host;
 #[cfg(feature = "http")]
 pub use nacelle_http::server as http_server;
-#[cfg(feature = "reference_protocol")]
-pub mod reference_protocol;
 pub mod runtime {
+    pub use crate::app::{NacelleApp, NacelleProtocols, serve};
+    pub use crate::host::NacelleHost;
     pub use nacelle_core::runtime::*;
     #[cfg(feature = "tcp")]
     pub use nacelle_tcp::runtime::{
@@ -71,15 +82,12 @@ pub mod runtime {
         serve_unix_with_shutdown_deadline, serve_unix_with_shutdown_timeout,
     };
 }
+pub use app::{NacelleApp, NacelleProtocols, serve};
+pub use host::NacelleHost;
 #[cfg(any(feature = "tls", feature = "openssl"))]
 pub use nacelle_core::tls;
 #[cfg(feature = "tower")]
 pub use nacelle_core::tower;
-#[cfg(feature = "reference_protocol")]
-pub mod util;
-
-pub use app::{NacelleApp, NacelleProtocols, serve};
-pub use host::NacelleHost;
 
 pub mod prelude {
     pub use crate::{
@@ -95,8 +103,6 @@ pub mod prelude {
         DecodedRequest, MessageDecoder, NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions,
         NacelleTlsDetectionOptions, Protocol, TcpRequestMeta, TcpResponseMeta, TcpServer,
     };
-    #[cfg(feature = "reference_protocol")]
-    pub use crate::{FrameRequest, LengthDelimitedProtocol, LengthDelimitedRequestDecoder};
     #[cfg(feature = "http")]
     pub use crate::{
         HttpRequestMeta, HttpResponseMeta, HyperServer, NacelleHttpLimits, NacelleHttpPolicy,
@@ -134,9 +140,4 @@ pub use nacelle_tcp::{
     DecodedRequest, MessageDecoder, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
     NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol,
     TcpServer, serve_connection, serve_stream,
-};
-#[cfg(feature = "reference_protocol")]
-pub use reference_protocol::{
-    FRAME_FLAG_END, FRAME_FLAG_ERROR, FRAME_FLAG_START, FrameRequest, LengthDelimitedProtocol,
-    LengthDelimitedRequestDecoder,
 };

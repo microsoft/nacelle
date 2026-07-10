@@ -5,6 +5,8 @@ members = [
     "nacelle-tcp",
     "nacelle-http",
     "nacelle",
+    "examples/nacelle-examples",
+    "examples/nacelle-reference-protocol",
     "examples/nacelle-stress-common",
     "examples/nacelle-stress-test",
     "examples/nacelle-stress-server",
@@ -25,6 +27,7 @@ nacelle-core = { path = "nacelle-core", version = "0.2.1" }
 nacelle-tcp = { path = "nacelle-tcp", version = "0.2.1" }
 nacelle-http = { path = "nacelle-http", version = "0.2.1" }
 nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.2.1" }
+nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
 
 # External dependencies
 bytes = "1.12.0"

@@ -1,10 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use nacelle::codec::MessageReader;
 use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, MessageDecoder, NacelleInMemoryTelemetrySink,
-    NacelleLimits, NacelleRuntimeState, NacelleTelemetry, NacelleTransport, Protocol,
+    MessageDecoder, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleRuntimeState,
+    NacelleTelemetry, NacelleTransport, Protocol,
 };
-use nacelle_codec::MessageReader;
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use std::hint::black_box;
 use std::net::IpAddr;
 use std::sync::{Arc, Barrier};

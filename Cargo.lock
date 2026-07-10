@@ -770,14 +770,11 @@ name = "nacelle"
 version = "0.2.1"
 dependencies = [
  "bytes",
- "criterion",
- "crossbeam-epoch",
  "http",
  "nacelle-codec",
  "nacelle-core",
  "nacelle-http",
  "nacelle-tcp",
- "proptest",
  "tokio",
 ]
 
@@ -812,6 +809,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nacelle-examples"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "http",
+ "nacelle",
+ "nacelle-reference-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "nacelle-http"
 version = "0.2.1"
 dependencies = [
@@ -829,11 +838,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nacelle-reference-protocol"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "nacelle-codec",
+ "nacelle-core",
+ "nacelle-tcp",
+ "proptest",
+]
+
+[[package]]
 name = "nacelle-stress-common"
 version = "0.2.1"
 dependencies = [
  "bytes",
  "nacelle",
+ "nacelle-reference-protocol",
  "tokio",
 ]
 
@@ -845,6 +866,7 @@ dependencies = [
  "libmimalloc-sys",
  "mimalloc",
  "nacelle",
+ "nacelle-reference-protocol",
  "nacelle-stress-common",
  "opentelemetry",
  "opentelemetry_sdk",

@@ -1,10 +1,9 @@
-use bytes::{BufMut, Bytes, BytesMut};
+//! Example length-delimited protocol used by Nacelle examples and tests.
 
-use crate::MessageDecoder;
-use crate::util::checked_u32_len;
-use nacelle_core::error::NacelleError;
-use nacelle_core::request::{RequestMetadata, TcpRequestMeta};
-use nacelle_tcp::protocol::{DecodedRequest, Protocol};
+use bytes::{BufMut, Bytes, BytesMut};
+use nacelle_codec::MessageDecoder;
+use nacelle_core::{NacelleError, RequestMetadata, TcpRequestMeta, TcpResponseMeta};
+use nacelle_tcp::{DecodedRequest, Protocol};
 
 const HEADER_LEN: usize = 24;
 const FIXED_FRAME_FIELDS_LEN: usize = HEADER_LEN - 4;
@@ -138,11 +137,7 @@ impl Protocol<FrameRequest> for LengthDelimitedProtocol {
         }
     }
 
-    fn apply_tcp_response_meta(
-        &self,
-        context: &mut Self::ResponseContext,
-        meta: &nacelle_core::response::TcpResponseMeta,
-    ) {
+    fn apply_tcp_response_meta(&self, context: &mut Self::ResponseContext, meta: &TcpResponseMeta) {
         if let Some(request_id) = meta.request_id {
             context.request_id = request_id;
         }
@@ -223,7 +218,10 @@ fn encode_frame(
     dst: &mut BytesMut,
 ) -> Result<(), NacelleError> {
     let frame_len = FIXED_FRAME_FIELDS_LEN + body.len();
-    let frame_len = checked_u32_len(frame_len)?;
+    let frame_len = u32::try_from(frame_len).map_err(|_| NacelleError::FrameTooLarge {
+        len: frame_len,
+        max: u32::MAX as usize,
+    })?;
     dst.reserve(HEADER_LEN + body.len());
     dst.put_u32_le(frame_len);
     dst.put_u64_le(request_id);

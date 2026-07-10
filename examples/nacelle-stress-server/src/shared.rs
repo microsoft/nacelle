@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use nacelle::{
-    FrameRequest, Handler, LengthDelimitedProtocol, NacelleConfig, NacelleError, NacelleRequest,
-    NacelleResponse, NacelleRuntimeState, NacelleTcpLimits, TcpServer, handler_fn,
+    Handler, NacelleConfig, NacelleError, NacelleRequest, NacelleResponse, NacelleRuntimeState,
+    NacelleTcpLimits, TcpServer, handler_fn,
 };
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use nacelle_stress_common::STRESS_OPCODE;
 use serde::Deserialize;
 

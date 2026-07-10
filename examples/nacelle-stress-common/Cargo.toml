@@ -11,5 +11,6 @@ publish = false
 
 [dependencies]
 bytes = { workspace = true }
-nacelle = { workspace = true, features = ["reference_protocol"] }
+nacelle = { workspace = true }
+nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net"] }

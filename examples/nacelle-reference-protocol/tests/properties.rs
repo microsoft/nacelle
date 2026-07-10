@@ -1,7 +1,7 @@
-#![cfg(feature = "reference_protocol")]
-
 use bytes::BytesMut;
-use nacelle::{LengthDelimitedProtocol, MessageDecoder, Protocol};
+use nacelle_codec::MessageDecoder;
+use nacelle_reference_protocol::LengthDelimitedProtocol;
+use nacelle_tcp::Protocol;
 use proptest::prelude::*;
 
 proptest! {

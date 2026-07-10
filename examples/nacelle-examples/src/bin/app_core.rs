@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use nacelle::prelude::*;
-use nacelle::reference_protocol::{FrameErrorContext, FrameResponseContext};
+use nacelle_reference_protocol::{
+    FrameErrorContext, FrameRequest, FrameResponseContext, LengthDelimitedProtocol,
+    LengthDelimitedRequestDecoder,
+};
 
 #[derive(Debug)]
 struct AppXCore {

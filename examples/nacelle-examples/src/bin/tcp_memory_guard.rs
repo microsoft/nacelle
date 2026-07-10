@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
 use nacelle::prelude::*;
-use nacelle::{FRAME_FLAG_END, FRAME_FLAG_ERROR};
+use nacelle_reference_protocol::{
+    FRAME_FLAG_END, FRAME_FLAG_ERROR, FrameRequest, LengthDelimitedProtocol,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MEMORY_LIMIT: usize = 64 * 1024;

@@ -1,0 +1,75 @@
+[package]
+name = "nacelle-examples"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Unpublished runnable examples and benchmarks for Nacelle."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+autobins = false
+
+[features]
+default = ["tcp"]
+tcp = ["nacelle/tcp"]
+http = ["nacelle/http", "dep:http"]
+tls-self-signed = ["nacelle/tls-self-signed"]
+otel = ["nacelle/otel"]
+tower = ["nacelle/tower"]
+bench = []
+
+[dependencies]
+bytes = { workspace = true }
+http = { workspace = true, optional = true }
+nacelle = { path = "../../nacelle", version = "0.2.1", default-features = false }
+nacelle-reference-protocol = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "critical_paths"
+harness = false
+required-features = ["bench", "tcp"]
+
+[[bin]]
+name = "echo"
+path = "src/bin/echo.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "app_core"
+path = "src/bin/app_core.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "http_echo"
+path = "src/bin/http_echo.rs"
+required-features = ["http"]
+
+[[bin]]
+name = "memory_guard"
+path = "src/bin/memory_guard.rs"
+required-features = ["http"]
+
+[[bin]]
+name = "tcp_memory_guard"
+path = "src/bin/tcp_memory_guard.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "tls_http_echo"
+path = "src/bin/tls_http_echo.rs"
+required-features = ["http", "tls-self-signed"]
+
+[[bin]]
+name = "tls_echo"
+path = "src/bin/tls_echo.rs"
+required-features = ["tcp", "tls-self-signed"]
+
+[[bin]]
+name = "dual_echo"
+path = "src/bin/dual_echo.rs"
+required-features = ["tcp", "http"]

@@ -1,8 +1,8 @@
 use bytes::BytesMut;
 use nacelle::{
-    FrameRequest, LengthDelimitedProtocol, NacelleError, NacelleRequest, NacelleResponse,
-    NacelleTlsConfig, TcpServer, handler_fn,
+    NacelleError, NacelleRequest, NacelleResponse, NacelleTlsConfig, TcpServer, handler_fn,
 };
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {

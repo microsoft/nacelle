@@ -3,9 +3,10 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use http::StatusCode;
 use nacelle::{
-    FrameRequest, HyperServer, LengthDelimitedProtocol, NacelleError, NacelleHost, NacelleRequest,
-    NacelleResponse, NacelleTelemetry, TcpServer, handler_fn,
+    HyperServer, NacelleError, NacelleHost, NacelleRequest, NacelleResponse, NacelleTelemetry,
+    TcpServer, handler_fn,
 };
+use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 
 #[derive(Debug)]
 struct AppState {

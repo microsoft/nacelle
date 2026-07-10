@@ -1,0 +1,19 @@
+[package]
+name = "nacelle-reference-protocol"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Unpublished reference protocol used by Nacelle examples and tests."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[dependencies]
+bytes = { workspace = true }
+nacelle-codec = { workspace = true }
+nacelle-core = { workspace = true }
+nacelle-tcp = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
