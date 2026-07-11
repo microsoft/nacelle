@@ -266,18 +266,54 @@ where
     H: LocalHttpHandler<F::State> + 'static,
     Observer: NacelleTelemetryObserver,
 {
+    /// Set telemetry for this worker.
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> LocalHyperServer<H, F, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        telemetry.register_runtime_state(self.runtime.runtime_state.clone());
+        LocalHyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: HttpRuntime {
+                telemetry,
+                runtime_state: self.runtime.runtime_state,
+                http_limits: self.runtime.http_limits,
+                http_policy: self.runtime.http_policy,
+                access_log_enabled: self.runtime.access_log_enabled,
+                listener: self.runtime.listener,
+                peer_rate_limits: self.runtime.peer_rate_limits,
+            },
+        }
+    }
+
     /// Install final worker telemetry and runtime state atomically.
-    pub fn with_runtime_context(
-        mut self,
-        telemetry: NacelleTelemetry<Observer>,
+    pub fn with_runtime_context<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
         shared_state: LocalHttpSharedState,
-    ) -> Self {
+    ) -> LocalHyperServer<H, F, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime.telemetry = telemetry;
-        self.runtime.runtime_state = runtime_state;
-        self.runtime.peer_rate_limits = shared_state.peer_rate_limits;
-        self
+        LocalHyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: HttpRuntime {
+                telemetry,
+                runtime_state,
+                http_limits: self.runtime.http_limits,
+                http_policy: self.runtime.http_policy,
+                access_log_enabled: self.runtime.access_log_enabled,
+                listener: self.runtime.listener,
+                peer_rate_limits: shared_state.peer_rate_limits,
+            },
+        }
     }
 
     /// Set worker-local HTTP edge limits.
@@ -516,15 +552,28 @@ where
     }
 
     #[doc(hidden)]
-    pub fn with_runtime_context(
-        mut self,
-        telemetry: NacelleTelemetry<Observer>,
+    pub fn with_runtime_context<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> Self {
+    ) -> HyperServer<H, F, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime.telemetry = telemetry;
-        self.runtime.runtime_state = runtime_state;
-        self
+        HyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: HttpRuntime {
+                telemetry,
+                runtime_state,
+                http_limits: self.runtime.http_limits,
+                http_policy: self.runtime.http_policy,
+                access_log_enabled: self.runtime.access_log_enabled,
+                listener: self.runtime.listener,
+                peer_rate_limits: self.runtime.peer_rate_limits,
+            },
+        }
     }
 
     pub fn with_http_limits(mut self, http_limits: NacelleHttpLimits) -> Self {
