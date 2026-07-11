@@ -120,6 +120,18 @@ where
         self
     }
 
+    #[doc(hidden)]
+    pub fn with_runtime_context(
+        mut self,
+        telemetry: NacelleTelemetry,
+        runtime_state: NacelleRuntimeState,
+    ) -> Self {
+        telemetry.register_runtime_state(runtime_state.clone());
+        self.telemetry = telemetry;
+        self.runtime_state = runtime_state;
+        self
+    }
+
     /// Set the stable listener label recorded in connection metadata.
     pub fn with_listener_label(mut self, listener: impl Into<StdArc<str>>) -> Self {
         self.listener = listener.into();

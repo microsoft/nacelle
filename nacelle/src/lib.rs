@@ -34,9 +34,9 @@ pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
     #[cfg(feature = "tcp")]
-    pub use crate::thread_per_core::run_local_tcp_thread_per_core;
+    pub use crate::thread_per_core::{LocalTcpRuntimeConfig, run_local_tcp_thread_per_core};
     pub use crate::thread_per_core::{
-        RuntimeMode, ThreadPerCoreConfig, Worker, WorkerContext, WorkerSet,
+        RuntimeMode, ThreadPerCoreConfig, ThreadPerCoreLimits, Worker, WorkerContext, WorkerSet,
         bind_reuse_port_listener, run_thread_per_core, run_thread_per_core_with_shutdown,
     };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
