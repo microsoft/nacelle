@@ -232,6 +232,23 @@ pub struct WorkerContext {
     pub shutdown: NacelleShutdownToken,
 }
 
+impl WorkerContext {
+    /// Offload blocking work and resume on this worker before using its result.
+    ///
+    /// The closure and result must be `Send` because they cross to Tokio's
+    /// blocking pool. Awaiting the returned future does not move the caller's
+    /// local task; completion is observed again on the originating `LocalSet`.
+    pub async fn offload_blocking<Work, Output>(&self, work: Work) -> Result<Output, NacelleError>
+    where
+        Work: FnOnce() -> Output + Send + 'static,
+        Output: Send + 'static,
+    {
+        tokio::task::spawn_blocking(work)
+            .await
+            .map_err(NacelleError::from)
+    }
+}
+
 /// Run one current-thread Tokio runtime and `LocalSet` per configured worker.
 ///
 /// The factory runs on the owning worker after optional affinity is applied and
@@ -868,6 +885,22 @@ mod tests {
             })
         })
         .expect("local worker should complete");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn blocking_offload_resumes_on_originating_worker() {
+        let workers = WorkerSet::first(1).expect("one worker should be available");
+        run_thread_per_core(ThreadPerCoreConfig::new(workers), |context| {
+            let worker_thread = thread::current().id();
+            Ok(async move {
+                let blocking_thread = context.offload_blocking(|| thread::current().id()).await?;
+                assert_ne!(blocking_thread, worker_thread);
+                assert_eq!(thread::current().id(), worker_thread);
+                Ok(())
+            })
+        })
+        .expect("blocking offload should complete");
     }
 
     #[cfg(target_os = "linux")]
