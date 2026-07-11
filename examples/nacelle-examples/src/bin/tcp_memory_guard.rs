@@ -59,7 +59,7 @@ async fn main() -> Result<(), NacelleError> {
             Arc::new(server),
             listener,
             token,
-            nacelle::lifecycle::NacelleDrainDeadline::default(),
+            nacelle::core::lifecycle::NacelleDrainDeadline::default(),
         )
         .await
     });

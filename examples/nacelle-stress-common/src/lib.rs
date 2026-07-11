@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use bytes::{Buf, BytesMut};
-use nacelle::NacelleError;
+use nacelle::core::NacelleError;
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpSocket;

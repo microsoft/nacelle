@@ -8,8 +8,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use nacelle::core::pipeline::handler_fn;
-use nacelle::tcp::{TcpHandler, TcpRequestContext, TcpResponse};
-use nacelle::{NacelleError, NacelleRuntimeState, NacelleTcpConfig, NacelleTcpLimits, TcpServer};
+use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState};
+use nacelle::tcp::{
+    NacelleTcpConfig, NacelleTcpLimits, TcpHandler, TcpRequestContext, TcpResponse, TcpServer,
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;
 use serde::Deserialize;
@@ -29,7 +31,7 @@ pub struct ServerConfig {
     pub low_memory: bool,
     pub byte_metrics: bool,
     pub tls_self_signed: bool,
-    pub limits: nacelle::NacelleLimits,
+    pub limits: NacelleLimits,
     pub tcp_limits: NacelleTcpLimits,
 }
 
@@ -49,7 +51,7 @@ impl Default for ServerConfig {
             low_memory: false,
             byte_metrics: true,
             tls_self_signed: false,
-            limits: nacelle::NacelleLimits::default(),
+            limits: NacelleLimits::default(),
             tcp_limits: NacelleTcpLimits::default(),
         }
     }

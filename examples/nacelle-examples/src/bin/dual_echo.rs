@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use http::StatusCode;
+use nacelle::NacelleApp;
 use nacelle::core::pipeline::handler_fn;
+use nacelle::core::{NacelleError, NacelleTelemetry};
 use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
-use nacelle::tcp::{TcpRequestContext, TcpResponse};
-use nacelle::{NacelleApp, NacelleError, NacelleTelemetry, TcpServer};
+use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[derive(Debug)]

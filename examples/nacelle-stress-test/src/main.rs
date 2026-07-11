@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use nacelle::NacelleError;
+use nacelle::core::NacelleError;
 use nacelle_stress_common::{STRESS_OPCODE, make_tcp_socket, read_response, write_request_frame};
 #[cfg(feature = "rustls")]
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};

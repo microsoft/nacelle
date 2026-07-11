@@ -6,11 +6,11 @@ Stable enough for prototype integrations:
 
 - `nacelle::core::pipeline` typed context, responder, and handler contracts
 - `nacelle::tcp` and `nacelle::http` transport-owned request/response contracts
-- `NacelleBody`
-- `NacelleLimits` and `NacelleRuntimeState`
-- `NacelleApp` listener registration and `NacelleApp::run(...)`
+- `nacelle::core::NacelleBody`
+- `nacelle::core::{NacelleLimits, NacelleRuntimeState}`
+- `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)`
 - `nacelle::prelude::*` for common application imports
-- `NacelleTelemetry` and `NacelleTelemetryConfig`
+- `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}`
 - `nacelle::core::NacelleTelemetryObserver` for statically dispatched application telemetry
 
 Experimental:

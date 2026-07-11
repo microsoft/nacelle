@@ -10,8 +10,9 @@ protocol package is an example consumer of its TCP and codec APIs:
 
 ```rust
 use nacelle::core::pipeline::handler_fn;
+use nacelle::core::{NacelleError, NacelleTelemetry};
 use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
-use nacelle::{NacelleApp, NacelleError, NacelleTelemetry};
+use nacelle::NacelleApp;
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 ```
 

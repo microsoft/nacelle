@@ -4,8 +4,8 @@
 //! protocols, [`http`] for HTTP/1, and [`NacelleApp`] to compose listeners with
 //! shared limits, telemetry, and shutdown.
 //!
-//! Production deployments should configure [`NacelleLimits`] explicitly and
-//! attach [`NacelleTelemetry`] to expose low-cardinality lifecycle, request,
+//! Production deployments should configure [`core::NacelleLimits`] explicitly and
+//! attach [`core::NacelleTelemetry`] to expose low-cardinality lifecycle, request,
 //! rejection, timeout, and byte-accounting events.
 //!
 //! Additional operational notes live in the repository `docs/` directory.
@@ -21,15 +21,9 @@ pub use nacelle_http as http;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp as tcp;
 
-pub use nacelle_core::{error, lifecycle, limits, pipeline, request, telemetry};
-#[cfg(feature = "tcp")]
-pub use nacelle_tcp::{connection, protocol, server};
-
-pub mod app;
-pub mod host;
-pub mod thread_per_core;
-#[cfg(feature = "http")]
-pub use nacelle_http::server as http_server;
+mod app;
+mod host;
+mod thread_per_core;
 pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
@@ -59,34 +53,7 @@ pub mod advanced {
     }
 }
 pub use app::NacelleApp;
-#[cfg(any(feature = "tls", feature = "openssl"))]
-pub use nacelle_core::tls;
 pub mod prelude {
-    pub use crate::{NacelleApp, NacelleBody, NacelleError};
+    pub use crate::NacelleApp;
+    pub use nacelle_core::{NacelleBody, NacelleError};
 }
-
-#[cfg(feature = "tls-self-signed")]
-pub use nacelle_core::NacelleGeneratedTlsConfig;
-#[cfg(feature = "openssl")]
-pub use nacelle_core::NacelleOpenSslConfig;
-#[cfg(feature = "rustls")]
-pub use nacelle_core::NacelleTlsConfig;
-#[cfg(any(feature = "tls", feature = "openssl"))]
-pub use nacelle_core::NacelleTlsProvider;
-pub use nacelle_core::{
-    BoxError, NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleError,
-    NacelleInMemoryObserver, NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget,
-    NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleRuntimeState, NacelleShutdown,
-    NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent,
-    NacelleTelemetryEventKind, NacelleTransport, TrackedPermit,
-};
-#[cfg(feature = "http")]
-pub use nacelle_http::{HyperServer, NacelleHttpLimits, NacelleHttpPolicy};
-#[cfg(all(feature = "tcp", unix))]
-pub use nacelle_tcp::NacelleUnixSocketOptions;
-#[cfg(feature = "tcp")]
-pub use nacelle_tcp::{
-    DecodedRequest, MessageDecoder, NacelleTcpBindOptions, NacelleTcpConfig, NacelleTcpKeepalive,
-    NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol, TcpRequestBodyMode,
-    TcpServer, TcpServerBuilder, serve_connection, serve_stream,
-};

@@ -5,8 +5,8 @@ certificate immediately. It implies the `rustls` provider.
 
 ```rust
 use nacelle::core::pipeline::handler_fn;
-use nacelle::tcp::{TcpRequestContext, TcpResponse};
-use nacelle::{NacelleTlsConfig, TcpServer};
+use nacelle::core::{NacelleError, NacelleTlsConfig};
+use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 let generated = NacelleTlsConfig::self_signed(["localhost", "127.0.0.1"])?;
@@ -25,7 +25,7 @@ let server = TcpServer::<LengthDelimitedProtocol>::builder()
 server
     .serve_tcp_tls("127.0.0.1:8443".parse()?, generated.tls_config)
     .await?;
-# Ok::<(), nacelle::NacelleError>(())
+# Ok::<(), NacelleError>(())
 ```
 
 Self-signed certificates are for local and automated test flows. Public edge
