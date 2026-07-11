@@ -2,7 +2,7 @@ use bytes::BytesMut;
 use nacelle::{
     NacelleError, NacelleRequest, NacelleResponse, NacelleTlsConfig, TcpServer, handler_fn,
 };
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
@@ -13,7 +13,7 @@ async fn main() -> Result<(), NacelleError> {
         .map_err(NacelleError::protocol)?;
 
     let generated = NacelleTlsConfig::self_signed(["localhost", "127.0.0.1"])?;
-    let server = TcpServer::<FrameRequest, ()>::builder()
+    let server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .handler(handler_fn(|mut request: NacelleRequest| async move {
             let opcode = request.tcp_opcode().unwrap_or_default();

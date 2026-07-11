@@ -22,13 +22,12 @@ use super::common::{
 ///
 /// The socket path is passed directly to Tokio. Existing socket files are not
 /// removed automatically.
-pub async fn serve_unix<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -36,14 +35,13 @@ where
 }
 
 /// Listen on a Unix domain socket until shutdown is requested.
-pub async fn serve_unix_with_shutdown<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_shutdown<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_unix_with_shutdown_timeout(server, path, shutdown, Duration::from_secs(30)).await
@@ -51,15 +49,14 @@ where
 
 /// Listen on a Unix domain socket until shutdown is requested, then drain or
 /// abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_shutdown_timeout<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_shutdown_timeout<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_unix_with_shutdown_deadline(
@@ -72,14 +69,13 @@ where
 }
 
 /// Listen on a Unix domain socket with explicit socket-file lifecycle options.
-pub async fn serve_unix_with_options<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_options<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -88,15 +84,14 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options until
 /// shutdown is requested.
-pub async fn serve_unix_with_options_and_shutdown<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_options_and_shutdown<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_timeout(
@@ -111,16 +106,15 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options, then drain
 /// or abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_options_and_shutdown_timeout<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_options_and_shutdown_timeout<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -134,15 +128,14 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -156,16 +149,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_options_and_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_with_options_and_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let path = path.as_ref();
@@ -183,16 +175,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_listener_with_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_unix_listener_with_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let mut connections = tokio::task::JoinSet::new();

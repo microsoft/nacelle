@@ -28,7 +28,7 @@ use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_c
 use request::run_request;
 
 /// Drive one TCP framed connection and coalesce completed responses into writes.
-pub async fn serve_connection<Req, P, H, R, W>(
+pub async fn serve_connection<P, H, R, W>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
@@ -38,8 +38,7 @@ pub async fn serve_connection<Req, P, H, R, W>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -60,7 +59,7 @@ where
 
 /// Drive one TCP framed connection with caller-supplied connection metadata.
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_connection_with_connection_meta<Req, P, H, R, W>(
+pub async fn serve_connection_with_connection_meta<P, H, R, W>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
@@ -71,8 +70,7 @@ pub async fn serve_connection_with_connection_meta<Req, P, H, R, W>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -92,7 +90,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, H, R, W>(
+pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<P, H, R, W>(
     reader: R,
     mut writer: W,
     protocol: Arc<P>,
@@ -104,8 +102,7 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, 
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -218,7 +215,7 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object.
-pub async fn serve_stream<Req, P, H, IO>(
+pub async fn serve_stream<P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
@@ -227,8 +224,7 @@ pub async fn serve_stream<Req, P, H, IO>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -246,7 +242,7 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object and caller-supplied metadata.
-pub async fn serve_stream_with_connection_meta<Req, P, H, IO>(
+pub async fn serve_stream_with_connection_meta<P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
@@ -256,8 +252,7 @@ pub async fn serve_stream_with_connection_meta<Req, P, H, IO>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -275,7 +270,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<Req, P, H, IO>(
+pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<P, H, IO>(
     mut io: IO,
     protocol: Arc<P>,
     handler: H,
@@ -286,8 +281,7 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<Req, P, H, I
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -306,7 +300,7 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object.
-pub async fn serve_stream_without_connection_limit<Req, P, H, IO>(
+pub async fn serve_stream_without_connection_limit<P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
@@ -315,8 +309,7 @@ pub async fn serve_stream_without_connection_limit<Req, P, H, IO>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -334,7 +327,7 @@ where
 }
 
 /// Drive one TCP framed connection without taking a connection permit.
-pub async fn serve_stream_without_connection_limit_with_connection_meta<Req, P, H, IO>(
+pub async fn serve_stream_without_connection_limit_with_connection_meta<P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
@@ -344,8 +337,7 @@ pub async fn serve_stream_without_connection_limit_with_connection_meta<Req, P, 
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -364,7 +356,6 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_and_tcp_state<
-    Req,
     P,
     H,
     IO,
@@ -379,8 +370,7 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -398,7 +388,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn serve_stream_inner<Req, P, H, IO>(
+async fn serve_stream_inner<P, H, IO>(
     io: &mut IO,
     protocol: Arc<P>,
     handler: H,
@@ -409,8 +399,7 @@ async fn serve_stream_inner<Req, P, H, IO>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {

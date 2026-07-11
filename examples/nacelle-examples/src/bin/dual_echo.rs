@@ -6,7 +6,7 @@ use nacelle::{
     HyperServer, NacelleError, NacelleHost, NacelleRequest, NacelleResponse, NacelleTelemetry,
     TcpServer, handler_fn,
 };
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[derive(Debug)]
 struct AppState {
@@ -62,7 +62,7 @@ async fn main() -> Result<(), NacelleError> {
         }
     });
 
-    let tcp_server = TcpServer::<FrameRequest, ()>::builder()
+    let tcp_server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .telemetry(telemetry.clone())
         .handler(handler.clone())

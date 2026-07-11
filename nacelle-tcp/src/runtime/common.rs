@@ -61,14 +61,13 @@ pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str 
     }
 }
 
-pub(super) fn record_connection_rejection<Req, P, H>(
-    server: &NacelleServer<Req, P, H>,
+pub(super) fn record_connection_rejection<P, H>(
+    server: &NacelleServer<P, H>,
     transport: NacelleTransport,
     tls: &'static str,
     error: &NacelleError,
 ) where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let context = NacelleMetricsContext::new(
@@ -121,8 +120,8 @@ pub(super) async fn drain_connection_tasks(
 /// handshake where applicable). `tls_label` is used only for rejection
 /// telemetry.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_accept_loop<Req, P, H, Prepare, Serve, Fut>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub(super) async fn run_accept_loop<P, H, Prepare, Serve, Fut>(
+    server: Arc<NacelleServer<P, H>>,
     listener: TcpListener,
     tls_label: &'static str,
     mut shutdown: NacelleShutdownToken,
@@ -131,16 +130,10 @@ pub(super) async fn run_accept_loop<Req, P, H, Prepare, Serve, Fut>(
     mut serve_connection: Serve,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
-    Serve: FnMut(
-        Arc<NacelleServer<Req, P, H>>,
-        TcpStream,
-        NacelleConnectionMeta,
-        TrackedPermit,
-    ) -> Fut,
+    Serve: FnMut(Arc<NacelleServer<P, H>>, TcpStream, NacelleConnectionMeta, TrackedPermit) -> Fut,
     Fut: Future<Output = Result<(), NacelleError>> + Send + 'static,
 {
     let transport = NacelleTransport::new("tcp");

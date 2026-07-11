@@ -114,7 +114,7 @@ async fn required_openssl_rejects_plaintext_before_handler() {
     let addr = listener.local_addr().expect("listener should have addr");
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     let handler_called = Arc::new(AtomicBool::new(false));
-    let server = TcpServer::<PlainRequest, ()>::builder()
+    let server = TcpServer::<PlainProtocol>::builder()
         .protocol(PlainProtocol)
         .handler(handler_fn({
             let handler_called = handler_called.clone();

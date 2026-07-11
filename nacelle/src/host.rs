@@ -82,15 +82,14 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp<Req, P, H>(
+    pub fn enable_tcp<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -123,16 +122,15 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp_with_options<Req, P, H>(
+    pub fn enable_tcp_with_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         tcp_options: NacelleTcpOptions,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -166,16 +164,15 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp_with_bind_options<Req, P, H>(
+    pub fn enable_tcp_with_bind_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -209,15 +206,14 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn enable_unix_socket<Req, P, H>(
+    pub fn enable_unix_socket<P, H>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -252,16 +248,15 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn enable_unix_socket_with_options<Req, P, H>(
+    pub fn enable_unix_socket_with_options<P, H>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -297,16 +292,15 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "rustls"))]
-    pub fn enable_tcp_tls<Req, P, H>(
+    pub fn enable_tcp_tls<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -340,16 +334,15 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl<Req, P, H>(
+    pub fn enable_tcp_openssl<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_openssl_with_options(
@@ -362,17 +355,16 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl_with_options<Req, P, H>(
+    pub fn enable_tcp_openssl_with_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_openssl_with_bind_options(
@@ -385,17 +377,16 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl_with_bind_options<Req, P, H>(
+    pub fn enable_tcp_openssl_with_bind_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -431,16 +422,15 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl<Req, P, H>(
+    pub fn enable_tcp_optional_openssl<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_optional_openssl_with_options(
@@ -454,18 +444,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl_with_options<Req, P, H>(
+    pub fn enable_tcp_optional_openssl_with_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
@@ -479,18 +468,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl_with_bind_options<Req, P, H>(
+    pub fn enable_tcp_optional_openssl_with_bind_options<P, H>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<Req, P, H>,
+        server: nacelle_tcp::TcpServer<P, H>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        Req: Send + 'static,
-        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
+        P: nacelle_tcp::Protocol,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();

@@ -41,7 +41,7 @@ that fixture:
 
 ```rust
 use nacelle::prelude::*;
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
@@ -55,7 +55,7 @@ async fn main() -> Result<(), NacelleError> {
 
     let addr = "127.0.0.1:8080".parse().map_err(NacelleError::protocol)?;
     let protocols = NacelleProtocols::new()
-        .tcp::<FrameRequest, _>("echo", addr, LengthDelimitedProtocol);
+        .tcp("echo", addr, LengthDelimitedProtocol);
 
     NacelleApp::new(handler)
         .with_telemetry(NacelleTelemetry::default())

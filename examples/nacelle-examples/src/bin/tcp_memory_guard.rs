@@ -7,9 +7,7 @@ use bytes::{BufMut, BytesMut};
 use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown};
 use nacelle::prelude::*;
 use nacelle::tcp::{NacelleTcpConfig, TcpServer};
-use nacelle_reference_protocol::{
-    FRAME_FLAG_END, FRAME_FLAG_ERROR, FrameRequest, LengthDelimitedProtocol,
-};
+use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR, LengthDelimitedProtocol};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MEMORY_LIMIT: usize = 64 * 1024;
@@ -38,7 +36,7 @@ async fn main() -> Result<(), NacelleError> {
         .with_read_buffer_capacity(BUFFER_BYTES)
         .with_response_buffer_capacity(BUFFER_BYTES)
         .with_max_frame_len(HELD_BODY_BYTES + 20);
-    let server = TcpServer::<FrameRequest, ()>::builder()
+    let server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .handler(handler_fn(|mut request: NacelleRequest| async move {
             let mut bytes = 0_usize;

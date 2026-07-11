@@ -131,8 +131,8 @@ async fn main() -> Result<(), NacelleError> {
     });
 
     let protocols = NacelleProtocols::new()
-        .tcp::<FrameRequest, _>("appx-v1", v1_addr, AppXProtocol::new("appx-v1"))
-        .tcp::<FrameRequest, _>("appx-v2", v2_addr, AppXProtocol::new("appx-v2"));
+        .tcp("appx-v1", v1_addr, AppXProtocol::new("appx-v1"))
+        .tcp("appx-v2", v2_addr, AppXProtocol::new("appx-v2"));
 
     println!("AppX v1 listening on {v1_addr}");
     println!("AppX v2 listening on {v2_addr}");

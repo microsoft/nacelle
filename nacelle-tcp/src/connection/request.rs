@@ -22,13 +22,13 @@ use super::metrics::{
 use super::response::{encode_response_body, write_error};
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_request<Req, P, H, R>(
+pub(super) async fn run_request<P, H, R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     write_buf: &mut BytesMut,
     protocol: &P,
     handler: &H,
-    decoded: DecodedRequest<Req>,
+    decoded: DecodedRequest<P::Request>,
     error_context: P::ErrorContext,
     config: &NacelleTcpConfig,
     telemetry: &NacelleTelemetry,
@@ -38,8 +38,7 @@ pub(super) async fn run_request<Req, P, H, R>(
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
     R: AsyncRead + Unpin + Send,
 {
@@ -69,7 +68,7 @@ where
             request_started,
             &error,
         );
-        write_error::<Req, P>(
+        write_error::<P>(
             write_buf,
             protocol,
             Some(error_context),
@@ -216,7 +215,7 @@ where
         Ok(response) => {
             let prev_response_len = write_buf.len();
             let encode_started = start_tcp_phase(telemetry);
-            let encode_result = encode_response_body::<Req, P>(
+            let encode_result = encode_response_body::<P>(
                 protocol,
                 response_context,
                 response,
@@ -255,7 +254,7 @@ where
                 request_started,
                 &error,
             );
-            write_error::<Req, P>(
+            write_error::<P>(
                 write_buf,
                 protocol,
                 Some(error_context),

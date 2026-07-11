@@ -7,10 +7,10 @@ certificate immediately. It implies the `rustls` provider.
 use nacelle::{
     NacelleTlsConfig, TcpServer, handler_fn,
 };
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 let generated = NacelleTlsConfig::self_signed(["localhost", "127.0.0.1"])?;
-let server = TcpServer::<FrameRequest, ()>::builder()
+let server = TcpServer::<LengthDelimitedProtocol>::builder()
     .protocol(LengthDelimitedProtocol)
     .handler(handler_fn(|request| async move {
         Ok(nacelle::NacelleResponse::tcp(request.body))

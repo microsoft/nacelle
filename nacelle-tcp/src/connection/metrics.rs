@@ -5,13 +5,12 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTransport};
 
-pub(super) fn tcp_metrics_context<Req, P>(
+pub(super) fn tcp_metrics_context<P>(
     protocol: &P,
     connection: &NacelleConnectionMeta,
 ) -> NacelleMetricsContext
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
 {
     NacelleMetricsContext::new(
         connection.transport,

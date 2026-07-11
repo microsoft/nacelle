@@ -15,7 +15,7 @@ use std::time::Duration;
 #[cfg(feature = "tls-self-signed")]
 use nacelle::NacelleTlsConfig;
 use nacelle::{Handler, NacelleError, NacelleTelemetry, TcpServer};
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::make_tcp_socket;
 #[cfg(feature = "otel")]
 use opentelemetry::global;
@@ -70,7 +70,7 @@ fn make_server_socket(
 
 async fn run_server<H>(
     listener: TcpListener,
-    server: TcpServer<FrameRequest, LengthDelimitedProtocol, H>,
+    server: TcpServer<LengthDelimitedProtocol, H>,
     tls_config: Option<StressTlsConfig>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), NacelleError>
@@ -99,7 +99,7 @@ where
 }
 
 async fn serve_accepted_stream<H>(
-    server: TcpServer<FrameRequest, LengthDelimitedProtocol, H>,
+    server: TcpServer<LengthDelimitedProtocol, H>,
     stream: TcpStream,
     tls_config: Option<StressTlsConfig>,
 ) -> Result<(), NacelleError>
@@ -128,7 +128,7 @@ where
 
 fn spawn_server_thread<H>(
     listener: TcpListener,
-    server: TcpServer<FrameRequest, LengthDelimitedProtocol, H>,
+    server: TcpServer<LengthDelimitedProtocol, H>,
     tls_config: Option<StressTlsConfig>,
     shutdown: watch::Receiver<bool>,
 ) -> thread::JoinHandle<Result<(), NacelleError>>

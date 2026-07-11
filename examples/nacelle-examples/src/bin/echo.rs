@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use nacelle::prelude::*;
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
@@ -10,8 +10,7 @@ async fn main() -> Result<(), NacelleError> {
         .parse()
         .map_err(NacelleError::protocol)?;
 
-    let protocols =
-        NacelleProtocols::new().tcp::<FrameRequest, _>("echo", addr, LengthDelimitedProtocol);
+    let protocols = NacelleProtocols::new().tcp("echo", addr, LengthDelimitedProtocol);
     let app = NacelleApp::new(handler_fn(|mut request: NacelleRequest| async move {
         let opcode = request.tcp_opcode().unwrap_or_default();
         let mut echoed = BytesMut::new();

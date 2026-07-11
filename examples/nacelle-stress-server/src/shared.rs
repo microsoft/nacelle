@@ -11,7 +11,7 @@ use nacelle::{
     Handler, NacelleError, NacelleRequest, NacelleResponse, NacelleRuntimeState, NacelleTcpConfig,
     NacelleTcpLimits, TcpServer, handler_fn,
 };
-use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
+use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;
 use serde::Deserialize;
 
@@ -218,9 +218,9 @@ pub fn configure_allocator(low_memory: bool) {
 
 pub fn build_server(
     config: &ServerConfig,
-) -> Result<TcpServer<FrameRequest, LengthDelimitedProtocol, impl Handler>, NacelleError> {
+) -> Result<TcpServer<LengthDelimitedProtocol, impl Handler>, NacelleError> {
     let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
-    TcpServer::<FrameRequest, ()>::builder()
+    TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .tcp_config(
             NacelleTcpConfig::default()

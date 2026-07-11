@@ -24,7 +24,7 @@ mod listeners;
 pub struct Missing;
 pub struct Present;
 
-pub struct NacelleServer<Req, P, H = ()> {
+pub struct NacelleServer<P, H = ()> {
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
@@ -33,12 +33,11 @@ pub struct NacelleServer<Req, P, H = ()> {
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
     connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
-    _request: PhantomData<fn() -> Req>,
 }
 
-pub type TcpServer<Req, P, H = ()> = NacelleServer<Req, P, H>;
+pub type TcpServer<P, H = ()> = NacelleServer<P, H>;
 
-impl<Req, P, H> Clone for NacelleServer<Req, P, H>
+impl<P, H> Clone for NacelleServer<P, H>
 where
     H: Clone,
 {
@@ -52,13 +51,12 @@ where
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
             connection_extension_factory: self.connection_extension_factory.clone(),
-            _request: PhantomData,
         }
     }
 }
 
-impl<Req> NacelleServer<Req, (), ()> {
-    pub fn builder() -> NacelleServerBuilder<Req, Missing, Missing, (), ()> {
+impl<P> NacelleServer<P, ()> {
+    pub fn builder() -> NacelleServerBuilder<Missing, Missing, P, ()> {
         NacelleServerBuilder {
             protocol: None,
             handler: None,
@@ -70,15 +68,13 @@ impl<Req> NacelleServer<Req, (), ()> {
             connection_extension_factory: None,
             _protocol: PhantomData,
             _handler: PhantomData,
-            _request: PhantomData,
         }
     }
 }
 
-impl<Req, P, H> NacelleServer<Req, P, H>
+impl<P, H> NacelleServer<P, H>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
@@ -247,7 +243,7 @@ where
     }
 }
 
-pub struct NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H> {
+pub struct NacelleServerBuilder<ProtocolState, HandlerState, P, H> {
     protocol: Option<Arc<P>>,
     handler: Option<H>,
     config: NacelleTcpConfig,
@@ -258,12 +254,9 @@ pub struct NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H> {
     connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
     _protocol: PhantomData<ProtocolState>,
     _handler: PhantomData<HandlerState>,
-    _request: PhantomData<fn() -> Req>,
 }
 
-impl<Req, ProtocolState, HandlerState, P, H>
-    NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H>
-{
+impl<ProtocolState, HandlerState, P, H> NacelleServerBuilder<ProtocolState, HandlerState, P, H> {
     pub fn tcp_config(mut self, config: NacelleTcpConfig) -> Self {
         self.config = config;
         self
@@ -320,11 +313,8 @@ impl<Req, ProtocolState, HandlerState, P, H>
     }
 }
 
-impl<Req, HandlerState, P, H> NacelleServerBuilder<Req, Missing, HandlerState, P, H> {
-    pub fn protocol<P2>(
-        self,
-        protocol: P2,
-    ) -> NacelleServerBuilder<Req, Present, HandlerState, P2, H> {
+impl<HandlerState, P, H> NacelleServerBuilder<Missing, HandlerState, P, H> {
+    pub fn protocol<P2>(self, protocol: P2) -> NacelleServerBuilder<Present, HandlerState, P2, H> {
         NacelleServerBuilder {
             protocol: Some(Arc::new(protocol)),
             handler: self.handler,
@@ -336,16 +326,12 @@ impl<Req, HandlerState, P, H> NacelleServerBuilder<Req, Missing, HandlerState, P
             connection_extension_factory: self.connection_extension_factory,
             _protocol: PhantomData,
             _handler: PhantomData,
-            _request: PhantomData,
         }
     }
 }
 
-impl<Req, ProtocolState, P, H> NacelleServerBuilder<Req, ProtocolState, Missing, P, H> {
-    pub fn handler<H2>(
-        self,
-        handler: H2,
-    ) -> NacelleServerBuilder<Req, ProtocolState, Present, P, H2> {
+impl<ProtocolState, P, H> NacelleServerBuilder<ProtocolState, Missing, P, H> {
+    pub fn handler<H2>(self, handler: H2) -> NacelleServerBuilder<ProtocolState, Present, P, H2> {
         NacelleServerBuilder {
             protocol: self.protocol,
             handler: Some(handler),
@@ -357,18 +343,16 @@ impl<Req, ProtocolState, P, H> NacelleServerBuilder<Req, ProtocolState, Missing,
             connection_extension_factory: self.connection_extension_factory,
             _protocol: PhantomData,
             _handler: PhantomData,
-            _request: PhantomData,
         }
     }
 }
 
-impl<Req, P, H> NacelleServerBuilder<Req, Present, Present, P, H>
+impl<P, H> NacelleServerBuilder<Present, Present, P, H>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
-    pub fn build(self) -> Result<NacelleServer<Req, P, H>, NacelleError> {
+    pub fn build(self) -> Result<NacelleServer<P, H>, NacelleError> {
         let protocol = self.protocol.ok_or(NacelleError::MissingProtocol)?;
         let handler = self.handler.expect("handler state guarantees a handler");
 
@@ -384,7 +368,6 @@ where
             tcp_limits: self.tcp_limits,
             listener: self.listener,
             connection_extension_factory: self.connection_extension_factory,
-            _request: PhantomData,
         })
     }
 }

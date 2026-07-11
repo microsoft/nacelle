@@ -48,7 +48,8 @@ listener
   -> response body encode/stream
 ```
 
-TCP and Unix socket listeners use the `nacelle-tcp` `Protocol<Req>` trait to
+TCP and Unix socket listeners use the `nacelle-tcp` `Protocol` trait and its
+associated `Request` type to
 decode request heads and encode response frames. HTTP uses `nacelle-http` with
 Hyper HTTP/1 and maps requests into the same `NacelleRequest` /
 `NacelleResponse` shape.

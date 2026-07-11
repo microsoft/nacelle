@@ -4,7 +4,7 @@ This document describes the `LengthDelimitedProtocol` fixture in the unpublished
 `examples/nacelle-reference-protocol` workspace package. It is used by examples,
 tests, benchmarks, and stress tools, but it is not part of Nacelle's published
 library API. Applications can use it from a repository checkout or implement
-`Protocol<Req>` directly for TCP or Unix domain sockets.
+`Protocol` with an associated `Request` type for TCP or Unix domain sockets.
 
 ## Frame Layout
 

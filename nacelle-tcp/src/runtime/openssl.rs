@@ -16,29 +16,27 @@ use nacelle_core::tls::NacelleOpenSslConfig;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
 
-pub async fn serve_tcp_openssl<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
-pub async fn serve_tcp_openssl_with_shutdown<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_shutdown<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_shutdown_timeout(
@@ -51,16 +49,15 @@ where
     .await
 }
 
-pub async fn serve_tcp_openssl_with_shutdown_timeout<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_shutdown_deadline(
@@ -73,31 +70,29 @@ where
     .await
 }
 
-pub async fn serve_tcp_openssl_with_options<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_options<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_options_and_shutdown(server, addr, tls_config, tcp_options, token).await
 }
 
-pub async fn serve_tcp_openssl_with_options_and_shutdown<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_options_and_shutdown_timeout(
@@ -111,8 +106,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -120,8 +115,7 @@ pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_options_and_shutdown_deadline(
@@ -136,16 +130,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
@@ -160,8 +153,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -169,8 +162,7 @@ pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
@@ -185,8 +177,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -194,8 +186,7 @@ pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<Req, P, H
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -211,16 +202,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     serve_tcp_openssl_listener_with_options_and_shutdown_deadline(
@@ -235,8 +225,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<Req, P, H>(
-    server: Arc<NacelleServer<Req, P, H>>,
+pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<P, H>(
+    server: Arc<NacelleServer<P, H>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -244,8 +234,7 @@ pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<Req, 
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
     let handshake_timeout = tls_config.handshake_timeout();

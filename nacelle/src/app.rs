@@ -171,15 +171,14 @@ impl<H> NacelleProtocols<H>
 where
     H: Handler,
 {
-    pub fn tcp<Req, P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
+    pub fn tcp<P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_with_options(name, addr, protocol, NacelleTcpOptions::default())
     }
 
-    pub fn tcp_with_options<Req, P>(
+    pub fn tcp_with_options<P>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -187,8 +186,7 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_with_bind_options(
             name,
@@ -198,7 +196,7 @@ where
         )
     }
 
-    pub fn tcp_with_bind_options<Req, P>(
+    pub fn tcp_with_bind_options<P>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -206,27 +204,25 @@ where
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<Req, P, H>(protocol, app)?;
+            let server = tcp_server::<P, H>(protocol, app)?;
             host.enable_tcp_with_bind_options(name, addr, bind_options, server);
             Ok(())
         }));
         self
     }
 
-    pub fn tcp_dual_stack<Req, P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
+    pub fn tcp_dual_stack<P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         self.tcp_dual_stack_with_options(name, port, protocol, NacelleTcpOptions::default())
     }
 
-    pub fn tcp_dual_stack_with_options<Req, P>(
+    pub fn tcp_dual_stack_with_options<P>(
         self,
         name: impl Into<String>,
         port: u16,
@@ -234,8 +230,7 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -258,21 +253,20 @@ where
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn unix_socket<Req, P>(
+    pub fn unix_socket<P>(
         self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
         protocol: P,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.unix_socket_with_options(name, path, protocol, NacelleUnixSocketOptions::default())
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn unix_socket_with_options<Req, P>(
+    pub fn unix_socket_with_options<P>(
         mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
@@ -280,13 +274,12 @@ where
         unix_options: NacelleUnixSocketOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
         self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<Req, P, H>(protocol, app)?;
+            let server = tcp_server::<P, H>(protocol, app)?;
             host.enable_unix_socket_with_options(name, path, unix_options, server);
             Ok(())
         }));
@@ -294,7 +287,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl<Req, P>(
+    pub fn tcp_openssl<P>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -302,8 +295,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_openssl_with_options(
             name,
@@ -315,7 +307,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_with_options<Req, P>(
+    pub fn tcp_openssl_with_options<P>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -324,8 +316,7 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_openssl_with_bind_options(
             name,
@@ -337,7 +328,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_with_bind_options<Req, P>(
+    pub fn tcp_openssl_with_bind_options<P>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -346,12 +337,11 @@ where
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<Req, P, H>(protocol, app)?;
+            let server = tcp_server::<P, H>(protocol, app)?;
             host.enable_tcp_openssl_with_bind_options(name, addr, server, tls_config, bind_options);
             Ok(())
         }));
@@ -359,7 +349,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_dual_stack<Req, P>(
+    pub fn tcp_openssl_dual_stack<P>(
         self,
         name: impl Into<String>,
         port: u16,
@@ -367,8 +357,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         self.tcp_openssl_dual_stack_with_options(
             name,
@@ -380,7 +369,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_dual_stack_with_options<Req, P>(
+    pub fn tcp_openssl_dual_stack_with_options<P>(
         self,
         name: impl Into<String>,
         port: u16,
@@ -389,8 +378,7 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -415,7 +403,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl<Req, P>(
+    pub fn tcp_optional_openssl<P>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -423,8 +411,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_optional_openssl_with_options(
             name,
@@ -437,7 +424,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl_with_options<Req, P>(
+    pub fn tcp_optional_openssl_with_options<P>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -447,8 +434,7 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         self.tcp_optional_openssl_with_bind_options(
             name,
@@ -462,7 +448,7 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     #[allow(clippy::too_many_arguments)]
-    pub fn tcp_optional_openssl_with_bind_options<Req, P>(
+    pub fn tcp_optional_openssl_with_bind_options<P>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
@@ -472,12 +458,11 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Send + Sync + 'static,
+        P: Protocol,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<Req, P, H>(protocol, app)?;
+            let server = tcp_server::<P, H>(protocol, app)?;
             host.enable_tcp_optional_openssl_with_bind_options(
                 name,
                 addr,
@@ -492,7 +477,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl_dual_stack<Req, P>(
+    pub fn tcp_optional_openssl_dual_stack<P>(
         self,
         name: impl Into<String>,
         port: u16,
@@ -500,8 +485,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         self.tcp_optional_openssl_dual_stack_with_options(
             name,
@@ -515,7 +499,7 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     #[allow(clippy::too_many_arguments)]
-    pub fn tcp_optional_openssl_dual_stack_with_options<Req, P>(
+    pub fn tcp_optional_openssl_dual_stack_with_options<P>(
         self,
         name: impl Into<String>,
         port: u16,
@@ -525,8 +509,7 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: Send + 'static,
-        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
+        P: Protocol + Clone,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -586,16 +569,12 @@ fn spawn_ctrl_c_shutdown(shutdown: NacelleShutdown) -> tokio::task::JoinHandle<(
 }
 
 #[cfg(feature = "tcp")]
-fn tcp_server<Req, P, H>(
-    protocol: P,
-    app: &NacelleApp<H>,
-) -> Result<TcpServer<Req, P, H>, NacelleError>
+fn tcp_server<P, H>(protocol: P, app: &NacelleApp<H>) -> Result<TcpServer<P, H>, NacelleError>
 where
-    Req: Send + 'static,
-    P: Protocol<Request = Req> + Send + Sync + 'static,
+    P: Protocol,
     H: Handler,
 {
-    let builder = TcpServer::<Req, ()>::builder()
+    let builder = TcpServer::<P>::builder()
         .protocol(protocol)
         .tcp_config(app.tcp_config.clone())
         .telemetry(app.telemetry.clone())
@@ -720,8 +699,11 @@ mod tests {
 
         #[test]
         fn tcp_dual_stack_registers_ipv4_and_ipv6_installers() {
-            let protocols = NacelleProtocols::<TestHandler>::new()
-                .tcp_dual_stack::<TestRequest, _>("gateway", 27017, TestProtocol);
+            let protocols = NacelleProtocols::<TestHandler>::new().tcp_dual_stack(
+                "gateway",
+                27017,
+                TestProtocol,
+            );
 
             assert_eq!(protocols.installers.len(), 2);
         }

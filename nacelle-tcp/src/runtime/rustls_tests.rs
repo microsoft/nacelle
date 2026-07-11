@@ -109,7 +109,7 @@ async fn tcp_tls_self_signed_server_accepts_request() {
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-    let server = TcpServer::<TestRequest, ()>::builder()
+    let server = TcpServer::<TestProtocol>::builder()
         .protocol(TestProtocol)
         .handler(handler_fn(|_request: NacelleRequest| async move {
             Ok(NacelleResponse::tcp_bytes("ok"))
