@@ -180,8 +180,60 @@ enum NacelleBodySource {
         next_index: usize,
     },
     Streaming {
-        receiver: mpsc::Receiver<Result<Bytes, NacelleError>>,
+        receiver: BodyReceiver,
     },
+}
+
+enum BodyReceiver {
+    Public(mpsc::Receiver<Result<Bytes, NacelleError>>),
+    Tracked(mpsc::Receiver<TrackedBodyMessage>),
+}
+
+enum TrackedBodyMessage {
+    Chunk(Result<Bytes, NacelleError>),
+    MemoryAllocation(NacelleMemoryAllocation),
+}
+
+#[doc(hidden)]
+pub struct TrackedBodySender {
+    sender: mpsc::Sender<TrackedBodyMessage>,
+    memory_allocation_sent: bool,
+}
+
+impl TrackedBodySender {
+    pub async fn send(
+        &self,
+        chunk: Result<Bytes, NacelleError>,
+    ) -> Result<(), mpsc::error::SendError<Result<Bytes, NacelleError>>> {
+        self.sender
+            .send(TrackedBodyMessage::Chunk(chunk))
+            .await
+            .map_err(|error| match error.0 {
+                TrackedBodyMessage::Chunk(chunk) => mpsc::error::SendError(chunk),
+                TrackedBodyMessage::MemoryAllocation(_) => {
+                    unreachable!("chunk send returned an allocation message")
+                }
+            })
+    }
+
+    pub async fn send_memory_allocation(
+        &mut self,
+        allocation: NacelleMemoryAllocation,
+    ) -> Result<(), NacelleMemoryAllocation> {
+        if self.memory_allocation_sent {
+            return Err(allocation);
+        }
+        self.sender
+            .send(TrackedBodyMessage::MemoryAllocation(allocation))
+            .await
+            .map(|()| self.memory_allocation_sent = true)
+            .map_err(|error| match error.0 {
+                TrackedBodyMessage::MemoryAllocation(allocation) => allocation,
+                TrackedBodyMessage::Chunk(_) => {
+                    unreachable!("allocation send returned a chunk message")
+                }
+            })
+    }
 }
 
 pub struct NacelleBody {
@@ -197,7 +249,9 @@ impl NacelleBody {
         remaining_bytes: usize,
     ) -> Self {
         Self {
-            source: NacelleBodySource::Streaming { receiver },
+            source: NacelleBodySource::Streaming {
+                receiver: BodyReceiver::Public(receiver),
+            },
             remaining_bytes,
             _memory_allocation: None,
         }
@@ -230,6 +284,27 @@ impl NacelleBody {
     pub fn channel(capacity: usize) -> (mpsc::Sender<Result<Bytes, NacelleError>>, NacelleBody) {
         let (tx, rx) = mpsc::channel(capacity.max(1));
         (tx, NacelleBody::new(rx, 0))
+    }
+
+    #[doc(hidden)]
+    pub fn tracked_channel(
+        capacity: usize,
+        remaining_bytes: usize,
+    ) -> (TrackedBodySender, NacelleBody) {
+        let (sender, receiver) = mpsc::channel(capacity.max(1));
+        (
+            TrackedBodySender {
+                sender,
+                memory_allocation_sent: false,
+            },
+            NacelleBody {
+                source: NacelleBodySource::Streaming {
+                    receiver: BodyReceiver::Tracked(receiver),
+                },
+                remaining_bytes,
+                _memory_allocation: None,
+            },
+        )
     }
 
     #[doc(hidden)]
@@ -290,24 +365,48 @@ impl NacelleBody {
     }
 
     pub async fn next_chunk(&mut self) -> Option<Result<Bytes, NacelleError>> {
-        match &mut self.source {
+        let Self {
+            source,
+            remaining_bytes,
+            _memory_allocation,
+        } = self;
+        match source {
             NacelleBodySource::SingleChunk(slot) => {
                 let chunk = slot.take()?;
-                self.remaining_bytes = 0;
+                *remaining_bytes = 0;
                 Some(Ok(chunk))
             }
             NacelleBodySource::Buffered { chunks, next_index } => {
                 let chunk = chunks.get(*next_index)?.clone();
                 *next_index += 1;
-                self.remaining_bytes = self.remaining_bytes.saturating_sub(chunk.len());
+                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                 Some(Ok(chunk))
             }
-            NacelleBodySource::Streaming { receiver } => match receiver.recv().await {
-                Some(Ok(chunk)) => {
-                    self.remaining_bytes = self.remaining_bytes.saturating_sub(chunk.len());
-                    Some(Ok(chunk))
+            NacelleBodySource::Streaming { receiver } => loop {
+                let message = match receiver {
+                    BodyReceiver::Public(receiver) => {
+                        break match receiver.recv().await {
+                            Some(Ok(chunk)) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                Some(Ok(chunk))
+                            }
+                            other => other,
+                        };
+                    }
+                    BodyReceiver::Tracked(receiver) => receiver.recv().await,
+                };
+                match message {
+                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                        break Some(Ok(chunk));
+                    }
+                    Some(TrackedBodyMessage::Chunk(Err(error))) => break Some(Err(error)),
+                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                        debug_assert!(_memory_allocation.is_none());
+                        *_memory_allocation = Some(allocation);
+                    }
+                    None => break None,
                 }
-                other => other,
             },
         }
     }
@@ -316,13 +415,18 @@ impl NacelleBody {
 impl Stream for NacelleBody {
     type Item = Result<Bytes, NacelleError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match &mut self.source {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let Self {
+            source,
+            remaining_bytes,
+            _memory_allocation,
+        } = self.get_mut();
+        match source {
             NacelleBodySource::SingleChunk(slot) => {
                 let Some(chunk) = slot.take() else {
                     return Poll::Ready(None);
                 };
-                self.remaining_bytes = 0;
+                *remaining_bytes = 0;
                 Poll::Ready(Some(Ok(chunk)))
             }
             NacelleBodySource::Buffered { chunks, next_index } => {
@@ -330,15 +434,39 @@ impl Stream for NacelleBody {
                     return Poll::Ready(None);
                 };
                 *next_index += 1;
-                self.remaining_bytes = self.remaining_bytes.saturating_sub(chunk.len());
+                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                 Poll::Ready(Some(Ok(chunk)))
             }
-            NacelleBodySource::Streaming { receiver } => match receiver.poll_recv(cx) {
-                Poll::Ready(Some(Ok(chunk))) => {
-                    self.remaining_bytes = self.remaining_bytes.saturating_sub(chunk.len());
-                    Poll::Ready(Some(Ok(chunk)))
+            NacelleBodySource::Streaming { receiver } => loop {
+                let message = match receiver {
+                    BodyReceiver::Public(receiver) => {
+                        break match receiver.poll_recv(cx) {
+                            Poll::Ready(Some(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                Poll::Ready(Some(Ok(chunk)))
+                            }
+                            other => other,
+                        };
+                    }
+                    BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
+                        Poll::Ready(message) => message,
+                        Poll::Pending => break Poll::Pending,
+                    },
+                };
+                match message {
+                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                        break Poll::Ready(Some(Ok(chunk)));
+                    }
+                    Some(TrackedBodyMessage::Chunk(Err(error))) => {
+                        break Poll::Ready(Some(Err(error)));
+                    }
+                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                        debug_assert!(_memory_allocation.is_none());
+                        *_memory_allocation = Some(allocation);
+                    }
+                    None => break Poll::Ready(None),
                 }
-                other => other,
             },
         }
     }
@@ -347,6 +475,38 @@ impl Stream for NacelleBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tracked_streaming_body_holds_memory_until_drop() {
+        let runtime_state = crate::limits::NacelleRuntimeState::new(
+            crate::limits::NacelleLimits::default().with_max_memory_bytes(1024),
+        );
+        let allocation = runtime_state
+            .allocate_memory(11)
+            .expect("memory should be available");
+        let (mut sender, mut body) = NacelleBody::tracked_channel(2, 11);
+        sender
+            .send_memory_allocation(allocation)
+            .await
+            .expect("body receiver should be open");
+        sender
+            .send(Ok(Bytes::from_static(b"hello world")))
+            .await
+            .expect("body receiver should be open");
+        drop(sender);
+
+        let chunk = body
+            .next_chunk()
+            .await
+            .expect("body should contain one chunk")
+            .expect("chunk should be successful");
+        assert_eq!(chunk, Bytes::from_static(b"hello world"));
+        assert!(body.next_chunk().await.is_none());
+        assert_eq!(runtime_state.memory_used_bytes(), 11);
+
+        drop(body);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+    }
 
     #[test]
     fn unix_socket_connection_meta_sets_transport_and_path() {
