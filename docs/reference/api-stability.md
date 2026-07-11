@@ -1,6 +1,6 @@
 # API stability
 
-Nacelle is `0.2.x`, so public APIs are still experimental.
+Nacelle is `0.3.x`, so public APIs are still experimental.
 
 Stable enough for prototype integrations:
 
