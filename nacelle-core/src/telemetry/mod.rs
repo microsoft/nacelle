@@ -232,7 +232,7 @@ impl NacelleTelemetry {
     }
 
     pub fn request_duration_metrics_enabled(&self) -> bool {
-        self.config.request_metrics.duration_ms
+        self.metrics_enabled() && self.config.request_metrics.duration_ms
     }
 
     pub fn phase_duration_metrics_enabled(&self) -> bool {
@@ -933,5 +933,26 @@ mod tests {
         assert!(!telemetry.config().request_metrics.byte_counts);
         assert!(telemetry.config().phase_duration_metrics);
         assert!(telemetry.request_duration_metrics_enabled());
+    }
+
+    #[test]
+    fn request_duration_metrics_require_effective_metrics() {
+        let disabled = NacelleTelemetry::default()
+            .with_metrics(false)
+            .with_request_duration_metrics(true);
+        assert!(!disabled.request_duration_metrics_enabled());
+
+        let duration_disabled = NacelleTelemetry::default()
+            .with_metrics(true)
+            .with_request_duration_metrics(false);
+        assert!(!duration_disabled.request_duration_metrics_enabled());
+
+        let enabled = NacelleTelemetry::default()
+            .with_metrics(true)
+            .with_request_duration_metrics(true);
+        assert_eq!(
+            enabled.request_duration_metrics_enabled(),
+            cfg!(feature = "otel")
+        );
     }
 }

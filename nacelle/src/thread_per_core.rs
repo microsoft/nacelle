@@ -276,80 +276,103 @@ where
     Factory: Fn(WorkerContext) -> Result<WorkerFuture, NacelleError> + Clone + Send + 'static,
     WorkerFuture: Future<Output = Result<(), NacelleError>> + 'static,
 {
+    run_thread_per_core_with_spawner(config, shutdown, factory, |worker, task| {
+        thread::Builder::new()
+            .name(format!("nacelle-worker-{}", worker.index))
+            .spawn(task)
+    })
+}
+
+fn run_thread_per_core_with_spawner<Factory, WorkerFuture, Spawn>(
+    config: ThreadPerCoreConfig,
+    shutdown: NacelleShutdown,
+    factory: Factory,
+    mut spawn: Spawn,
+) -> Result<(), NacelleError>
+where
+    Factory: Fn(WorkerContext) -> Result<WorkerFuture, NacelleError> + Clone + Send + 'static,
+    WorkerFuture: Future<Output = Result<(), NacelleError>> + 'static,
+    Spawn: FnMut(
+        Worker,
+        Box<dyn FnOnce() -> Result<(), NacelleError> + Send>,
+    ) -> std::io::Result<thread::JoinHandle<Result<(), NacelleError>>>,
+{
     config.validate()?;
     let (startup_tx, startup_rx) = mpsc::channel();
     let mut threads = Vec::with_capacity(config.workers.len());
+    let mut first_error = None;
 
     for worker in config.workers.workers() {
         let factory = factory.clone();
         let worker_shutdown = shutdown.clone();
         let startup_tx = startup_tx.clone();
         let pin_workers = config.pin_workers;
-        let thread = thread::Builder::new()
-            .name(format!("nacelle-worker-{}", worker.index))
-            .spawn(move || {
-                let setup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if pin_workers
-                        && !core_affinity::set_for_current(core_affinity::CoreId {
-                            id: worker.core_id,
-                        })
-                    {
-                        return Err(NacelleError::ResourceLimit("worker_affinity"));
-                    }
-
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(NacelleError::from)?;
-                    let local = tokio::task::LocalSet::new();
-                    let future = {
-                        let _guard = runtime.enter();
-                        factory(WorkerContext {
-                            worker,
-                            shutdown: worker_shutdown.token(),
-                        })?
-                    };
-                    Ok((runtime, local, future))
-                }));
-
-                let (runtime, local, future) = match setup {
-                    Ok(Ok(setup)) => setup,
-                    Ok(Err(error)) => {
-                        worker_shutdown.shutdown();
-                        let _ = startup_tx.send(Err(error));
-                        return Ok(());
-                    }
-                    Err(_) => {
-                        worker_shutdown.shutdown();
-                        let _ = startup_tx.send(Err(NacelleError::ResourceLimit("worker_panic")));
-                        return Ok(());
-                    }
-                };
-                startup_tx
-                    .send(Ok(worker.index))
-                    .map_err(|_| NacelleError::ConnectionClosed)?;
-                drop(startup_tx);
-
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    runtime.block_on(local.run_until(future))
-                }));
-
-                let result = match result {
-                    Ok(result) => result,
-                    Err(_) => Err(NacelleError::ResourceLimit("worker_panic")),
-                };
-                if result.is_err() {
-                    worker_shutdown.shutdown();
+        let task: Box<dyn FnOnce() -> Result<(), NacelleError> + Send> = Box::new(move || {
+            let setup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if pin_workers
+                    && !core_affinity::set_for_current(core_affinity::CoreId { id: worker.core_id })
+                {
+                    return Err(NacelleError::ResourceLimit("worker_affinity"));
                 }
-                result
-            })
-            .map_err(NacelleError::from)?;
-        threads.push(thread);
+
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(NacelleError::from)?;
+                let local = tokio::task::LocalSet::new();
+                let future = {
+                    let _guard = runtime.enter();
+                    factory(WorkerContext {
+                        worker,
+                        shutdown: worker_shutdown.token(),
+                    })?
+                };
+                Ok((runtime, local, future))
+            }));
+
+            let (runtime, local, future) = match setup {
+                Ok(Ok(setup)) => setup,
+                Ok(Err(error)) => {
+                    worker_shutdown.shutdown();
+                    let _ = startup_tx.send(Err(error));
+                    return Ok(());
+                }
+                Err(_) => {
+                    worker_shutdown.shutdown();
+                    let _ = startup_tx.send(Err(NacelleError::ResourceLimit("worker_panic")));
+                    return Ok(());
+                }
+            };
+            startup_tx
+                .send(Ok(worker.index))
+                .map_err(|_| NacelleError::ConnectionClosed)?;
+            drop(startup_tx);
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.block_on(local.run_until(future))
+            }));
+
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => Err(NacelleError::ResourceLimit("worker_panic")),
+            };
+            if result.is_err() {
+                worker_shutdown.shutdown();
+            }
+            result
+        });
+        match spawn(worker, task) {
+            Ok(thread) => threads.push(thread),
+            Err(error) => {
+                first_error = Some(NacelleError::from(error));
+                shutdown.shutdown();
+                break;
+            }
+        }
     }
     drop(startup_tx);
 
-    let mut first_error = None;
-    for _ in 0..config.workers.len() {
+    for _ in 0..threads.len() {
         match startup_rx.recv() {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
@@ -978,6 +1001,46 @@ mod tests {
             result,
             Err(NacelleError::ResourceLimit("worker_panic"))
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn partial_thread_spawn_failure_shuts_down_and_joins_started_workers() {
+        let available = core_affinity::get_core_ids().expect("logical CPUs should be discoverable");
+        if available.len() < 2 {
+            return;
+        }
+        let workers = WorkerSet::explicit([available[0].id, available[1].id])
+            .expect("two workers should be valid");
+        let shutdown = NacelleShutdown::new();
+        let (joined_tx, joined_rx) = mpsc::channel();
+        let mut spawn_count = 0_usize;
+        let result = run_thread_per_core_with_spawner(
+            ThreadPerCoreConfig::new(workers),
+            shutdown,
+            move |context| {
+                let joined_tx = joined_tx.clone();
+                Ok(async move {
+                    let mut shutdown = context.shutdown;
+                    assert!(shutdown.changed().await);
+                    joined_tx.send(context.worker.index).expect("join observer");
+                    Ok(())
+                })
+            },
+            move |worker, task| {
+                let current = spawn_count;
+                spawn_count += 1;
+                if current == 1 {
+                    return Err(std::io::Error::other("injected spawn failure"));
+                }
+                thread::Builder::new()
+                    .name(format!("test-worker-{}", worker.index))
+                    .spawn(task)
+            },
+        );
+
+        assert!(matches!(result, Err(NacelleError::Io(_))));
+        assert_eq!(joined_rx.recv().expect("started worker should join"), 0);
     }
 
     #[cfg(all(target_os = "linux", feature = "tcp"))]
