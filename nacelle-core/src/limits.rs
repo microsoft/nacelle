@@ -209,10 +209,12 @@ impl NacelleRuntimeState {
         &self.inner.limits
     }
 
+    #[cfg(feature = "otel")]
     pub(crate) fn shares_counters_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    #[cfg(feature = "otel")]
     pub(crate) fn memory_identity(&self) -> usize {
         Arc::as_ptr(&self.inner.memory) as usize
     }

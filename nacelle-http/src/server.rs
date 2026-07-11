@@ -348,6 +348,86 @@ where
         .await;
         Ok(())
     }
+
+    /// Serve one worker-local Rustls HTTP listener until shared shutdown.
+    #[cfg(feature = "rustls")]
+    pub async fn serve_tls_listener(
+        self,
+        listener: tokio::net::TcpListener,
+        tls_config: NacelleTlsConfig,
+        mut shutdown: NacelleShutdownToken,
+        drain_deadline: NacelleDrainDeadline,
+    ) -> Result<(), NacelleError> {
+        let server = Rc::new(self);
+        let local_addr = listener.local_addr().ok();
+        let handshake_timeout = tls_config.handshake_timeout();
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
+                    continue;
+                }
+                accepted = listener.accept() => {
+                    let (stream, peer_addr) = accepted?;
+                    let connection_permit = match server
+                        .runtime
+                        .runtime_state
+                        .acquire_connection_for_peer(peer_addr.ip())
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            server.runtime.telemetry.connection_rejected(
+                                NacelleTransport::new("http"),
+                                connection_rejection_reason(&error),
+                            );
+                            continue;
+                        }
+                    };
+                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+                    let server = server.clone();
+                    connections.spawn_local(async move {
+                        let stream = match tokio::time::timeout(
+                            handshake_timeout,
+                            acceptor.accept(stream),
+                        )
+                        .await
+                        {
+                            Ok(Ok(stream)) => stream,
+                            Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                            Err(_) => {
+                                server.runtime.telemetry.timeout(
+                                    NacelleTransport::new("http"),
+                                    "tls_handshake",
+                                );
+                                return Err(NacelleError::Timeout("tls_handshake"));
+                            }
+                        };
+                        let connection =
+                            connection.with_tls(rustls_tls_meta(stream.get_ref().1));
+                        run_local_http_connection(server, stream, connection, connection_permit)
+                            .await
+                    });
+                }
+            }
+        }
+        server.runtime.telemetry.shutdown_event(
+            NacelleTelemetryEventKind::ListenerStoppedAccepting,
+            NacelleTransport::new("http"),
+        );
+        drain_http_connection_tasks(
+            connections,
+            drain_deadline.get(),
+            server.runtime.telemetry.clone(),
+        )
+        .await;
+        Ok(())
+    }
 }
 
 impl<H, F> Clone for HyperServer<H, F> {
@@ -1258,6 +1338,61 @@ mod tests {
     use nacelle_core::request::NacelleBody;
 
     use super::*;
+
+    #[cfg(feature = "tls-self-signed")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn local_https_self_signed_server_accepts_request() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("listener");
+                let addr = listener.local_addr().expect("address");
+                let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
+                let certificate =
+                    nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+                        .expect("certificate")
+                        .remove(0);
+                let mut roots = rustls::RootCertStore::empty();
+                roots.add(certificate).expect("root");
+                let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(
+                    rustls::ClientConfig::builder()
+                        .with_root_certificates(roots)
+                        .with_no_client_auth(),
+                ));
+                let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+                let handler = nacelle_core::pipeline::local_handler_fn(
+                    |context: crate::LocalHttpRequestContext<()>| async move {
+                        context
+                            .respond(HttpResponse::bytes(StatusCode::OK, "local tls"))
+                            .await
+                    },
+                );
+                let task =
+                    tokio::task::spawn_local(LocalHyperServer::new(handler).serve_tls_listener(
+                        listener,
+                        generated.tls_config,
+                        token,
+                        NacelleDrainDeadline::default(),
+                    ));
+                let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+                let name = rustls::pki_types::ServerName::try_from("localhost").expect("name");
+                let mut client = connector.connect(name, stream).await.expect("handshake");
+                client
+                    .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    .await
+                    .expect("write");
+                let mut response = Vec::new();
+                client.read_to_end(&mut response).await.expect("read");
+                let response = String::from_utf8(response).expect("utf8");
+                assert!(response.starts_with("HTTP/1.1 200 OK"));
+                assert!(response.contains("local tls"));
+                shutdown.shutdown();
+                task.await.expect("join").expect("server");
+            })
+            .await;
+    }
 
     #[test]
     fn local_http_workers_share_peer_rate_limit_state() {
