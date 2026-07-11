@@ -10,15 +10,15 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures_core::Stream;
 use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use hyper::Response;
 use hyper::body::{Frame, Incoming};
-use hyper::{Response, StatusCode};
 
 use crate::limits::NacelleHttpLimits;
+use crate::pipeline::HttpResponse;
 use crate::policy::{NacelleHttpPolicy, apply_security_headers};
 use nacelle_core::error::{BoxError, NacelleError};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
-use nacelle_core::response::{NacelleResponse, NacelleResponseMeta};
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTransport};
 
 pub(crate) type HttpBody = BoxBody<Bytes, BoxError>;
@@ -117,21 +117,16 @@ pub(crate) fn incoming_to_body(
 }
 
 pub(crate) fn response_to_http(
-    response: NacelleResponse,
+    response: HttpResponse,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry,
     policy: &NacelleHttpPolicy,
 ) -> Result<Response<HttpBody>, NacelleError> {
-    let (status, headers) = match response.meta {
-        NacelleResponseMeta::Http(meta) => (meta.status, meta.headers),
-        NacelleResponseMeta::Tcp(_) => (StatusCode::OK, http::HeaderMap::new()),
-    };
-
-    let mut builder = Response::builder().status(status);
+    let mut builder = Response::builder().status(response.status);
     let Some(builder_headers) = builder.headers_mut() else {
         return Err(NacelleError::protocol("failed to build response headers"));
     };
-    *builder_headers = headers;
+    *builder_headers = response.headers;
     apply_security_headers(builder_headers, policy);
     builder
         .body(nacelle_body_to_http(
