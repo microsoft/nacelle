@@ -25,9 +25,11 @@ services. For production services, record:
 
 ## Shutdown
 
-Wire OS signals to `NacelleHost::shutdown_and_wait_timeout`. Pick a drain
-deadline that matches service semantics. Short deadlines protect deploy velocity
-but can abort in-flight work.
+Use `NacelleApp::with_ctrl_c_shutdown()` for the standard signal path, or pass a
+shared `NacelleShutdown` through `NacelleApp::with_shutdown(...)`. Configure the
+drain deadline with `with_shutdown_drain_timeout(...)`. Advanced manual hosts
+can use `nacelle::runtime::NacelleHost::shutdown_and_wait_timeout(...)`. Short
+deadlines protect deploy velocity but can abort in-flight work.
 
 Expected shutdown telemetry:
 

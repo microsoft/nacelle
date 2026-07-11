@@ -25,13 +25,13 @@ Start with these public entry points:
   `nacelle::runtime` for capability-oriented imports.
 - `nacelle::advanced::runtime` for raw executor and transport listener helpers
   when app/host composition is not sufficient.
-- `NacelleApp`, `NacelleProtocols`, and `NacelleApp::serve(...)` for the
-  app-first serving path.
-- `Handler` for the app-core boundary.
+- `NacelleApp` listener registration and `NacelleApp::run(...)` for the
+  app-first serving path across TCP, Unix sockets, HTTP, and TLS.
+- `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
 - `Protocol` for TCP wire-format adapters.
 - `NacelleTelemetry` and `NacelleTelemetryConfig` for metrics and telemetry.
 - `NacelleMemoryBudget`, `NacelleMemoryAllocation`, and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
   memory budget allocations.
-- `TcpServer`, `NacelleHost`, and `nacelle::advanced::runtime` when a service
-  needs lower-level listener control.
+- `TcpServer`, `HyperServer`, `nacelle::runtime::NacelleHost`, and
+  `nacelle::advanced::runtime` when a service needs lower-level listener control.

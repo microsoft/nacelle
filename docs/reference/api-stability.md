@@ -8,8 +8,7 @@ Stable enough for prototype integrations:
 - `nacelle::tcp` and `nacelle::http` transport-owned request/response contracts
 - `NacelleBody`
 - `NacelleLimits` and `NacelleRuntimeState`
-- `NacelleHost`
-- `NacelleApp`, `NacelleProtocols`, `NacelleApp::serve(...)`, and `serve(...)`
+- `NacelleApp` listener registration and `NacelleApp::run(...)`
 - `nacelle::prelude::*` for common application imports
 - `NacelleTelemetry` and `NacelleTelemetryConfig`
 - `NacelleTelemetrySink` for application telemetry bridges
@@ -23,11 +22,11 @@ Experimental:
 - stress tooling config
 - feature combinations involving `otel` and `error-hints`
 
-TCP application code may use the app-first path:
-`NacelleApp::new(handler).serve(protocols).await`. HTTP and mixed-transport
-services use `HyperServer` and `NacelleHost`. Lower-level server APIs remain
-available when a service needs direct listener/runtime control. Telemetry docs
-teach the generic `NacelleTelemetry` API.
+Application code should use the app-first path:
+`NacelleApp::new().tcp(...).http(...).run().await`. The app owns shared runtime
+state, telemetry, shutdown, and listener supervision. Concrete transport
+servers retain transport-specific limits and policy. `nacelle::runtime::NacelleHost`
+and lower-level server APIs remain available for advanced manual supervision.
 
 The former detached `NacelleRequest`/`NacelleResponse` handler and Tower adapter
 were removed. Transport pipelines now remain strongly typed through completion;

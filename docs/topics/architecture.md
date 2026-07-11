@@ -21,15 +21,16 @@ becoming part of the published library API.
 
 Nacelle is organized so application behavior lives behind statically dispatched
 handler boundaries. TCP handlers receive `TcpRequestContext<P>` and complete
-requests with the response type associated with `P`. HTTP still uses its own
-request/response adapter while its typed migration is in progress.
+requests with the response type associated with `P`. HTTP handlers receive
+`HttpRequestContext<State>` and complete through `HttpResponse`.
 
 TCP `Protocol` implementations are adapters: they decode a wire format into
 request metadata and encode responses back into frames. Swapping protocols
 should not require rewriting the app core. The app-first serving path wires
-those pieces together with `NacelleApp`, `NacelleProtocols`, and
-`NacelleApp::serve(...)`; lower-level `TcpServer` and `NacelleHost` APIs remain
-available for services that need direct listener control.
+concrete typed servers together with
+`NacelleApp::new().tcp(...).http(...).run()`. The app owns shared runtime state,
+telemetry, shutdown, and supervision. `nacelle::runtime::NacelleHost` remains
+available for services that need manual listener control.
 
 TLS lives in `nacelle-core` because the configuration and provider metadata are
 shared. `tls` is provider-neutral. `rustls` enables the Rustls provider used by
@@ -52,7 +53,7 @@ listener
 TCP and Unix socket listeners use the `nacelle-tcp` `Protocol` trait and its
 associated request, response, and connection-state types to decode request
 heads and encode bounded response frames. HTTP uses `nacelle-http` with Hyper
-HTTP/1 and retains its current adapter until Phase 4.
+HTTP/1 and a transport-owned typed request/response pipeline.
 
 Connection metadata carries the transport, a stable connection id, listener
 label, peer and local addresses, local Unix socket path, effective peer IP, and
