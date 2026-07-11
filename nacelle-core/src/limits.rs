@@ -209,6 +209,14 @@ impl NacelleRuntimeState {
         &self.inner.limits
     }
 
+    pub(crate) fn shares_counters_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub(crate) fn memory_identity(&self) -> usize {
+        Arc::as_ptr(&self.inner.memory) as usize
+    }
+
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
         self.acquire_connection_tracked()
     }

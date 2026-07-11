@@ -3,8 +3,6 @@ use std::time::Duration;
 use std::sync::Arc;
 #[cfg(feature = "otel")]
 use std::sync::Mutex;
-#[cfg(feature = "otel")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 mod sink;
 pub use sink::{
@@ -687,7 +685,7 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
 #[cfg(feature = "otel")]
 #[derive(Debug)]
 struct OtelMetrics {
-    runtime_state_registered: AtomicBool,
+    runtime_states: Arc<Mutex<Vec<crate::limits::NacelleRuntimeState>>>,
     runtime_state_gauges: Mutex<Vec<opentelemetry::metrics::ObservableGauge<u64>>>,
     connection_active: opentelemetry::metrics::UpDownCounter<i64>,
     connection_accepted: opentelemetry::metrics::Counter<u64>,
@@ -714,7 +712,7 @@ impl OtelMetrics {
     fn new() -> Self {
         let meter = opentelemetry::global::meter("nacelle");
         Self {
-            runtime_state_registered: AtomicBool::new(false),
+            runtime_states: Arc::new(Mutex::new(Vec::new())),
             runtime_state_gauges: Mutex::new(Vec::new()),
             connection_active: meter
                 .i64_up_down_counter("nacelle.connections.in_flight")
@@ -744,38 +742,82 @@ impl OtelMetrics {
     }
 
     fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        if self.runtime_state_registered.swap(true, Ordering::AcqRel) {
+        let mut states = self
+            .runtime_states
+            .lock()
+            .expect("otel runtime state registry poisoned");
+        if states
+            .iter()
+            .any(|registered| registered.shares_counters_with(&state))
+        {
             return;
         }
+        states.push(state);
+        if states.len() != 1 {
+            return;
+        }
+        drop(states);
 
         let meter = opentelemetry::global::meter("nacelle");
-        let connections = state.clone();
-        let requests = state.clone();
-        let streaming = state.clone();
-        let memory = state;
+        let connections = self.runtime_states.clone();
+        let requests = self.runtime_states.clone();
+        let streaming = self.runtime_states.clone();
+        let memory = self.runtime_states.clone();
         let gauges = vec![
             meter
                 .u64_observable_gauge("nacelle.connections.active")
                 .with_callback(move |observer| {
-                    observer.observe(connections.active_connections() as u64, &[])
+                    let total = connections
+                        .lock()
+                        .expect("otel runtime state registry poisoned")
+                        .iter()
+                        .map(crate::limits::NacelleRuntimeState::active_connections)
+                        .sum::<usize>();
+                    observer.observe(total as u64, &[])
                 })
                 .build(),
             meter
                 .u64_observable_gauge("nacelle.requests.active")
                 .with_callback(move |observer| {
-                    observer.observe(requests.active_requests() as u64, &[])
+                    let total = requests
+                        .lock()
+                        .expect("otel runtime state registry poisoned")
+                        .iter()
+                        .map(crate::limits::NacelleRuntimeState::active_requests)
+                        .sum::<usize>();
+                    observer.observe(total as u64, &[])
                 })
                 .build(),
             meter
                 .u64_observable_gauge("nacelle.streaming_tasks.active")
                 .with_callback(move |observer| {
-                    observer.observe(streaming.active_streaming_tasks() as u64, &[])
+                    let total = streaming
+                        .lock()
+                        .expect("otel runtime state registry poisoned")
+                        .iter()
+                        .map(crate::limits::NacelleRuntimeState::active_streaming_tasks)
+                        .sum::<usize>();
+                    observer.observe(total as u64, &[])
                 })
                 .build(),
             meter
                 .u64_observable_gauge("nacelle.memory.used_bytes")
                 .with_callback(move |observer| {
-                    observer.observe(memory.memory_used_bytes() as u64, &[])
+                    let states = memory.lock().expect("otel runtime state registry poisoned");
+                    let mut identities = Vec::with_capacity(states.len());
+                    let total = states
+                        .iter()
+                        .filter_map(|state| {
+                            let identity = state.memory_identity();
+                            if identities.contains(&identity) {
+                                None
+                            } else {
+                                identities.push(identity);
+                                Some(state.memory_used_bytes())
+                            }
+                        })
+                        .sum::<usize>();
+                    observer.observe(total as u64, &[])
                 })
                 .build(),
         ];
@@ -784,11 +826,53 @@ impl OtelMetrics {
             .expect("otel gauge registry poisoned")
             .extend(gauges);
     }
+
+    #[cfg(test)]
+    fn registered_runtime_state_count(&self) -> usize {
+        self.runtime_states
+            .lock()
+            .expect("otel runtime state registry poisoned")
+            .len()
+    }
+
+    #[cfg(test)]
+    fn registered_memory_budget_count(&self) -> usize {
+        let states = self
+            .runtime_states
+            .lock()
+            .expect("otel runtime state registry poisoned");
+        let mut identities = Vec::new();
+        for state in states.iter() {
+            let identity = state.memory_identity();
+            if !identities.contains(&identity) {
+                identities.push(identity);
+            }
+        }
+        identities.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn telemetry_aggregates_worker_states_without_double_counting_memory() {
+        let states = crate::limits::NacelleRuntimeState::partitioned([
+            crate::limits::NacelleLimits::default().with_max_memory_bytes(10),
+            crate::limits::NacelleLimits::default().with_max_memory_bytes(10),
+        ])
+        .expect("partitioned states should build");
+        let telemetry = NacelleTelemetry::default();
+
+        telemetry.register_runtime_state(states[0].clone());
+        telemetry.register_runtime_state(states[1].clone());
+        telemetry.register_runtime_state(states[0].clone());
+
+        assert_eq!(telemetry.metrics.registered_runtime_state_count(), 2);
+        assert_eq!(telemetry.metrics.registered_memory_budget_count(), 1);
+    }
 
     #[test]
     fn in_memory_sink_records_rejection_timeout_and_shutdown_events() {
