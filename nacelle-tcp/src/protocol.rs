@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -6,8 +7,8 @@ use nacelle_codec::MessageDecoder;
 
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, Handler, RequestContext, RequiredCompletion,
-    RequiredResponder, Respond,
+    Completed, ConnectionContext, ConnectionInfo, Handler, NoResponse, RequestContext,
+    RequiredCompletion, RequiredResponder, Respond,
 };
 use nacelle_core::request::NacelleBody;
 use nacelle_core::request::NacelleConnectionMeta;
@@ -16,6 +17,15 @@ use nacelle_core::request::NacelleConnectionMeta;
 pub struct DecodedRequest<Req> {
     pub request: Req,
     pub body_len: usize,
+}
+
+/// One decoded protocol message classified before application dispatch.
+#[derive(Debug)]
+pub enum DecodedMessage<Request, OneWayRequest> {
+    /// Message whose handler must produce a typed response completion.
+    Request(DecodedRequest<Request>),
+    /// Message whose handler cannot produce transport output.
+    OneWay(DecodedRequest<OneWayRequest>),
 }
 
 /// Bounded response-frame encoder backed by runtime-accounted storage.
@@ -156,6 +166,51 @@ where
 {
 }
 
+/// Concrete application context for one one-way TCP message.
+pub type TcpOneWayContext<P> = RequestContext<
+    TcpRequest<<P as Protocol>::OneWayRequest>,
+    NoResponse,
+    (),
+    ConnectionContext<Arc<<P as Protocol>::ConnectionState>>,
+>;
+
+/// Statically dispatched one-way handler for one TCP protocol.
+pub trait TcpOneWayHandler<P>:
+    Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>
+where
+    P: Protocol,
+{
+}
+
+impl<P, H> TcpOneWayHandler<P> for H
+where
+    P: Protocol,
+    H: Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>,
+{
+}
+
+/// Zero-sized handler for protocols that cannot decode one-way messages.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoOneWayHandler<P>(PhantomData<fn() -> P>);
+
+impl<P> NoOneWayHandler<P> {
+    pub(crate) const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<P> Handler<TcpOneWayContext<P>> for NoOneWayHandler<P>
+where
+    P: Protocol<OneWayRequest = Infallible>,
+{
+    type Completion = Completed;
+    type Error = NacelleError;
+
+    async fn call(&self, _context: TcpOneWayContext<P>) -> Result<Self::Completion, Self::Error> {
+        unreachable!("an Infallible one-way request cannot be decoded")
+    }
+}
+
 impl<Response, ResponseContext> Respond for TcpResponder<Response, ResponseContext> {
     type Response = Response;
     type Completion = TcpCompletion<Response, ResponseContext>;
@@ -178,12 +233,16 @@ impl<Response, ResponseContext> Respond for TcpResponder<Response, ResponseConte
 pub trait Protocol: Send + Sync + 'static {
     /// Decoded request head for this wire protocol.
     type Request: Send + 'static;
+    /// Decoded one-way request head, or [`Infallible`] when unsupported.
+    type OneWayRequest: Send + 'static;
     /// Application response accepted by this protocol.
     type Response: Send + 'static;
     /// Concrete state shared by requests on one accepted connection.
     type ConnectionState: Send + Sync + 'static;
-    type Decoder: MessageDecoder<Message = DecodedRequest<Self::Request>, Error = NacelleError>
-        + Send
+    type Decoder: MessageDecoder<
+            Message = DecodedMessage<Self::Request, Self::OneWayRequest>,
+            Error = NacelleError,
+        > + Send
         + 'static;
     type ResponseContext: Send + 'static;
     type ErrorContext: Send + 'static;
@@ -201,10 +260,23 @@ pub trait Protocol: Send + Sync + 'static {
     /// Return total wire bytes for this request, including protocol framing.
     fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize;
 
+    /// Return total wire bytes for one one-way message.
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, body_len: usize) -> usize;
+
     /// Select the body limit after decoding the request head.
     fn max_request_body_bytes(
         &self,
         _request: &Self::Request,
+        _connection: &NacelleConnectionMeta,
+        default_limit: usize,
+    ) -> usize {
+        default_limit
+    }
+
+    /// Select the body limit after decoding a one-way message head.
+    fn max_one_way_body_bytes(
+        &self,
+        _request: &Self::OneWayRequest,
         _connection: &NacelleConnectionMeta,
         default_limit: usize,
     ) -> usize {

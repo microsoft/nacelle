@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use nacelle_codec::MessageDecoder;
 use nacelle_reference_protocol::LengthDelimitedProtocol;
-use nacelle_tcp::Protocol;
+use nacelle_tcp::{DecodedMessage, Protocol};
 use proptest::prelude::*;
 
 proptest! {
@@ -41,6 +41,10 @@ proptest! {
             .decode(&mut buf)
             .expect("complete valid frame should decode")
             .expect("complete frame head should decode");
+        let decoded = match decoded {
+            DecodedMessage::Request(decoded) => decoded,
+            DecodedMessage::OneWay(decoded) => match decoded.request {},
+        };
 
         prop_assert_eq!(decoded.request.request_id, request_id);
         prop_assert_eq!(decoded.request.opcode, opcode);

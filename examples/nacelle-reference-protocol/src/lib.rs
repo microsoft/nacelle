@@ -1,10 +1,12 @@
 //! Example length-delimited protocol used by Nacelle examples and tests.
 
+use std::convert::Infallible;
+
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::pipeline::ConnectionInfo;
 use nacelle_core::{NacelleBody, NacelleError};
-use nacelle_tcp::{DecodedRequest, FrameBuffer, Protocol, TcpResponse};
+use nacelle_tcp::{DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpResponse};
 
 const HEADER_LEN: usize = 24;
 const FIXED_FRAME_FIELDS_LEN: usize = HEADER_LEN - 4;
@@ -57,7 +59,7 @@ impl LengthDelimitedProtocol {
 }
 
 impl MessageDecoder for LengthDelimitedRequestDecoder {
-    type Message = DecodedRequest<FrameRequest>;
+    type Message = DecodedMessage<FrameRequest, Infallible>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -88,7 +90,7 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
         drop(src.split_to(HEADER_LEN));
         let body_len = frame_len - FIXED_FRAME_FIELDS_LEN;
 
-        Ok(Some(DecodedRequest {
+        Ok(Some(DecodedMessage::Request(DecodedRequest {
             request: FrameRequest {
                 request_id,
                 opcode,
@@ -96,12 +98,13 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
                 body_len,
             },
             body_len,
-        }))
+        })))
     }
 }
 
 impl Protocol for LengthDelimitedProtocol {
     type Request = FrameRequest;
+    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = LengthDelimitedRequestDecoder;
@@ -116,6 +119,10 @@ impl Protocol for LengthDelimitedProtocol {
 
     fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
         HEADER_LEN + body_len
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+        match *request {}
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
@@ -252,6 +259,10 @@ mod tests {
             .decode(&mut buf)
             .expect("decode should succeed")
             .expect("head should decode");
+        let decoded = match decoded {
+            DecodedMessage::Request(decoded) => decoded,
+            DecodedMessage::OneWay(decoded) => match decoded.request {},
+        };
         assert_eq!(decoded.request.request_id, 7);
         assert_eq!(decoded.request.opcode, 42);
         assert_eq!(decoded.body_len, 5);

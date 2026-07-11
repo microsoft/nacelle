@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
@@ -46,6 +47,7 @@ impl AppXProtocol {
 
 impl Protocol for AppXProtocol {
     type Request = FrameRequest;
+    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = LengthDelimitedRequestDecoder;
@@ -64,6 +66,10 @@ impl Protocol for AppXProtocol {
 
     fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize {
         self.inner.request_wire_bytes(request, body_len)
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, body_len: usize) -> usize {
+        self.inner.one_way_wire_bytes(request, body_len)
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {

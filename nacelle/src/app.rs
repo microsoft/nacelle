@@ -141,7 +141,7 @@ impl<H> NacelleProtocols<H> {
 impl<H> NacelleProtocols<H> {
     pub fn tcp<P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_with_options(name, addr, protocol, NacelleTcpOptions::default())
@@ -155,7 +155,7 @@ impl<H> NacelleProtocols<H> {
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_with_bind_options(
@@ -174,7 +174,7 @@ impl<H> NacelleProtocols<H> {
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -188,7 +188,7 @@ impl<H> NacelleProtocols<H> {
 
     pub fn tcp_dual_stack<P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         self.tcp_dual_stack_with_options(name, port, protocol, NacelleTcpOptions::default())
@@ -202,7 +202,7 @@ impl<H> NacelleProtocols<H> {
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -233,7 +233,7 @@ impl<H> NacelleProtocols<H> {
         protocol: P,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.unix_socket_with_options(name, path, protocol, NacelleUnixSocketOptions::default())
@@ -248,7 +248,7 @@ impl<H> NacelleProtocols<H> {
         unix_options: NacelleUnixSocketOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -270,7 +270,7 @@ impl<H> NacelleProtocols<H> {
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_openssl_with_options(
@@ -292,7 +292,7 @@ impl<H> NacelleProtocols<H> {
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_openssl_with_bind_options(
@@ -314,7 +314,7 @@ impl<H> NacelleProtocols<H> {
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -335,7 +335,7 @@ impl<H> NacelleProtocols<H> {
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         self.tcp_openssl_dual_stack_with_options(
@@ -357,7 +357,7 @@ impl<H> NacelleProtocols<H> {
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -391,7 +391,7 @@ impl<H> NacelleProtocols<H> {
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_with_options(
@@ -415,7 +415,7 @@ impl<H> NacelleProtocols<H> {
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_with_bind_options(
@@ -440,7 +440,7 @@ impl<H> NacelleProtocols<H> {
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        P: Protocol,
+        P: Protocol<OneWayRequest = std::convert::Infallible>,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -468,7 +468,7 @@ impl<H> NacelleProtocols<H> {
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_dual_stack_with_options(
@@ -493,7 +493,7 @@ impl<H> NacelleProtocols<H> {
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        P: Protocol + Clone,
+        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
         H: TcpHandler<P>,
     {
         let name = name.into();
@@ -560,7 +560,7 @@ struct SharedTcpHandler<P, H> {
 impl<P, H> nacelle_core::pipeline::Handler<nacelle_tcp::TcpRequestContext<P>>
     for SharedTcpHandler<P, H>
 where
-    P: Protocol,
+    P: Protocol<OneWayRequest = std::convert::Infallible>,
     H: TcpHandler<P>,
 {
     type Completion = nacelle_tcp::TcpHandlerCompletion<P>;
@@ -580,7 +580,7 @@ fn tcp_server<P, H>(
     app: &NacelleApp<H>,
 ) -> Result<TcpServer<P, SharedTcpHandler<P, H>>, NacelleError>
 where
-    P: Protocol,
+    P: Protocol<OneWayRequest = std::convert::Infallible>,
     H: TcpHandler<P>,
 {
     let builder = TcpServer::<P>::builder()
@@ -610,10 +610,12 @@ mod tests {
 
     #[cfg(feature = "tcp")]
     mod tcp_tests {
+        use std::convert::Infallible;
+
         use bytes::{Bytes, BytesMut};
         use nacelle_core::pipeline::{ConnectionInfo, Handler as PipelineHandler};
         use nacelle_tcp::{
-            DecodedRequest, FrameBuffer, MessageDecoder, TcpHandlerCompletion, TcpRequestContext,
+            DecodedMessage, FrameBuffer, MessageDecoder, TcpHandlerCompletion, TcpRequestContext,
             TcpResponse,
         };
 
@@ -642,7 +644,7 @@ mod tests {
         struct TestDecoder;
 
         impl MessageDecoder for TestDecoder {
-            type Message = DecodedRequest<TestRequest>;
+            type Message = DecodedMessage<TestRequest, Infallible>;
             type Error = NacelleError;
 
             fn decode(
@@ -655,6 +657,7 @@ mod tests {
 
         impl Protocol for TestProtocol {
             type Request = TestRequest;
+            type OneWayRequest = Infallible;
             type Response = TcpResponse;
             type ConnectionState = ();
             type Decoder = TestDecoder;
@@ -669,6 +672,10 @@ mod tests {
 
             fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
                 body_len
+            }
+
+            fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+                match *request {}
             }
 
             fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}

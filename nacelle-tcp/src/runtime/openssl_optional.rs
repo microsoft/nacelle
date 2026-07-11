@@ -5,7 +5,7 @@ use std::time::Duration;
 use openssl::ssl::Ssl;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions, NacelleTlsDetectionOptions};
-use crate::protocol::{Protocol, TcpHandler};
+use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -19,21 +19,22 @@ use super::common::{
 };
 use super::openssl::openssl_tls_meta;
 
-pub async fn serve_tcp_optional_openssl<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_optional_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
-pub async fn serve_tcp_optional_openssl_with_shutdown<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_shutdown<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -41,6 +42,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown(
         server,
@@ -53,8 +55,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -63,6 +65,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -76,8 +79,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_options<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_options<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -86,6 +89,7 @@ pub async fn serve_tcp_optional_openssl_with_options<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_optional_openssl_with_options_and_shutdown(
@@ -99,8 +103,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -110,6 +114,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -124,8 +129,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -136,6 +141,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_deadline(
         server,
@@ -151,8 +157,8 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -163,6 +169,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H>
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -178,8 +185,8 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -190,6 +197,7 @@ pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
@@ -206,8 +214,8 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -218,6 +226,7 @@ pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadl
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     let mut connections = tokio::task::JoinSet::new();

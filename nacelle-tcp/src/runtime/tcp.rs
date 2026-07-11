@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::{Protocol, TcpHandler};
+use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -11,35 +11,37 @@ use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use super::common::{bind_tcp_listener, run_accept_loop};
 
 /// Listen on `addr` and serve each accepted TCP connection in its own task.
-pub async fn serve_tcp<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_shutdown(server, addr, token).await
 }
 
 /// Listen on `addr` until shutdown is requested.
-pub async fn serve_tcp_with_shutdown<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_shutdown<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_with_shutdown_timeout(server, addr, shutdown, Duration::from_secs(30)).await
 }
 
 /// Listen on `addr` until shutdown is requested, then drain or abort active
 /// connection tasks after `drain_timeout`.
-pub async fn serve_tcp_with_shutdown_timeout<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_shutdown_timeout<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -47,6 +49,7 @@ pub async fn serve_tcp_with_shutdown_timeout<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_with_shutdown_deadline(
         server,
@@ -58,22 +61,23 @@ where
 }
 
 /// Listen on `addr` with explicit TCP socket options.
-pub async fn serve_tcp_with_options<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_options<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_options_and_shutdown(server, addr, tcp_options, token).await
 }
 
 /// Listen on `addr` with explicit TCP socket options until shutdown is requested.
-pub async fn serve_tcp_with_options_and_shutdown<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_options_and_shutdown<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -81,6 +85,7 @@ pub async fn serve_tcp_with_options_and_shutdown<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_with_options_and_shutdown_timeout(
         server,
@@ -94,8 +99,8 @@ where
 
 /// Listen on `addr` with explicit TCP socket options, then drain or abort active
 /// connection tasks after `drain_timeout`.
-pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -104,6 +109,7 @@ pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_with_options_and_shutdown_deadline(
         server,
@@ -116,8 +122,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     bind_options: NacelleTcpBindOptions,
     shutdown: NacelleShutdownToken,
@@ -126,6 +132,7 @@ pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -139,8 +146,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -148,6 +155,7 @@ pub async fn serve_tcp_with_shutdown_deadline<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &NacelleTcpBindOptions::default())?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -161,8 +169,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -171,6 +179,7 @@ pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let bind_options = NacelleTcpBindOptions::from(tcp_options.clone());
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -185,8 +194,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_listener_with_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_listener_with_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     listener: tokio::net::TcpListener,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -194,6 +203,7 @@ pub async fn serve_tcp_listener_with_shutdown_deadline<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     serve_tcp_listener_with_options_and_shutdown_deadline(
         server,
@@ -206,8 +216,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H>(
-    server: Arc<NacelleServer<P, H>>,
+pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H, OH>(
+    server: Arc<NacelleServer<P, H, OH>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -216,6 +226,7 @@ pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     run_accept_loop(
         server,

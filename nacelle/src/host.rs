@@ -82,15 +82,16 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp<P, H>(
+    pub fn enable_tcp<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -122,16 +123,17 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp_with_options<P, H>(
+    pub fn enable_tcp_with_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         tcp_options: NacelleTcpOptions,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -164,16 +166,17 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "tcp")]
-    pub fn enable_tcp_with_bind_options<P, H>(
+    pub fn enable_tcp_with_bind_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -206,15 +209,16 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn enable_unix_socket<P, H>(
+    pub fn enable_unix_socket<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -248,16 +252,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn enable_unix_socket_with_options<P, H>(
+    pub fn enable_unix_socket_with_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -292,16 +297,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "rustls"))]
-    pub fn enable_tcp_tls<P, H>(
+    pub fn enable_tcp_tls<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -334,16 +340,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl<P, H>(
+    pub fn enable_tcp_openssl<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.enable_tcp_openssl_with_options(
             name,
@@ -355,17 +362,18 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl_with_options<P, H>(
+    pub fn enable_tcp_openssl_with_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.enable_tcp_openssl_with_bind_options(
             name,
@@ -377,17 +385,18 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_openssl_with_bind_options<P, H>(
+    pub fn enable_tcp_openssl_with_bind_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -422,16 +431,17 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl<P, H>(
+    pub fn enable_tcp_optional_openssl<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.enable_tcp_optional_openssl_with_options(
             name,
@@ -444,11 +454,11 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl_with_options<P, H>(
+    pub fn enable_tcp_optional_openssl_with_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
         detection_options: NacelleTlsDetectionOptions,
@@ -456,6 +466,7 @@ impl NacelleHost {
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
             name,
@@ -468,11 +479,11 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn enable_tcp_optional_openssl_with_bind_options<P, H>(
+    pub fn enable_tcp_optional_openssl_with_bind_options<P, H, OH>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H>,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
@@ -480,6 +491,7 @@ impl NacelleHost {
     where
         P: nacelle_tcp::Protocol,
         H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();

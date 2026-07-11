@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::options::NacelleTcpBindOptions;
-use crate::protocol::{Protocol, TcpHandler};
+use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -60,14 +60,15 @@ pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str 
     }
 }
 
-pub(super) fn record_connection_rejection<P, H>(
-    server: &NacelleServer<P, H>,
+pub(super) fn record_connection_rejection<P, H, OH>(
+    server: &NacelleServer<P, H, OH>,
     transport: NacelleTransport,
     tls: &'static str,
     error: &NacelleError,
 ) where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
 {
     let context = NacelleMetricsContext::new(
         transport,
@@ -119,8 +120,8 @@ pub(super) async fn drain_connection_tasks(
 /// handshake where applicable). `tls_label` is used only for rejection
 /// telemetry.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_accept_loop<P, H, Prepare, Serve, Fut>(
-    server: Arc<NacelleServer<P, H>>,
+pub(super) async fn run_accept_loop<P, H, OH, Prepare, Serve, Fut>(
+    server: Arc<NacelleServer<P, H, OH>>,
     listener: TcpListener,
     tls_label: &'static str,
     mut shutdown: NacelleShutdownToken,
@@ -131,8 +132,10 @@ pub(super) async fn run_accept_loop<P, H, Prepare, Serve, Fut>(
 where
     P: Protocol,
     H: TcpHandler<P>,
+    OH: TcpOneWayHandler<P>,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
-    Serve: FnMut(Arc<NacelleServer<P, H>>, TcpStream, NacelleConnectionMeta, TrackedPermit) -> Fut,
+    Serve:
+        FnMut(Arc<NacelleServer<P, H, OH>>, TcpStream, NacelleConnectionMeta, TrackedPermit) -> Fut,
     Fut: Future<Output = Result<(), NacelleError>> + Send + 'static,
 {
     let transport = NacelleTransport::new("tcp");

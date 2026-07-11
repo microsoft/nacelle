@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -12,7 +13,11 @@ use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::NacelleTelemetry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse};
+use crate::protocol::{
+    DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpOneWayContext, TcpRequestContext,
+    TcpResponse,
+};
+use crate::server::TcpServer;
 
 use super::serve_stream_with_connection_meta;
 
@@ -35,7 +40,7 @@ struct PhaseProtocol {
 struct PhaseDecoder;
 
 impl MessageDecoder for PhaseDecoder {
-    type Message = DecodedRequest<PhaseRequest>;
+    type Message = DecodedMessage<PhaseRequest, Infallible>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -44,15 +49,16 @@ impl MessageDecoder for PhaseDecoder {
         }
         let body_len = src[0] as usize;
         let _head = src.split_to(1);
-        Ok(Some(DecodedRequest {
+        Ok(Some(DecodedMessage::Request(DecodedRequest {
             request: PhaseRequest,
             body_len,
-        }))
+        })))
     }
 }
 
 impl Protocol for PhaseProtocol {
     type Request = PhaseRequest;
+    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = AuthState;
     type Decoder = PhaseDecoder;
@@ -75,6 +81,10 @@ impl Protocol for PhaseProtocol {
             observed.store(wire_bytes, Ordering::SeqCst);
         }
         wire_bytes
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+        match *request {}
     }
 
     fn max_request_body_bytes(
@@ -559,4 +569,156 @@ async fn body_error_after_streamed_frame_drops_pending_chunk() {
         result,
         Err(NacelleError::InvalidFrame("test body"))
     ));
+}
+
+#[derive(Debug)]
+struct OneWayHead;
+
+struct MixedProtocol;
+
+struct MixedDecoder;
+
+impl MessageDecoder for MixedDecoder {
+    type Message = DecodedMessage<PhaseRequest, OneWayHead>;
+    type Error = NacelleError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
+        if src.len() < 2 {
+            return Ok(None);
+        }
+        let kind = src[0];
+        let body_len = usize::from(src[1]);
+        drop(src.split_to(2));
+        match kind {
+            1 => Ok(Some(DecodedMessage::OneWay(DecodedRequest {
+                request: OneWayHead,
+                body_len,
+            }))),
+            2 => Ok(Some(DecodedMessage::Request(DecodedRequest {
+                request: PhaseRequest,
+                body_len,
+            }))),
+            _ => Err(NacelleError::InvalidFrame("mixed message kind")),
+        }
+    }
+}
+
+impl Protocol for MixedProtocol {
+    type Request = PhaseRequest;
+    type OneWayRequest = OneWayHead;
+    type Response = TcpResponse;
+    type ConnectionState = AtomicUsize;
+    type Decoder = MixedDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        MixedDecoder
+    }
+
+    fn connection_state(&self, _connection: &ConnectionInfo) -> Self::ConnectionState {
+        AtomicUsize::new(0)
+    }
+
+    fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
+        2 + body_len
+    }
+
+    fn one_way_wire_bytes(&self, _request: &Self::OneWayRequest, body_len: usize) -> usize {
+        2 + body_len
+    }
+
+    fn response_context(&self, _req: &Self::Request) -> Self::ResponseContext {}
+
+    fn error_context(&self, _req: &Self::Request) -> Self::ErrorContext {}
+
+    fn apply_response(&self, _context: &mut Self::ResponseContext, _response: &Self::Response) {}
+
+    fn max_response_frame_overhead(&self) -> usize {
+        0
+    }
+
+    fn response_body(&self, response: Self::Response) -> NacelleBody {
+        response.body
+    }
+
+    fn encode_response_chunk(
+        &self,
+        _context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        dst.extend_from_slice(&chunk)
+    }
+
+    fn encode_response_terminal_chunk(
+        &self,
+        context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        self.encode_response_chunk(context, chunk, dst)
+    }
+
+    fn encode_response_end(
+        &self,
+        _context: &mut Self::ResponseContext,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+
+    fn encode_error(
+        &self,
+        _context: Option<&Self::ErrorContext>,
+        _error: &NacelleError,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server = TcpServer::<MixedProtocol>::builder()
+        .protocol(MixedProtocol)
+        .handler(handler_fn(
+            |context: TcpRequestContext<MixedProtocol>| async move {
+                let seen = context.connection().state.load(Ordering::SeqCst);
+                context.respond(TcpResponse::bytes(seen.to_string())).await
+            },
+        ))
+        .one_way_handler(handler_fn(
+            |mut context: TcpOneWayContext<MixedProtocol>| async move {
+                let mut body = Vec::new();
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    body.extend_from_slice(&chunk?);
+                }
+                assert_eq!(body, b"event");
+                context.connection().state.fetch_add(1, Ordering::SeqCst);
+                Ok(context.complete())
+            },
+        ))
+        .build()
+        .expect("typed mixed server should build");
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[1, 5, b'e', b'v', b'e', b'n', b't', 2, 0])
+        .await
+        .expect("messages should write");
+    let mut response = [0_u8; 1];
+    tokio::time::timeout(Duration::from_millis(250), client.read_exact(&mut response))
+        .await
+        .expect("request response should arrive")
+        .expect("response should read");
+    assert_eq!(&response, b"1");
+    client.shutdown().await.expect("client should close");
+
+    let result = tokio::time::timeout(Duration::from_millis(250), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_ok());
 }

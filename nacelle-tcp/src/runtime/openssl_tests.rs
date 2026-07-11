@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -10,7 +11,9 @@ use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::tls::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse};
+use crate::protocol::{
+    DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse,
+};
 use crate::server::TcpServer;
 
 use super::openssl::serve_tcp_openssl_listener_with_shutdown_deadline;
@@ -26,7 +29,7 @@ struct PlainProtocol;
 struct PlainDecoder;
 
 impl MessageDecoder for PlainDecoder {
-    type Message = DecodedRequest<PlainRequest>;
+    type Message = DecodedMessage<PlainRequest, Infallible>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -35,15 +38,16 @@ impl MessageDecoder for PlainDecoder {
         }
         let head_len = src.len();
         src.clear();
-        Ok(Some(DecodedRequest {
+        Ok(Some(DecodedMessage::Request(DecodedRequest {
             request: PlainRequest { head_len },
             body_len: 0,
-        }))
+        })))
     }
 }
 
 impl Protocol for PlainProtocol {
     type Request = PlainRequest;
+    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = PlainDecoder;
@@ -58,6 +62,10 @@ impl Protocol for PlainProtocol {
 
     fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize {
         request.head_len + body_len
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+        match *request {}
     }
 
     fn response_context(&self, _req: &PlainRequest) -> Self::ResponseContext {}
