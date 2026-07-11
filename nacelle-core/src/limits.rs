@@ -353,11 +353,7 @@ impl NacelleRuntimeState {
         if bytes == 0 || self.inner.memory.max_bytes == usize::MAX {
             return Ok(NacelleMemoryAllocation::empty());
         }
-
-        if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
-            return Err(NacelleError::ResourceLimit("memory_bytes"));
-        }
-        self.try_allocate_memory_counter(bytes)
+        self.try_allocate_memory_without_waiters(bytes)
     }
 
     pub async fn allocate_memory_wait(
@@ -390,9 +386,7 @@ impl NacelleRuntimeState {
             return Err(NacelleError::ResourceLimit("memory_bytes"));
         }
 
-        if self.inner.memory.memory_waiters.load(Ordering::Acquire) == 0
-            && let Ok(allocation) = self.try_allocate_memory_counter(bytes)
-        {
+        if let Ok(allocation) = self.try_allocate_memory_without_waiters(bytes) {
             return Ok(allocation);
         }
 
@@ -484,6 +478,29 @@ impl NacelleRuntimeState {
         &self,
         bytes: usize,
     ) -> Result<NacelleMemoryAllocation, NacelleError> {
+        self.try_reserve_memory_counter(bytes)?;
+        Ok(NacelleMemoryAllocation {
+            state: Some(self.clone()),
+            bytes,
+        })
+    }
+
+    fn try_allocate_memory_without_waiters(
+        &self,
+        bytes: usize,
+    ) -> Result<NacelleMemoryAllocation, NacelleError> {
+        if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
+            return Err(NacelleError::ResourceLimit("memory_bytes"));
+        }
+        let allocation = self.try_allocate_memory_counter(bytes)?;
+        if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
+            drop(allocation);
+            return Err(NacelleError::ResourceLimit("memory_bytes"));
+        }
+        Ok(allocation)
+    }
+
+    fn try_reserve_memory_counter(&self, bytes: usize) -> Result<(), NacelleError> {
         let limit = self.inner.memory.max_bytes;
         let mut current = self.inner.memory.memory_used.load(Ordering::Relaxed);
         loop {
@@ -499,12 +516,7 @@ impl NacelleRuntimeState {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => {
-                    return Ok(NacelleMemoryAllocation {
-                        state: Some(self.clone()),
-                        bytes,
-                    });
-                }
+                Ok(_) => return Ok(()),
                 Err(observed) => current = observed,
             }
         }
@@ -515,17 +527,11 @@ impl NacelleRuntimeState {
         memory: &mut MemoryBudgetState,
         to_notify: &mut Vec<Arc<tokio::sync::Notify>>,
     ) {
-        let mut used = self.inner.memory.memory_used.load(Ordering::Acquire);
         while let Some(waiter) = memory.waiters.front() {
-            let Some(next) = used.checked_add(waiter.bytes) else {
-                break;
-            };
-            if next > self.inner.memory.max_bytes {
+            if self.try_reserve_memory_counter(waiter.bytes).is_err() {
                 break;
             }
             let waiter = memory.waiters.pop_front().expect("waiter checked");
-            used = next;
-            self.inner.memory.memory_used.store(used, Ordering::Release);
             self.inner
                 .memory
                 .memory_waiters
@@ -1101,6 +1107,47 @@ mod tests {
                 .allocate_memory(10)
                 .expect("cancelled waiter should leave the budget reusable");
             drop(recovered);
+            assert_eq!(state.memory_used_bytes(), 0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_grants_and_direct_allocations_share_one_atomic_ceiling() {
+        const ROUNDS: usize = 250;
+        const LIMIT: usize = 2;
+
+        for _ in 0..ROUNDS {
+            let state =
+                NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(LIMIT));
+            let held = state.allocate_memory(LIMIT).expect("initial allocation");
+            let waiter_state = state.clone();
+            let waiter = tokio::spawn(async move { waiter_state.allocate_memory_wait(1).await });
+
+            while state.inner.memory.memory_waiters.load(Ordering::Acquire) != 1 {
+                tokio::task::yield_now().await;
+            }
+
+            let direct_state = state.clone();
+            let direct = tokio::task::spawn_blocking(move || {
+                loop {
+                    if let Ok(allocation) = direct_state.allocate_memory(1) {
+                        return allocation;
+                    }
+                    std::thread::yield_now();
+                }
+            });
+            drop(held);
+
+            let waiter_allocation = waiter
+                .await
+                .expect("waiter should join")
+                .expect("waiter should allocate");
+            let direct_allocation = direct.await.expect("direct allocator should join");
+            assert_eq!(waiter_allocation.bytes() + direct_allocation.bytes(), LIMIT);
+            assert_eq!(state.memory_used_bytes(), LIMIT);
+
+            drop(waiter_allocation);
+            drop(direct_allocation);
             assert_eq!(state.memory_used_bytes(), 0);
         }
     }
