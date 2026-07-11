@@ -16,7 +16,6 @@ tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 otel = ["nacelle/otel"]
-tower = ["nacelle/tower"]
 bench = []
 
 [dependencies]

@@ -54,7 +54,6 @@ tokio-openssl = "0.6.5"
 tokio-rustls = "0.26.4"
 tokio-util = "0.7.18"
 toml = "1.1.2"
-tower = "0.5.3"
 tracing = "0.1.44"
 
 [profile.release]

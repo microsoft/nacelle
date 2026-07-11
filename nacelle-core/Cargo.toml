@@ -3,7 +3,7 @@ name = "nacelle-core"
 version = "0.2.1"
 edition = "2024"
 rust-version.workspace = true
-description = "Shared request, response, body, limits, lifecycle, telemetry, and TLS primitives for Nacelle."
+description = "Shared pipeline, body, limits, lifecycle, telemetry, and TLS primitives for Nacelle."
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -14,7 +14,6 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 error-hints = []
-http-types = ["dep:http"]
 tls = []
 rustls = ["tls", "dep:pem", "dep:rustls"]
 openssl = ["tls", "dep:openssl"]
@@ -25,12 +24,10 @@ otel = ["dep:opentelemetry"]
 # downstream crates enabling this feature continue to build. Remove in a future
 # major release.
 tokio-util = []
-tower = ["dep:tower"]
 
 [dependencies]
 bytes = { workspace = true }
 futures-core = { workspace = true }
-http = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
 pem = { workspace = true, optional = true }
@@ -38,5 +35,4 @@ rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
-tower = { workspace = true, features = ["util"], optional = true }
 tracing = { workspace = true }

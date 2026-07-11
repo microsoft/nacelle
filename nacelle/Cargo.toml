@@ -16,7 +16,7 @@ default = ["tcp"]
 tcp = ["dep:nacelle-tcp"]
 buffer-rotation = ["nacelle-tcp?/buffer-rotation"]
 error-hints = ["nacelle-core/error-hints"]
-http = ["dep:http", "dep:nacelle-http", "nacelle-core/http-types"]
+http = ["dep:nacelle-http"]
 tls = ["nacelle-core/tls", "nacelle-http?/tls", "nacelle-tcp?/tls"]
 rustls = ["tls", "nacelle-core/rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
 openssl = ["tls", "nacelle-core/openssl", "nacelle-tcp?/openssl"]
@@ -24,13 +24,11 @@ openssl-vendored = ["openssl", "nacelle-core/openssl-vendored", "nacelle-tcp?/op
 tls-self-signed = ["rustls", "nacelle-core/tls-self-signed", "nacelle-http?/tls-self-signed", "nacelle-tcp?/tls-self-signed"]
 otel = ["nacelle-core/otel", "nacelle-tcp?/otel"]
 tokio-util = ["nacelle-core/tokio-util"]
-tower = ["nacelle-core/tower"]
 bench = []
 fuzzing = []
 
 [dependencies]
 bytes = { workspace = true }
-http = { workspace = true, optional = true }
 nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
 nacelle-http = { workspace = true, optional = true }

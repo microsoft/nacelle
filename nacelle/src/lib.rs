@@ -1,16 +1,7 @@
-//! Streaming application handlers across TCP and HTTP transports.
+//! Typed streaming application pipelines across TCP and HTTP transports.
 //!
-//! Nacelle centers application code around one async handler shape:
-//!
-//! ```rust,no_run
-//! # use nacelle::{NacelleError, NacelleRequest, NacelleResponse};
-//! async fn handle(request: NacelleRequest) -> Result<NacelleResponse, NacelleError> {
-//!     Ok(NacelleResponse::tcp(request.body))
-//! }
-//! ```
-//!
-//! Use [`handler_fn`] for simple services, [`TcpServer`] for custom TCP
-//! protocols, [`HyperServer`] for HTTP/1, and [`NacelleHost`] when one process
+//! Use [`core::pipeline`] for static handler composition, [`tcp`] for typed TCP
+//! protocols, [`http`] for HTTP/1, and [`NacelleHost`] when one process
 //! owns several listeners with shared limits.
 //!
 //! Production deployments should configure [`NacelleLimits`] explicitly and
@@ -30,7 +21,7 @@ pub use nacelle_http as http;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp as tcp;
 
-pub use nacelle_core::{error, handler, lifecycle, limits, request, response, telemetry};
+pub use nacelle_core::{error, lifecycle, limits, pipeline, request, telemetry};
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{connection, protocol, server};
 
@@ -56,14 +47,8 @@ pub use app::{NacelleApp, NacelleProtocols, serve};
 pub use host::NacelleHost;
 #[cfg(any(feature = "tls", feature = "openssl"))]
 pub use nacelle_core::tls;
-#[cfg(feature = "tower")]
-pub use nacelle_core::tower;
-
 pub mod prelude {
-    pub use crate::{
-        Handler, HandlerFn, NacelleApp, NacelleBody, NacelleError, NacelleProtocols,
-        NacelleRequest, NacelleResponse, handler_fn, serve,
-    };
+    pub use crate::{NacelleApp, NacelleBody, NacelleError, NacelleHost, NacelleProtocols, serve};
 }
 
 #[cfg(feature = "tls-self-signed")]
@@ -74,19 +59,13 @@ pub use nacelle_core::NacelleOpenSslConfig;
 pub use nacelle_core::NacelleTlsConfig;
 #[cfg(any(feature = "tls", feature = "openssl"))]
 pub use nacelle_core::NacelleTlsProvider;
-#[cfg(feature = "tower")]
-pub use nacelle_core::handler_from_tower_service;
 pub use nacelle_core::{
-    BoxError, Handler, HandlerFn, NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta,
-    NacelleError, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation,
-    NacelleMemoryBudget, NacelleMetricsContext, NacelleRequest, NacelleRequestMeta,
-    NacelleRequestMetricsConfig, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,
-    NacelleShutdown, NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig,
-    NacelleTelemetryEvent, NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport,
-    TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
+    BoxError, NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleError,
+    NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget,
+    NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleRuntimeState, NacelleShutdown,
+    NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent,
+    NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport, TrackedPermit,
 };
-#[cfg(feature = "http")]
-pub use nacelle_core::{HttpRequestMeta, HttpResponseMeta};
 #[cfg(feature = "http")]
 pub use nacelle_http::{HyperServer, NacelleHttpLimits, NacelleHttpPolicy};
 #[cfg(all(feature = "tcp", unix))]

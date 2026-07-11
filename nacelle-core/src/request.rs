@@ -172,58 +172,6 @@ fn default_listener() -> Arc<str> {
     Arc::from("direct")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TcpRequestMeta {
-    pub request_id: Option<u64>,
-    pub opcode: u64,
-    pub flags: u32,
-    pub body_len: usize,
-}
-
-#[cfg(feature = "http-types")]
-#[derive(Debug, Clone)]
-pub struct HttpRequestMeta {
-    pub method: http::Method,
-    pub uri: http::Uri,
-    pub headers: http::HeaderMap,
-    pub peer_ip: Option<IpAddr>,
-}
-
-#[derive(Debug, Clone)]
-pub enum NacelleRequestMeta {
-    Tcp(TcpRequestMeta),
-    #[cfg(feature = "http-types")]
-    Http(HttpRequestMeta),
-}
-
-pub struct NacelleRequest {
-    pub connection: NacelleConnectionMeta,
-    pub meta: NacelleRequestMeta,
-    pub body: NacelleBody,
-}
-
-impl NacelleRequest {
-    pub fn tcp_meta(&self) -> Option<&TcpRequestMeta> {
-        match &self.meta {
-            NacelleRequestMeta::Tcp(meta) => Some(meta),
-            #[cfg(feature = "http-types")]
-            NacelleRequestMeta::Http(_) => None,
-        }
-    }
-
-    pub fn tcp_opcode(&self) -> Option<u64> {
-        self.tcp_meta().map(|meta| meta.opcode)
-    }
-
-    #[cfg(feature = "http-types")]
-    pub fn http_meta(&self) -> Option<&HttpRequestMeta> {
-        match &self.meta {
-            NacelleRequestMeta::Tcp(_) => None,
-            NacelleRequestMeta::Http(meta) => Some(meta),
-        }
-    }
-}
-
 enum NacelleBodySource {
     // Single-chunk bodies (the common case for small payloads): avoids Vec/Box heap alloc.
     SingleChunk(Option<Bytes>),

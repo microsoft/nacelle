@@ -13,12 +13,9 @@ fn common_capability_namespaces_are_available() {
 fn prelude_contains_common_application_concepts() {
     use nacelle::prelude::*;
 
-    fn accepts_handler<H: Handler>(_handler: H) {}
-
-    accepts_handler(handler_fn(|_request: NacelleRequest| async {
-        Ok(NacelleResponse::empty_tcp())
-    }));
     let _ = NacelleBody::empty();
+    let _: NacelleProtocols<()> = NacelleProtocols::new();
+    let _ = NacelleHost::new();
 }
 
 #[cfg(feature = "tcp")]
