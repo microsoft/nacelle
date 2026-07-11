@@ -14,6 +14,8 @@ cargo test -p nacelle-http --features tls-self-signed --all-targets
 cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings
 cargo test -p nacelle-reference-protocol --all-targets
 cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings
+cargo test -p nacelle-pipeline-prototype --all-targets
+cargo clippy -p nacelle-pipeline-prototype --all-targets -- -D warnings
 cargo check -p nacelle-examples --all-features --all-targets
 cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings
 cargo test -p nacelle --features http,tower,otel --all-targets

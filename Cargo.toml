@@ -6,6 +6,7 @@ members = [
     "nacelle-http",
     "nacelle",
     "examples/nacelle-examples",
+    "examples/nacelle-pipeline-prototype",
     "examples/nacelle-reference-protocol",
     "examples/nacelle-stress-common",
     "examples/nacelle-stress-test",

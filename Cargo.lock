@@ -838,6 +838,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nacelle-pipeline-prototype"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body-util",
+ "tokio",
+]
+
+[[package]]
 name = "nacelle-reference-protocol"
 version = "0.0.0"
 dependencies = [
