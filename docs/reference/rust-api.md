@@ -32,6 +32,9 @@ Start with these public entry points:
   `run_local_tcp_thread_per_core(...)` for experimental Linux-only worker-local
   plain TCP execution. This mode requires explicit selection and does not
   silently fall back to the shared runtime.
+- `ThreadPerCoreLimits::Global` for exact process-wide counters, or
+  `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
+  mode still enforces one shared hard memory ceiling across all workers.
 - `Protocol` for TCP wire-format adapters.
 - `NacelleTelemetry` and `NacelleTelemetryConfig` for metrics and telemetry.
 - `NacelleMemoryBudget`, `NacelleMemoryAllocation`, and

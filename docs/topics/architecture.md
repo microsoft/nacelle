@@ -73,6 +73,11 @@ reuse-port listener, protocol, and `LocalHandler` pipeline. Accepted streams and
 connection tasks remain on the accepting worker. Unsupported platforms fail
 configuration; Nacelle does not silently switch runtime topology.
 
+Thread-per-core resource accounting is selected statically at startup. Global
+mode shares all existing counters. Worker mode partitions finite connection,
+request, streaming, and per-peer capacities in configured worker order while
+retaining a single shared FIFO hard memory ceiling for process safety.
+
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header
 injection. TCP keeps protocol semantics in the protocol implementation and
