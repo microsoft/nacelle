@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::config::NacelleTcpConfig;
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
@@ -133,7 +133,7 @@ async fn phase_limit_rejects_unauthenticated_body_before_reading_body() {
                 async move { Ok(NacelleResponse::empty_tcp()) }
             }
         }),
-        NacelleConfig::default(),
+        NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
         NacelleConnectionMeta::tcp(None, None).with_extension(AuthState {
@@ -183,7 +183,7 @@ async fn authenticated_phase_uses_default_request_body_limit() {
                 }
             }
         }),
-        NacelleConfig::default(),
+        NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
         NacelleConnectionMeta::tcp(None, None).with_extension(AuthState {

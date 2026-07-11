@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use crate::config::NacelleTcpConfig;
 use crate::connection::{
     serve_connection_with_connection_meta_and_tcp_state,
     serve_stream_with_connection_meta_and_tcp_state,
@@ -8,7 +9,6 @@ use crate::connection::{
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::Protocol;
-use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -28,7 +28,7 @@ pub struct Present;
 pub struct NacelleServer<Req, P, H = ()> {
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
@@ -63,7 +63,7 @@ impl<Req> NacelleServer<Req, (), ()> {
         NacelleServerBuilder {
             protocol: None,
             handler: None,
-            config: NacelleConfig::default(),
+            config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
@@ -82,7 +82,7 @@ where
     P: Protocol<Req> + Send + Sync + 'static,
     H: Handler,
 {
-    pub fn config(&self) -> &NacelleConfig {
+    pub fn tcp_config(&self) -> &NacelleTcpConfig {
         &self.config
     }
 
@@ -251,7 +251,7 @@ where
 pub struct NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H> {
     protocol: Option<Arc<P>>,
     handler: Option<H>,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
@@ -265,7 +265,7 @@ pub struct NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H> {
 impl<Req, ProtocolState, HandlerState, P, H>
     NacelleServerBuilder<Req, ProtocolState, HandlerState, P, H>
 {
-    pub fn config(mut self, config: NacelleConfig) -> Self {
+    pub fn tcp_config(mut self, config: NacelleTcpConfig) -> Self {
         self.config = config;
         self
     }

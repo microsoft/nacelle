@@ -4,7 +4,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 
-use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::NacelleShutdown;
@@ -24,12 +23,14 @@ use nacelle_tcp::NacelleTlsDetectionOptions;
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{
-    NacelleTcpBindOptions, NacelleTcpLimits, NacelleTcpOptions, Protocol, TcpServer,
+    NacelleTcpBindOptions, NacelleTcpConfig, NacelleTcpLimits, NacelleTcpOptions, Protocol,
+    TcpServer,
 };
 
 pub struct NacelleApp<H> {
     handler: H,
-    config: NacelleConfig,
+    #[cfg(feature = "tcp")]
+    tcp_config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     #[cfg(feature = "tcp")]
@@ -48,7 +49,8 @@ where
     pub fn new(handler: H) -> Self {
         Self {
             handler,
-            config: NacelleConfig::default(),
+            #[cfg(feature = "tcp")]
+            tcp_config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
             #[cfg(feature = "tcp")]
@@ -60,8 +62,9 @@ where
         }
     }
 
-    pub fn with_config(mut self, config: NacelleConfig) -> Self {
-        self.config = config;
+    #[cfg(feature = "tcp")]
+    pub fn with_tcp_config(mut self, tcp_config: NacelleTcpConfig) -> Self {
+        self.tcp_config = tcp_config;
         self
     }
 
@@ -594,7 +597,7 @@ where
 {
     let builder = TcpServer::<Req, ()>::builder()
         .protocol(protocol)
-        .config(app.config.clone())
+        .tcp_config(app.tcp_config.clone())
         .telemetry(app.telemetry.clone())
         .runtime_state(app.runtime_state.clone());
     let builder = builder.tcp_limits(app.tcp_limits);

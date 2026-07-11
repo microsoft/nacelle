@@ -30,7 +30,7 @@ pub use nacelle_http as http;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp as tcp;
 
-pub use nacelle_core::{config, error, handler, lifecycle, limits, request, response, telemetry};
+pub use nacelle_core::{error, handler, lifecycle, limits, request, response, telemetry};
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{connection, protocol, server};
 
@@ -77,14 +77,14 @@ pub use nacelle_core::NacelleTlsProvider;
 #[cfg(feature = "tower")]
 pub use nacelle_core::handler_from_tower_service;
 pub use nacelle_core::{
-    BoxError, Handler, HandlerFn, NacelleBody, NacelleConfig, NacelleConnectionExtension,
+    BoxError, Handler, HandlerFn, NacelleBody, NacelleConnectionExtension,
     NacelleConnectionExtensionFactory, NacelleConnectionMeta, NacelleConnectionTlsMeta,
     NacelleError, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation,
     NacelleMemoryBudget, NacelleMetricsContext, NacelleRequest, NacelleRequestMeta,
     NacelleRequestMetricsConfig, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,
     NacelleShutdown, NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig,
     NacelleTelemetryEvent, NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport,
-    RequestBodyMode, RequestMetadata, TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
+    RequestMetadata, TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
 };
 #[cfg(feature = "http")]
 pub use nacelle_core::{HttpRequestMeta, HttpResponseMeta};
@@ -95,6 +95,7 @@ pub use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{
     DecodedRequest, MessageDecoder, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
-    NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol,
-    TcpServer, serve_connection, serve_stream,
+    NacelleTcpConfig, NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions,
+    NacelleTlsDetectionOptions, Protocol, TcpRequestBodyMode, TcpServer, serve_connection,
+    serve_stream,
 };

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use nacelle::{
-    Handler, NacelleConfig, NacelleError, NacelleRequest, NacelleResponse, NacelleRuntimeState,
+    Handler, NacelleError, NacelleRequest, NacelleResponse, NacelleRuntimeState, NacelleTcpConfig,
     NacelleTcpLimits, TcpServer, handler_fn,
 };
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
@@ -222,8 +222,8 @@ pub fn build_server(
     let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
     TcpServer::<FrameRequest, ()>::builder()
         .protocol(LengthDelimitedProtocol)
-        .config(
-            NacelleConfig::default()
+        .tcp_config(
+            NacelleTcpConfig::default()
                 .with_read_buffer_capacity(config.read_buffer_capacity)
                 .with_response_buffer_capacity(config.response_buffer_capacity)
                 .with_request_body_chunk_size(config.request_body_chunk_size)

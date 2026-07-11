@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use nacelle_codec::{MessageDecoder, MessageReadError};
 
-use nacelle_core::config::NacelleConfig;
+use crate::config::NacelleTcpConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
@@ -9,7 +9,7 @@ use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
 use super::metrics::{finish_tcp_phase, start_tcp_phase};
 
 pub(super) fn allocate_connection_buffers(
-    config: &NacelleConfig,
+    config: &NacelleTcpConfig,
     runtime_state: &NacelleRuntimeState,
 ) -> Result<NacelleMemoryAllocation, NacelleError> {
     let bytes = config

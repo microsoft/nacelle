@@ -2,8 +2,8 @@ use bytes::{Bytes, BytesMut};
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
 
+use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
-use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
@@ -49,7 +49,7 @@ pub(super) async fn pump_request_body<R>(
     read_buf: &mut BytesMut,
     body_len: usize,
     tx: &mpsc::Sender<Result<Bytes, NacelleError>>,
-    config: &NacelleConfig,
+    config: &NacelleTcpConfig,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<(), NacelleError>
 where

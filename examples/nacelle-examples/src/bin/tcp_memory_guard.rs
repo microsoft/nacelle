@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
-use nacelle::core::{NacelleConfig, NacelleLimits, NacelleRuntimeState, NacelleShutdown};
+use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown};
 use nacelle::prelude::*;
-use nacelle::tcp::TcpServer;
+use nacelle::tcp::{NacelleTcpConfig, TcpServer};
 use nacelle_reference_protocol::{
     FRAME_FLAG_END, FRAME_FLAG_ERROR, FrameRequest, LengthDelimitedProtocol,
 };
@@ -34,7 +34,7 @@ async fn main() -> Result<(), NacelleError> {
             .with_max_request_body_bytes(HELD_BODY_BYTES)
             .with_memory_allocation_timeout(Duration::from_millis(100)),
     );
-    let config = NacelleConfig::default()
+    let config = NacelleTcpConfig::default()
         .with_read_buffer_capacity(BUFFER_BYTES)
         .with_response_buffer_capacity(BUFFER_BYTES)
         .with_max_frame_len(HELD_BODY_BYTES + 20);
@@ -49,7 +49,7 @@ async fn main() -> Result<(), NacelleError> {
                 "accepted {bytes} bytes\n"
             )))
         }))
-        .config(config)
+        .tcp_config(config)
         .runtime_state(runtime_state.clone())
         .build()?;
     let (shutdown, token) = NacelleShutdown::pair();

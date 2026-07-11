@@ -85,8 +85,9 @@ request context is available. Unknown opcode handling is application policy.
 
 ## Limits
 
-The server enforces `NacelleConfig::max_frame_len` against `frame_len`.
-Buffer sizes and request-body chunking are configured through `NacelleConfig`.
+The server enforces `NacelleTcpConfig::max_frame_len` against `frame_len`.
+Buffer sizes and request-body chunking are configured through
+`NacelleTcpConfig`.
 Runtime budgets, timeouts, and active counters are configured through
 `NacelleLimits` / `NacelleRuntimeState`.
 

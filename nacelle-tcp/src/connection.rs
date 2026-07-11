@@ -4,9 +4,9 @@ use bytes::BytesMut;
 use nacelle_codec::MessageReader;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::Protocol;
-use nacelle_core::config::NacelleConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -33,7 +33,7 @@ pub async fn serve_connection<Req, P, H, R, W>(
     writer: W,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
@@ -65,7 +65,7 @@ pub async fn serve_connection_with_connection_meta<Req, P, H, R, W>(
     writer: W,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
@@ -97,7 +97,7 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, 
     mut writer: W,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
@@ -222,7 +222,7 @@ pub async fn serve_stream<Req, P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
@@ -250,7 +250,7 @@ pub async fn serve_stream_with_connection_meta<Req, P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
@@ -279,7 +279,7 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<Req, P, H, I
     mut io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
@@ -310,7 +310,7 @@ pub async fn serve_stream_without_connection_limit<Req, P, H, IO>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
@@ -338,7 +338,7 @@ pub async fn serve_stream_without_connection_limit_with_connection_meta<Req, P, 
     io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
@@ -372,7 +372,7 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     mut io: IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
@@ -402,7 +402,7 @@ async fn serve_stream_inner<Req, P, H, IO>(
     io: &mut IO,
     protocol: Arc<P>,
     handler: H,
-    config: NacelleConfig,
+    config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,

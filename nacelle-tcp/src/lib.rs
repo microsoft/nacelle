@@ -2,6 +2,7 @@
 
 pub use nacelle_codec::MessageDecoder;
 
+pub mod config;
 pub mod connection;
 pub mod limits;
 pub mod options;
@@ -10,6 +11,7 @@ pub mod runtime;
 pub mod server;
 pub mod telemetry;
 
+pub use config::{NacelleTcpConfig, TcpRequestBodyMode};
 pub use connection::{serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;
 #[cfg(unix)]

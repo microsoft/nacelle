@@ -1,6 +1,5 @@
 //! Shared primitives for Nacelle transports.
 
-pub mod config;
 pub mod error;
 pub mod handler;
 pub mod lifecycle;
@@ -15,7 +14,6 @@ pub mod tls;
 #[cfg(feature = "tower")]
 pub mod tower;
 
-pub use config::{NacelleConfig, RequestBodyMode};
 pub use error::{BoxError, NacelleError};
 pub use handler::{Handler, HandlerFn, handler_fn};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};

@@ -38,7 +38,7 @@ impl NacelleError {
                 Some("verify the protocol decoder and the peer's frame format")
             }
             Self::FrameTooLarge { .. } => {
-                Some("raise NacelleConfig::max_frame_len or reject larger client frames")
+                Some("raise NacelleTcpConfig::max_frame_len or reject larger client frames")
             }
             Self::UnexpectedEof => {
                 Some("check client disconnects, frame lengths, and socket timeouts")

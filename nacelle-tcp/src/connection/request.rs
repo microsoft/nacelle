@@ -2,9 +2,9 @@ use bytes::BytesMut;
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
 
+use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{DecodedRequest, Protocol};
-use nacelle_core::config::{NacelleConfig, RequestBodyMode};
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -30,7 +30,7 @@ pub(super) async fn run_request<Req, P, H, R>(
     handler: &H,
     decoded: DecodedRequest<Req>,
     error_context: P::ErrorContext,
-    config: &NacelleConfig,
+    config: &NacelleTcpConfig,
     telemetry: &NacelleTelemetry,
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
@@ -108,7 +108,7 @@ where
             metrics_context,
         )
         .await
-    } else if config.request_body_mode == RequestBodyMode::Buffered {
+    } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
         let body_started = start_tcp_phase(telemetry);
         let body = read_buffered_request_body(
             reader,
