@@ -122,6 +122,17 @@ function Invoke-CargoPublish {
     Invoke-Step "cargo $($cargoArgs -join ' ')" { cargo @cargoArgs }
 }
 
+function Invoke-CargoPackageList {
+    param([string] $Name)
+
+    $cargoArgs = @("package", "-p", $Name, "--list")
+    if ($AllowDirty) {
+        $cargoArgs += "--allow-dirty"
+    }
+
+    Invoke-Step "cargo $($cargoArgs -join ' ')" { cargo @cargoArgs | Out-Null }
+}
+
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "cargo was not found on PATH"
 }
@@ -143,9 +154,14 @@ $release = [ordered]@{
 }
 
 if (-not $Publish) {
+    Invoke-CargoPublish -Name "nacelle-codec" -Version $release["nacelle-codec"]
     Invoke-CargoPublish -Name "nacelle-core" -Version $release["nacelle-core"]
-    Write-Host "==> Dry run complete for nacelle-core."
-    Write-Host "==> Dependent crates require nacelle-core to exist on crates.io before Cargo can dry-run them."
+    Invoke-CargoPackageList -Name "nacelle-tcp"
+    Invoke-CargoPackageList -Name "nacelle-http"
+    Invoke-CargoPackageList -Name "nacelle"
+    Write-Host "==> Dry run verified nacelle-codec and nacelle-core."
+    Write-Host "==> Package payloads validated for nacelle-tcp, nacelle-http, and nacelle."
+    Write-Host "==> Cargo can fully verify dependent crates after their 0.3.0 internal dependencies reach crates.io."
     Write-Host "==> Run with -Publish to publish in dependency order."
     return
 }
