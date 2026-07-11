@@ -46,9 +46,10 @@ the same budget as the transports.
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
 
 For TCP protocols, `NacelleLimits::max_request_body_bytes` is the default body
-limit. Override `RequestMetadata::max_body_bytes(connection, default_limit)`
-when the decoded request head and connection extension state should choose a
-stricter phase-specific cap before Nacelle buffers or streams the body.
+limit. Override `Protocol::max_request_body_bytes(request, connection, default_limit)`
+when the decoded request head or immutable connection metadata should choose a
+stricter phase-specific cap before Nacelle buffers or streams the body. Keep
+mutable protocol state in the concrete `Protocol::ConnectionState` exposed to handlers.
 
 Use `NacelleTcpOptions` for accepted TCP stream behavior. Defaults preserve the
 existing behavior: `TCP_NODELAY` enabled and TCP keepalive disabled. Enable
