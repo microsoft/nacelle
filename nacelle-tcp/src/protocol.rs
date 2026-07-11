@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 
 use nacelle_core::error::NacelleError;
-use nacelle_core::request::RequestMetadata;
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::response::TcpResponseMeta;
 
 #[derive(Debug)]
@@ -17,11 +17,10 @@ pub struct DecodedRequest<Req> {
 /// request metadata to the app core, and encode [`nacelle_core::response::NacelleResponse`]
 /// bodies back into protocol frames. Protocols should stay focused on wire
 /// translation; application behavior belongs in the [`nacelle_core::handler::Handler`].
-pub trait Protocol<Req>: Send + Sync + 'static
-where
-    Req: RequestMetadata,
-{
-    type Decoder: MessageDecoder<Message = DecodedRequest<Req>, Error = NacelleError>
+pub trait Protocol: Send + Sync + 'static {
+    /// Decoded request head for this wire protocol.
+    type Request: Send + 'static;
+    type Decoder: MessageDecoder<Message = DecodedRequest<Self::Request>, Error = NacelleError>
         + Send
         + 'static;
     type ResponseContext: Send + 'static;
@@ -34,9 +33,27 @@ where
     /// Create a decoder for one connection.
     fn decoder(&self, max_frame_len: usize) -> Self::Decoder;
 
-    fn response_context(&self, req: &Req) -> Self::ResponseContext;
+    /// Build transport-neutral metadata while the legacy detached handler path
+    /// is being deleted from the connection loop.
+    fn request_meta(
+        &self,
+        request: &Self::Request,
+        body_len: usize,
+    ) -> nacelle_core::TcpRequestMeta;
 
-    fn error_context(&self, req: &Req) -> Self::ErrorContext;
+    /// Select the body limit after decoding the request head.
+    fn max_request_body_bytes(
+        &self,
+        _request: &Self::Request,
+        _connection: &NacelleConnectionMeta,
+        default_limit: usize,
+    ) -> usize {
+        default_limit
+    }
+
+    fn response_context(&self, req: &Self::Request) -> Self::ResponseContext;
+
+    fn error_context(&self, req: &Self::Request) -> Self::ErrorContext;
 
     fn apply_tcp_response_meta(
         &self,

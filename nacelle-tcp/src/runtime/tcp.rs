@@ -8,7 +8,6 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::RequestMetadata;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
 
@@ -18,8 +17,8 @@ pub async fn serve_tcp<Req, P, H>(
     addr: SocketAddr,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -33,8 +32,8 @@ pub async fn serve_tcp_with_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_with_shutdown_timeout(server, addr, shutdown, Duration::from_secs(30)).await
@@ -49,8 +48,8 @@ pub async fn serve_tcp_with_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_with_shutdown_deadline(
@@ -69,8 +68,8 @@ pub async fn serve_tcp_with_options<Req, P, H>(
     tcp_options: NacelleTcpOptions,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -85,8 +84,8 @@ pub async fn serve_tcp_with_options_and_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_with_options_and_shutdown_timeout(
@@ -109,8 +108,8 @@ pub async fn serve_tcp_with_options_and_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_with_options_and_shutdown_deadline(
@@ -132,8 +131,8 @@ pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -155,8 +154,8 @@ pub async fn serve_tcp_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let listener = bind_tcp_listener(addr, &NacelleTcpBindOptions::default())?;
@@ -179,8 +178,8 @@ pub async fn serve_tcp_with_options_and_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let bind_options = NacelleTcpBindOptions::from(tcp_options.clone());
@@ -203,8 +202,8 @@ pub async fn serve_tcp_listener_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -226,8 +225,8 @@ pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     run_accept_loop(

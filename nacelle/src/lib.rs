@@ -84,7 +84,7 @@ pub use nacelle_core::{
     NacelleRequestMetricsConfig, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,
     NacelleShutdown, NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig,
     NacelleTelemetryEvent, NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport,
-    RequestMetadata, TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
+    TcpRequestMeta, TcpResponseMeta, TrackedPermit, handler_fn,
 };
 #[cfg(feature = "http")]
 pub use nacelle_core::{HttpRequestMeta, HttpResponseMeta};

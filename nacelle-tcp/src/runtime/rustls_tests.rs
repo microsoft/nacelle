@@ -6,7 +6,7 @@ use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
-use nacelle_core::request::{NacelleRequest, RequestMetadata, TcpRequestMeta};
+use nacelle_core::request::{NacelleRequest, TcpRequestMeta};
 use nacelle_core::response::NacelleResponse;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -17,21 +17,6 @@ use super::rustls::serve_tcp_tls_listener_with_shutdown_deadline;
 
 #[derive(Debug)]
 struct TestRequest;
-
-impl RequestMetadata for TestRequest {
-    fn opcode(&self) -> u64 {
-        1
-    }
-
-    fn tcp_meta(&self, body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: None,
-            opcode: 1,
-            flags: 0,
-            body_len,
-        }
-    }
-}
 
 struct TestProtocol;
 
@@ -53,13 +38,23 @@ impl MessageDecoder for TestDecoder {
     }
 }
 
-impl Protocol<TestRequest> for TestProtocol {
+impl Protocol for TestProtocol {
+    type Request = TestRequest;
     type Decoder = TestDecoder;
     type ResponseContext = ();
     type ErrorContext = ();
 
     fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
         TestDecoder
+    }
+
+    fn request_meta(&self, _request: &Self::Request, body_len: usize) -> TcpRequestMeta {
+        TcpRequestMeta {
+            request_id: None,
+            opcode: 1,
+            flags: 0,
+            body_len,
+        }
     }
 
     fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}

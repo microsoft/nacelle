@@ -9,7 +9,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::{
-    NacelleBody, NacelleConnectionMeta, NacelleRequest, NacelleRequestMeta, RequestMetadata,
+    NacelleBody, NacelleConnectionMeta, NacelleRequest, NacelleRequestMeta, TcpRequestMeta,
 };
 use nacelle_core::response::NacelleResponse;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
@@ -38,8 +38,8 @@ pub(super) async fn run_request<Req, P, H, R>(
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     R: AsyncRead + Unpin + Send,
 {
@@ -53,8 +53,12 @@ where
     .then(std::time::Instant::now);
     let request_bytes = 4 + 20 + decoded.body_len;
     let response_context = protocol.response_context(&request);
-    let max_request_body_bytes =
-        request.max_body_bytes(connection, runtime_state.limits().max_request_body_bytes);
+    let request_meta = protocol.request_meta(&request, decoded.body_len);
+    let max_request_body_bytes = protocol.max_request_body_bytes(
+        &request,
+        connection,
+        runtime_state.limits().max_request_body_bytes,
+    );
     if decoded.body_len > max_request_body_bytes {
         let error = NacelleError::ResourceLimit("request_body_bytes");
         record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
@@ -100,7 +104,7 @@ where
         execute_handler_with_metrics(
             handler,
             request,
-            decoded.body_len,
+            request_meta,
             body,
             runtime_state,
             connection,
@@ -130,7 +134,7 @@ where
         execute_handler_with_metrics(
             handler,
             request,
-            decoded.body_len,
+            request_meta,
             body,
             runtime_state,
             connection,
@@ -166,7 +170,7 @@ where
             execute_handler_with_metrics(
                 &h,
                 request,
-                decoded.body_len,
+                request_meta,
                 body,
                 &state,
                 &connection,
@@ -278,7 +282,7 @@ where
 async fn execute_handler_with_metrics<Req, H>(
     handler: &H,
     request: Req,
-    body_len: usize,
+    request_meta: TcpRequestMeta,
     body: NacelleBody,
     runtime_state: &NacelleRuntimeState,
     connection: &NacelleConnectionMeta,
@@ -286,30 +290,38 @@ async fn execute_handler_with_metrics<Req, H>(
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<NacelleResponse, NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
+    Req: Send + 'static,
     H: Handler,
 {
     let handler_started = metrics_context.and_then(|_| start_tcp_phase(telemetry));
-    let result = execute_handler(handler, request, body_len, body, runtime_state, connection).await;
+    let result = execute_handler(
+        handler,
+        request,
+        request_meta,
+        body,
+        runtime_state,
+        connection,
+    )
+    .await;
     finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
     result
 }
 
 async fn execute_handler<Req, H>(
     handler: &H,
-    request: Req,
-    body_len: usize,
+    _request: Req,
+    request_meta: TcpRequestMeta,
     body: NacelleBody,
     runtime_state: &NacelleRuntimeState,
     connection: &NacelleConnectionMeta,
 ) -> Result<NacelleResponse, NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
+    Req: Send + 'static,
     H: Handler,
 {
     let request = NacelleRequest {
         connection: connection.clone(),
-        meta: NacelleRequestMeta::Tcp(request.tcp_meta(body_len)),
+        meta: NacelleRequestMeta::Tcp(request_meta),
         body,
     };
     let future = handler.call(request);

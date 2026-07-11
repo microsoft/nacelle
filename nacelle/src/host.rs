@@ -89,8 +89,8 @@ impl NacelleHost {
         server: nacelle_tcp::TcpServer<Req, P, H>,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -131,8 +131,8 @@ impl NacelleHost {
         server: nacelle_tcp::TcpServer<Req, P, H>,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -174,8 +174,8 @@ impl NacelleHost {
         server: nacelle_tcp::TcpServer<Req, P, H>,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -216,8 +216,8 @@ impl NacelleHost {
         server: nacelle_tcp::TcpServer<Req, P, H>,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -260,8 +260,8 @@ impl NacelleHost {
         server: nacelle_tcp::TcpServer<Req, P, H>,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -305,8 +305,8 @@ impl NacelleHost {
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -348,8 +348,8 @@ impl NacelleHost {
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_openssl_with_options(
@@ -371,8 +371,8 @@ impl NacelleHost {
         tcp_options: NacelleTcpOptions,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_openssl_with_bind_options(
@@ -394,8 +394,8 @@ impl NacelleHost {
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();
@@ -439,8 +439,8 @@ impl NacelleHost {
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_optional_openssl_with_options(
@@ -464,8 +464,8 @@ impl NacelleHost {
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
@@ -489,8 +489,8 @@ impl NacelleHost {
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: nacelle_tcp::Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: nacelle_tcp::Protocol<Request = Req> + Send + Sync + 'static,
         H: nacelle_core::handler::Handler,
     {
         let name = name.into();

@@ -25,7 +25,7 @@ pub use request::HttpRequestMeta;
 pub use request::{
     NacelleBody, NacelleConnectionExtension, NacelleConnectionExtensionFactory,
     NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleRequest, NacelleRequestMeta,
-    RequestMetadata, TcpRequestMeta,
+    TcpRequestMeta,
 };
 #[cfg(feature = "http-types")]
 pub use response::HttpResponseMeta;

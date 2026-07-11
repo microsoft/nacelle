@@ -11,7 +11,6 @@ use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
 use crate::protocol::Protocol;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
-use nacelle_core::request::RequestMetadata;
 #[cfg(feature = "openssl")]
 use nacelle_core::tls::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
@@ -21,8 +20,8 @@ use super::NacelleServer;
 
 impl<Req, P, H> NacelleServer<Req, P, H>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     pub async fn serve_tcp(&self, addr: SocketAddr) -> Result<(), NacelleError> {

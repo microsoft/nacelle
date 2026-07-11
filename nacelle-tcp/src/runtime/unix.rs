@@ -10,7 +10,7 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
 
 use super::common::{
@@ -27,8 +27,8 @@ pub async fn serve_unix<Req, P, H>(
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -42,8 +42,8 @@ pub async fn serve_unix_with_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_unix_with_shutdown_timeout(server, path, shutdown, Duration::from_secs(30)).await
@@ -58,8 +58,8 @@ pub async fn serve_unix_with_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_unix_with_shutdown_deadline(
@@ -78,8 +78,8 @@ pub async fn serve_unix_with_options<Req, P, H>(
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -95,8 +95,8 @@ pub async fn serve_unix_with_options_and_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_timeout(
@@ -119,8 +119,8 @@ pub async fn serve_unix_with_options_and_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -141,8 +141,8 @@ pub async fn serve_unix_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -164,8 +164,8 @@ pub async fn serve_unix_with_options_and_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let path = path.as_ref();
@@ -191,8 +191,8 @@ pub async fn serve_unix_listener_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let mut connections = tokio::task::JoinSet::new();

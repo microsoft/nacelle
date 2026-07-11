@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::protocol::Protocol;
 use nacelle_core::error::NacelleError;
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTransport};
 
 pub(super) fn tcp_metrics_context<Req, P>(
@@ -10,8 +10,8 @@ pub(super) fn tcp_metrics_context<Req, P>(
     connection: &NacelleConnectionMeta,
 ) -> NacelleMetricsContext
 where
-    Req: RequestMetadata,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
 {
     NacelleMetricsContext::new(
         connection.transport,

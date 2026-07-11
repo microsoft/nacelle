@@ -10,7 +10,7 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
 use nacelle_core::tls::NacelleOpenSslConfig;
 
@@ -26,8 +26,8 @@ pub async fn serve_tcp_optional_openssl<Req, P, H>(
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -41,8 +41,8 @@ pub async fn serve_tcp_optional_openssl_with_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown(
@@ -64,8 +64,8 @@ pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -88,8 +88,8 @@ pub async fn serve_tcp_optional_openssl_with_options<Req, P, H>(
     detection_options: NacelleTlsDetectionOptions,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -113,8 +113,8 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -140,8 +140,8 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<Req, P
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_deadline(
@@ -168,8 +168,8 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<Req, 
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
@@ -196,8 +196,8 @@ pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -225,8 +225,8 @@ pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadl
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let handshake_timeout = tls_config.handshake_timeout();

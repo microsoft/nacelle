@@ -212,28 +212,6 @@ pub enum NacelleRequestMeta {
     Http(HttpRequestMeta),
 }
 
-pub trait RequestMetadata: Send + 'static {
-    fn opcode(&self) -> u64;
-
-    /// Return the maximum accepted body size for this decoded request head.
-    ///
-    /// TCP transports call this after head decoding and before body buffering or
-    /// streaming. Implementations can inspect connection extensions to apply
-    /// phase-aware limits such as a stricter pre-authentication cap.
-    fn max_body_bytes(&self, _connection: &NacelleConnectionMeta, default_limit: usize) -> usize {
-        default_limit
-    }
-
-    fn tcp_meta(&self, body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: None,
-            opcode: self.opcode(),
-            flags: 0,
-            body_len,
-        }
-    }
-}
-
 pub struct NacelleRequest {
     pub connection: NacelleConnectionMeta,
     pub meta: NacelleRequestMeta,

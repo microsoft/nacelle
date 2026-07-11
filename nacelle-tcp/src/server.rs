@@ -14,7 +14,6 @@ use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::{
     NacelleConnectionExtension, NacelleConnectionExtensionFactory, NacelleConnectionMeta,
-    RequestMetadata,
 };
 use nacelle_core::telemetry::NacelleTelemetry;
 use std::sync::Arc as StdArc;
@@ -78,8 +77,8 @@ impl<Req> NacelleServer<Req, (), ()> {
 
 impl<Req, P, H> NacelleServer<Req, P, H>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
@@ -365,8 +364,8 @@ impl<Req, ProtocolState, P, H> NacelleServerBuilder<Req, ProtocolState, Missing,
 
 impl<Req, P, H> NacelleServerBuilder<Req, Present, Present, P, H>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     pub fn build(self) -> Result<NacelleServer<Req, P, H>, NacelleError> {

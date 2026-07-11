@@ -173,8 +173,8 @@ where
 {
     pub fn tcp<Req, P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_with_options(name, addr, protocol, NacelleTcpOptions::default())
     }
@@ -187,8 +187,8 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_with_bind_options(
             name,
@@ -206,8 +206,8 @@ where
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -220,8 +220,8 @@ where
 
     pub fn tcp_dual_stack<Req, P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         self.tcp_dual_stack_with_options(name, port, protocol, NacelleTcpOptions::default())
     }
@@ -234,8 +234,8 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -265,8 +265,8 @@ where
         protocol: P,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.unix_socket_with_options(name, path, protocol, NacelleUnixSocketOptions::default())
     }
@@ -280,8 +280,8 @@ where
         unix_options: NacelleUnixSocketOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -302,8 +302,8 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_openssl_with_options(
             name,
@@ -324,8 +324,8 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_openssl_with_bind_options(
             name,
@@ -346,8 +346,8 @@ where
         bind_options: NacelleTcpBindOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -367,8 +367,8 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         self.tcp_openssl_dual_stack_with_options(
             name,
@@ -389,8 +389,8 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -423,8 +423,8 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_optional_openssl_with_options(
             name,
@@ -447,8 +447,8 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         self.tcp_optional_openssl_with_bind_options(
             name,
@@ -472,8 +472,8 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Send + Sync + 'static,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -500,8 +500,8 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         self.tcp_optional_openssl_dual_stack_with_options(
             name,
@@ -525,8 +525,8 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        Req: nacelle_core::request::RequestMetadata + Send + 'static,
-        P: Protocol<Req> + Clone + Send + Sync + 'static,
+        Req: Send + 'static,
+        P: Protocol<Request = Req> + Clone + Send + Sync + 'static,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -591,8 +591,8 @@ fn tcp_server<Req, P, H>(
     app: &NacelleApp<H>,
 ) -> Result<TcpServer<Req, P, H>, NacelleError>
 where
-    Req: nacelle_core::request::RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let builder = TcpServer::<Req, ()>::builder()
@@ -625,7 +625,7 @@ mod tests {
         use std::future::{Ready, ready};
 
         use bytes::{Bytes, BytesMut};
-        use nacelle_core::request::{NacelleRequest, RequestMetadata};
+        use nacelle_core::request::{NacelleRequest, TcpRequestMeta};
         use nacelle_core::response::NacelleResponse;
         use nacelle_tcp::{DecodedRequest, MessageDecoder};
 
@@ -645,12 +645,6 @@ mod tests {
         #[derive(Debug)]
         struct TestRequest;
 
-        impl RequestMetadata for TestRequest {
-            fn opcode(&self) -> u64 {
-                1
-            }
-        }
-
         #[derive(Clone)]
         struct TestProtocol;
 
@@ -668,13 +662,23 @@ mod tests {
             }
         }
 
-        impl Protocol<TestRequest> for TestProtocol {
+        impl Protocol for TestProtocol {
+            type Request = TestRequest;
             type Decoder = TestDecoder;
             type ResponseContext = ();
             type ErrorContext = ();
 
             fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
                 TestDecoder
+            }
+
+            fn request_meta(&self, _request: &Self::Request, body_len: usize) -> TcpRequestMeta {
+                TcpRequestMeta {
+                    request_id: None,
+                    opcode: 1,
+                    flags: 0,
+                    body_len,
+                }
             }
 
             fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}

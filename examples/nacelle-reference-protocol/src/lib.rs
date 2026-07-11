@@ -2,7 +2,7 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::{NacelleError, RequestMetadata, TcpRequestMeta, TcpResponseMeta};
+use nacelle_core::{NacelleError, TcpRequestMeta, TcpResponseMeta};
 use nacelle_tcp::{DecodedRequest, Protocol};
 
 const HEADER_LEN: usize = 24;
@@ -17,21 +17,6 @@ pub struct FrameRequest {
     pub opcode: u64,
     pub flags: u32,
     pub body_len: usize,
-}
-
-impl RequestMetadata for FrameRequest {
-    fn opcode(&self) -> u64 {
-        self.opcode
-    }
-
-    fn tcp_meta(&self, _body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: Some(self.request_id),
-            opcode: self.opcode,
-            flags: self.flags,
-            body_len: self.body_len,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -113,13 +98,23 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
     }
 }
 
-impl Protocol<FrameRequest> for LengthDelimitedProtocol {
+impl Protocol for LengthDelimitedProtocol {
+    type Request = FrameRequest;
     type Decoder = LengthDelimitedRequestDecoder;
     type ResponseContext = FrameResponseContext;
     type ErrorContext = FrameErrorContext;
 
     fn decoder(&self, max_frame_len: usize) -> Self::Decoder {
         LengthDelimitedRequestDecoder { max_frame_len }
+    }
+
+    fn request_meta(&self, request: &Self::Request, _body_len: usize) -> TcpRequestMeta {
+        TcpRequestMeta {
+            request_id: Some(request.request_id),
+            opcode: request.opcode,
+            flags: request.flags,
+            body_len: request.body_len,
+        }
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {

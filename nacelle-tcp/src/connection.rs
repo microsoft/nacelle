@@ -10,7 +10,7 @@ use crate::protocol::Protocol;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::NacelleTelemetry;
 
 mod body;
@@ -38,8 +38,8 @@ pub async fn serve_connection<Req, P, H, R, W>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -71,8 +71,8 @@ pub async fn serve_connection_with_connection_meta<Req, P, H, R, W>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -104,8 +104,8 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<Req, P, 
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -227,8 +227,8 @@ pub async fn serve_stream<Req, P, H, IO>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -256,8 +256,8 @@ pub async fn serve_stream_with_connection_meta<Req, P, H, IO>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -286,8 +286,8 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<Req, P, H, I
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -315,8 +315,8 @@ pub async fn serve_stream_without_connection_limit<Req, P, H, IO>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -344,8 +344,8 @@ pub async fn serve_stream_without_connection_limit_with_connection_meta<Req, P, 
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -379,8 +379,8 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -409,8 +409,8 @@ async fn serve_stream_inner<Req, P, H, IO>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {

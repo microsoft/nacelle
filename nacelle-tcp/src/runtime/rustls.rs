@@ -7,7 +7,7 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionTlsMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::NacelleTransport;
 use nacelle_core::tls::NacelleTlsConfig;
 
@@ -19,8 +19,8 @@ pub async fn serve_tcp_tls<Req, P, H>(
     tls_config: NacelleTlsConfig,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -34,8 +34,8 @@ pub async fn serve_tcp_tls_with_shutdown<Req, P, H>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_tls_with_shutdown_timeout(server, addr, tls_config, shutdown, Duration::from_secs(30))
@@ -50,8 +50,8 @@ pub async fn serve_tcp_tls_with_shutdown_timeout<Req, P, H>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     serve_tcp_tls_with_shutdown_deadline(
@@ -73,8 +73,8 @@ pub async fn serve_tcp_tls_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let listener = bind_tcp_listener(addr, &Default::default())?;
@@ -97,8 +97,8 @@ pub async fn serve_tcp_tls_listener_with_shutdown_deadline<Req, P, H>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let handshake_timeout = tls_config.handshake_timeout();

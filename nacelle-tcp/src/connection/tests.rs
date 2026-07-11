@@ -8,9 +8,7 @@ use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
-use nacelle_core::request::{
-    NacelleConnectionMeta, NacelleRequest, RequestMetadata, TcpRequestMeta,
-};
+use nacelle_core::request::{NacelleConnectionMeta, NacelleRequest, TcpRequestMeta};
 use nacelle_core::response::NacelleResponse;
 use nacelle_core::telemetry::NacelleTelemetry;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,32 +26,6 @@ struct AuthState {
 #[derive(Debug)]
 struct PhaseRequest {
     body_len: usize,
-}
-
-impl RequestMetadata for PhaseRequest {
-    fn opcode(&self) -> u64 {
-        1
-    }
-
-    fn max_body_bytes(&self, connection: &NacelleConnectionMeta, default_limit: usize) -> usize {
-        let authenticated = connection
-            .extension::<AuthState>()
-            .is_some_and(|state| state.authenticated.load(Ordering::SeqCst));
-        if authenticated {
-            default_limit
-        } else {
-            PRE_AUTH_BODY_LIMIT
-        }
-    }
-
-    fn tcp_meta(&self, _body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: None,
-            opcode: 1,
-            flags: 0,
-            body_len: self.body_len,
-        }
-    }
 }
 
 struct PhaseProtocol;
@@ -77,13 +49,39 @@ impl MessageDecoder for PhaseDecoder {
     }
 }
 
-impl Protocol<PhaseRequest> for PhaseProtocol {
+impl Protocol for PhaseProtocol {
+    type Request = PhaseRequest;
     type Decoder = PhaseDecoder;
     type ResponseContext = ();
     type ErrorContext = ();
 
     fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
         PhaseDecoder
+    }
+
+    fn request_meta(&self, request: &Self::Request, _body_len: usize) -> TcpRequestMeta {
+        TcpRequestMeta {
+            request_id: None,
+            opcode: 1,
+            flags: 0,
+            body_len: request.body_len,
+        }
+    }
+
+    fn max_request_body_bytes(
+        &self,
+        _request: &Self::Request,
+        connection: &NacelleConnectionMeta,
+        default_limit: usize,
+    ) -> usize {
+        let authenticated = connection
+            .extension::<AuthState>()
+            .is_some_and(|state| state.authenticated.load(Ordering::SeqCst));
+        if authenticated {
+            default_limit
+        } else {
+            PRE_AUTH_BODY_LIMIT
+        }
     }
 
     fn response_context(&self, _req: &PhaseRequest) -> Self::ResponseContext {}

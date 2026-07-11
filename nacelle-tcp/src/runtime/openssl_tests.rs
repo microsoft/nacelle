@@ -7,7 +7,7 @@ use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::handler::handler_fn;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
-use nacelle_core::request::{NacelleRequest, RequestMetadata};
+use nacelle_core::request::{NacelleRequest, TcpRequestMeta};
 use nacelle_core::response::NacelleResponse;
 use nacelle_core::tls::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,12 +20,6 @@ use super::openssl_optional::peeked_bytes_can_be_tls;
 
 #[derive(Debug)]
 struct PlainRequest;
-
-impl RequestMetadata for PlainRequest {
-    fn opcode(&self) -> u64 {
-        1
-    }
-}
 
 struct PlainProtocol;
 
@@ -47,13 +41,23 @@ impl MessageDecoder for PlainDecoder {
     }
 }
 
-impl Protocol<PlainRequest> for PlainProtocol {
+impl Protocol for PlainProtocol {
+    type Request = PlainRequest;
     type Decoder = PlainDecoder;
     type ResponseContext = ();
     type ErrorContext = ();
 
     fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
         PlainDecoder
+    }
+
+    fn request_meta(&self, _request: &Self::Request, body_len: usize) -> TcpRequestMeta {
+        TcpRequestMeta {
+            request_id: None,
+            opcode: 1,
+            flags: 0,
+            body_len,
+        }
     }
 
     fn response_context(&self, _req: &PlainRequest) -> Self::ResponseContext {}

@@ -3,7 +3,6 @@ use bytes::BytesMut;
 use crate::protocol::Protocol;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::RequestMetadata;
 use nacelle_core::response::NacelleResponse;
 
 pub(super) async fn encode_response_body<Req, P>(
@@ -14,8 +13,8 @@ pub(super) async fn encode_response_body<Req, P>(
     runtime_state: &NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
 {
     let Some(meta) = response.meta.tcp() else {
         return Err(NacelleError::InvalidFrame("non_tcp_response"));
@@ -66,8 +65,8 @@ pub(super) fn write_error<Req, P>(
     buffer_capacity: usize,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
 {
     let prev_len = write_buf.len();
     write_buf.reserve(buffer_capacity.max(128));

@@ -8,7 +8,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::TrackedPermit;
-use nacelle_core::request::{NacelleConnectionMeta, RequestMetadata};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport,
 };
@@ -67,8 +67,8 @@ pub(super) fn record_connection_rejection<Req, P, H>(
     tls: &'static str,
     error: &NacelleError,
 ) where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
 {
     let context = NacelleMetricsContext::new(
@@ -131,8 +131,8 @@ pub(super) async fn run_accept_loop<Req, P, H, Prepare, Serve, Fut>(
     mut serve_connection: Serve,
 ) -> Result<(), NacelleError>
 where
-    Req: RequestMetadata + Send + 'static,
-    P: Protocol<Req> + Send + Sync + 'static,
+    Req: Send + 'static,
+    P: Protocol<Request = Req> + Send + Sync + 'static,
     H: Handler,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
     Serve: FnMut(

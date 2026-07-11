@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
-use nacelle::core::TcpResponseMeta;
+use nacelle::core::{TcpRequestMeta, TcpResponseMeta};
 use nacelle::prelude::*;
 use nacelle::tcp::Protocol;
 use nacelle_reference_protocol::{
@@ -41,7 +41,8 @@ impl AppXProtocol {
     }
 }
 
-impl Protocol<FrameRequest> for AppXProtocol {
+impl Protocol for AppXProtocol {
+    type Request = FrameRequest;
     type Decoder = LengthDelimitedRequestDecoder;
     type ResponseContext = FrameResponseContext;
     type ErrorContext = FrameErrorContext;
@@ -52,6 +53,10 @@ impl Protocol<FrameRequest> for AppXProtocol {
 
     fn decoder(&self, max_frame_len: usize) -> Self::Decoder {
         self.inner.decoder(max_frame_len)
+    }
+
+    fn request_meta(&self, request: &Self::Request, body_len: usize) -> TcpRequestMeta {
+        self.inner.request_meta(request, body_len)
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
