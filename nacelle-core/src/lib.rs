@@ -5,6 +5,7 @@ pub mod error;
 pub mod handler;
 pub mod lifecycle;
 pub mod limits;
+pub mod pipeline;
 pub mod request;
 pub mod response;
 pub mod runtime;
