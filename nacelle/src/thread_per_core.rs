@@ -7,6 +7,8 @@ use std::thread;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleShutdown, NacelleShutdownToken};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+#[cfg(any(feature = "tcp", feature = "http"))]
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 #[cfg(feature = "openssl")]
 use nacelle_core::tls::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
@@ -447,11 +449,11 @@ pub fn bind_reuse_port_listener(addr: SocketAddr) -> Result<tokio::net::TcpListe
 /// Configuration for one Linux worker-local plain TCP runtime.
 #[cfg(feature = "tcp")]
 #[derive(Debug, Clone)]
-pub struct LocalTcpRuntimeConfig {
+pub struct LocalTcpRuntimeConfig<Observer = NoopObserver> {
     runtime: ThreadPerCoreConfig,
     shutdown: NacelleShutdown,
     limits: ThreadPerCoreLimits,
-    telemetry: nacelle_core::telemetry::NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     drain_timeout: std::time::Duration,
@@ -460,17 +462,17 @@ pub struct LocalTcpRuntimeConfig {
 /// Configuration for one Linux worker-local plain HTTP runtime.
 #[cfg(feature = "http")]
 #[derive(Debug, Clone)]
-pub struct LocalHttpRuntimeConfig {
+pub struct LocalHttpRuntimeConfig<Observer = NoopObserver> {
     runtime: ThreadPerCoreConfig,
     shutdown: NacelleShutdown,
     limits: ThreadPerCoreLimits,
-    telemetry: nacelle_core::telemetry::NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     addr: SocketAddr,
     drain_timeout: std::time::Duration,
 }
 
 #[cfg(feature = "http")]
-impl LocalHttpRuntimeConfig {
+impl LocalHttpRuntimeConfig<NoopObserver> {
     /// Construct local HTTP runtime configuration with global accounting.
     pub fn new(
         runtime: ThreadPerCoreConfig,
@@ -481,12 +483,18 @@ impl LocalHttpRuntimeConfig {
             runtime,
             shutdown: NacelleShutdown::new(),
             limits: ThreadPerCoreLimits::global(runtime_state),
-            telemetry: nacelle_core::telemetry::NacelleTelemetry::default(),
+            telemetry: NacelleTelemetry::default(),
             addr,
             drain_timeout: std::time::Duration::from_secs(30),
         }
     }
+}
 
+#[cfg(feature = "http")]
+impl<Observer> LocalHttpRuntimeConfig<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     /// Use a caller-owned shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
@@ -500,9 +508,21 @@ impl LocalHttpRuntimeConfig {
     }
 
     /// Set telemetry shared by all workers.
-    pub fn with_telemetry(mut self, telemetry: nacelle_core::telemetry::NacelleTelemetry) -> Self {
-        self.telemetry = telemetry;
-        self
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> LocalHttpRuntimeConfig<Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        LocalHttpRuntimeConfig {
+            runtime: self.runtime,
+            shutdown: self.shutdown,
+            limits: self.limits,
+            telemetry,
+            addr: self.addr,
+            drain_timeout: self.drain_timeout,
+        }
     }
 
     /// Set the local connection drain deadline.
@@ -513,7 +533,7 @@ impl LocalHttpRuntimeConfig {
 }
 
 #[cfg(feature = "tcp")]
-impl LocalTcpRuntimeConfig {
+impl LocalTcpRuntimeConfig<NoopObserver> {
     /// Construct local TCP runtime configuration with global accounting.
     pub fn new(
         runtime: ThreadPerCoreConfig,
@@ -524,13 +544,19 @@ impl LocalTcpRuntimeConfig {
             runtime,
             shutdown: NacelleShutdown::new(),
             limits: ThreadPerCoreLimits::global(runtime_state),
-            telemetry: nacelle_core::telemetry::NacelleTelemetry::default(),
+            telemetry: NacelleTelemetry::default(),
             addr,
             tcp_options: NacelleTcpOptions::default(),
             drain_timeout: std::time::Duration::from_secs(30),
         }
     }
+}
 
+#[cfg(feature = "tcp")]
+impl<Observer> LocalTcpRuntimeConfig<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     /// Use a caller-owned shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
@@ -544,9 +570,22 @@ impl LocalTcpRuntimeConfig {
     }
 
     /// Set telemetry shared by all workers.
-    pub fn with_telemetry(mut self, telemetry: nacelle_core::telemetry::NacelleTelemetry) -> Self {
-        self.telemetry = telemetry;
-        self
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> LocalTcpRuntimeConfig<Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        LocalTcpRuntimeConfig {
+            runtime: self.runtime,
+            shutdown: self.shutdown,
+            limits: self.limits,
+            telemetry,
+            addr: self.addr,
+            tcp_options: self.tcp_options,
+            drain_timeout: self.drain_timeout,
+        }
     }
 
     /// Set accepted TCP stream options.
@@ -569,15 +608,20 @@ impl LocalTcpRuntimeConfig {
 /// its protocol and `!Send` handlers, and processes accepted connections only
 /// through `spawn_local` on that worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_tcp_thread_per_core<P, H, OH, Factory>(
-    config: LocalTcpRuntimeConfig,
+pub fn run_local_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
+    config: LocalTcpRuntimeConfig<Observer>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH>, NacelleError> + Clone + Send + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
@@ -613,8 +657,8 @@ where
 
 /// Run one worker-local Rustls TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "rustls"))]
-pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Factory>(
-    config: LocalTcpRuntimeConfig,
+pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
+    config: LocalTcpRuntimeConfig<Observer>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
@@ -622,7 +666,12 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH>, NacelleError> + Clone + Send + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
@@ -660,8 +709,8 @@ where
 
 /// Run one worker-local required-OpenSSL TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-pub fn run_local_tcp_openssl_thread_per_core<P, H, OH, Factory>(
-    config: LocalTcpRuntimeConfig,
+pub fn run_local_tcp_openssl_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
+    config: LocalTcpRuntimeConfig<Observer>,
     tls_config: NacelleOpenSslConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
@@ -669,7 +718,12 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH>, NacelleError> + Clone + Send + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
@@ -707,14 +761,19 @@ where
 
 /// Run one worker-local HTTP/1 listener stack per configured worker.
 #[cfg(feature = "http")]
-pub fn run_local_http_thread_per_core<H, F, Factory>(
-    config: LocalHttpRuntimeConfig,
+pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory>(
+    config: LocalHttpRuntimeConfig<Observer>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State> + 'static,
-    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F>, NacelleError> + Clone + Send + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
@@ -749,15 +808,20 @@ where
 
 /// Run one worker-local Rustls HTTP/1 listener stack per configured worker.
 #[cfg(all(feature = "http", feature = "rustls"))]
-pub fn run_local_http_tls_thread_per_core<H, F, Factory>(
-    config: LocalHttpRuntimeConfig,
+pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factory>(
+    config: LocalHttpRuntimeConfig<Observer>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State> + 'static,
-    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F>, NacelleError> + Clone + Send + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
