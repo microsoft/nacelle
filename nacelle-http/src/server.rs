@@ -51,7 +51,7 @@ trait HttpDispatch<State> {
         &self,
         incoming: Incoming,
         body_len_hint: Option<usize>,
-        request_body_bytes: Arc<AtomicUsize>,
+        request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
         telemetry: NacelleTelemetry,
@@ -98,7 +98,7 @@ where
         &self,
         incoming: Incoming,
         body_len_hint: Option<usize>,
-        request_body_bytes: Arc<AtomicUsize>,
+        request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
         telemetry: NacelleTelemetry,
@@ -155,7 +155,7 @@ where
         &self,
         incoming: Incoming,
         body_len_hint: Option<usize>,
-        request_body_bytes: Arc<AtomicUsize>,
+        request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
         telemetry: NacelleTelemetry,
@@ -896,11 +896,11 @@ impl HttpRuntime {
             }
         };
         let (parts, body) = request.into_parts();
-        let request_body_bytes = Arc::new(AtomicUsize::new(0));
         let body_len_hint = body
             .size_hint()
             .upper()
             .and_then(|bytes| usize::try_from(bytes).ok());
+        let request_body_bytes = (body_len_hint != Some(0)).then(|| Arc::new(AtomicUsize::new(0)));
         let request = HttpRequest {
             method: parts.method,
             uri: parts.uri,
@@ -926,7 +926,9 @@ impl HttpRuntime {
 
         match handler_result {
             Ok(completion) => {
-                let request_bytes = request_body_bytes.load(Ordering::Relaxed);
+                let request_bytes = request_body_bytes
+                    .as_ref()
+                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed));
                 let response = response_to_http(
                     completion.into_inner().response,
                     self.runtime_state.clone(),
@@ -958,7 +960,9 @@ impl HttpRuntime {
                     elapsed_since(request_started),
                     &error,
                 );
-                let request_bytes = request_body_bytes.load(Ordering::Relaxed);
+                let request_bytes = request_body_bytes
+                    .as_ref()
+                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed));
                 let response = response_to_http(
                     HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
                     self.runtime_state.clone(),

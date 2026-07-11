@@ -26,11 +26,14 @@ pub(crate) type HttpBody = BoxBody<Bytes, BoxError>;
 pub(crate) fn incoming_to_body(
     incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: Arc<AtomicUsize>,
+    request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry,
 ) -> NacelleBody {
+    if incoming_body_is_empty(body_len_hint) {
+        return NacelleBody::empty();
+    }
     let (tx, body) = NacelleBody::channel(8);
     tokio::spawn(pump_incoming_body(
         incoming,
@@ -47,11 +50,14 @@ pub(crate) fn incoming_to_body(
 pub(crate) fn incoming_to_local_body(
     incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: Arc<AtomicUsize>,
+    request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry,
 ) -> NacelleBody {
+    if incoming_body_is_empty(body_len_hint) {
+        return NacelleBody::empty();
+    }
     let (tx, body) = NacelleBody::channel(8);
     tokio::task::spawn_local(pump_incoming_body(
         incoming,
@@ -69,7 +75,7 @@ pub(crate) fn incoming_to_local_body(
 async fn pump_incoming_body(
     mut incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: Arc<AtomicUsize>,
+    request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry,
@@ -139,7 +145,9 @@ async fn pump_incoming_body(
                         break;
                     }
                     body_bytes = next;
-                    request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
+                    if let Some(request_body_bytes) = &request_body_bytes {
+                        request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
+                    }
                     if tx.send(Ok(data.clone())).await.is_err() {
                         break;
                     }
@@ -151,6 +159,10 @@ async fn pump_incoming_body(
             }
         }
     }
+}
+
+const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {
+    matches!(body_len_hint, Some(0))
 }
 
 pub(crate) fn response_to_http(
@@ -235,4 +247,16 @@ fn empty_body() -> HttpBody {
     Full::new(Bytes::new())
         .map_err(|never: Infallible| match never {})
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::incoming_body_is_empty;
+
+    #[test]
+    fn only_exact_zero_body_hint_skips_body_pump() {
+        assert!(incoming_body_is_empty(Some(0)));
+        assert!(!incoming_body_is_empty(Some(1)));
+        assert!(!incoming_body_is_empty(None));
+    }
 }
