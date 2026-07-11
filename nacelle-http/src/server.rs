@@ -882,7 +882,7 @@ where
         &self,
         request: Request<Incoming>,
         connection: &ConnectionContext<Arc<F::State>>,
-    ) -> Result<Response<HttpBody>, NacelleError> {
+    ) -> Result<Response<HttpBody<Observer>>, NacelleError> {
         self.runtime
             .handle_with_dispatch(
                 request,
@@ -903,7 +903,7 @@ where
         &self,
         request: Request<Incoming>,
         dispatch: &D,
-    ) -> Result<Response<HttpBody>, NacelleError>
+    ) -> Result<Response<HttpBody<Observer>>, NacelleError>
     where
         D: HttpDispatch<State, Observer>,
     {

@@ -1,7 +1,6 @@
-//! HTTP body conversion between Hyper's `Incoming`/`BoxBody` and Nacelle's
+//! HTTP body conversion between Hyper's `Incoming` and Nacelle's
 //! `NacelleBody`, plus response serialization with memory accounting.
 
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,19 +8,19 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_core::Stream;
-use http_body_util::{BodyExt, Full, StreamBody, combinators::BoxBody};
+use http_body_util::{BodyExt, StreamBody};
 use hyper::Response;
 use hyper::body::{Frame, Incoming};
 
 use crate::limits::NacelleHttpLimits;
 use crate::pipeline::HttpResponse;
 use crate::policy::{NacelleHttpPolicy, apply_security_headers};
-use nacelle_core::error::{BoxError, NacelleError};
+use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
 
-pub(crate) type HttpBody = BoxBody<Bytes, BoxError>;
+pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
 
 pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
@@ -178,7 +177,7 @@ pub(crate) fn response_to_http<Observer>(
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
     policy: &NacelleHttpPolicy,
-) -> Result<Response<HttpBody>, NacelleError>
+) -> Result<Response<HttpBody<Observer>>, NacelleError>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -201,7 +200,7 @@ fn nacelle_body_to_http<Observer>(
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
-) -> HttpBody
+) -> HttpBody<Observer>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -211,11 +210,9 @@ where
         telemetry,
         response_body_bytes: 0,
     })
-    .map_err(|error| -> BoxError { Box::new(error) })
-    .boxed()
 }
 
-struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
+pub(crate) struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
@@ -260,13 +257,6 @@ where
         self.telemetry
             .response_body_bytes(NacelleTransport::new("http"), self.response_body_bytes);
     }
-}
-
-#[allow(dead_code)]
-fn empty_body() -> HttpBody {
-    Full::new(Bytes::new())
-        .map_err(|never: Infallible| match never {})
-        .boxed()
 }
 
 #[cfg(test)]
