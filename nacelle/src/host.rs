@@ -601,10 +601,20 @@ impl NacelleHost {
     }
 
     pub async fn wait(mut self) -> Result<(), NacelleError> {
+        let mut first_error = None;
         while let Some(result) = self.tasks.join_next().await {
-            result??;
+            let error = match result {
+                Ok(Ok(())) => continue,
+                Ok(Err(error)) => error,
+                Err(error) => NacelleError::from(error),
+            };
+            if first_error.is_none() {
+                self.telemetry.shutdown_requested();
+                self.shutdown.shutdown();
+                first_error = Some(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     pub async fn shutdown_and_wait(self) -> Result<(), NacelleError> {
@@ -632,5 +642,37 @@ impl NacelleHost {
             .await
             .map_err(|_| NacelleError::Timeout("shutdown_drain"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn listener_failure_requests_shutdown_and_drains_remaining_tasks() {
+        let mut host = NacelleHost::new();
+        let mut shutdown = host.shutdown_token();
+        let (drained_tx, drained_rx) = oneshot::channel();
+
+        host.tasks
+            .spawn(async { Err(NacelleError::ResourceLimit("test_listener_failure")) });
+        host.tasks.spawn(async move {
+            assert!(shutdown.changed().await);
+            drained_tx.send(()).expect("drain observer should be open");
+            Ok(())
+        });
+
+        let error = host.wait().await.expect_err("listener failure should win");
+
+        assert!(matches!(
+            error,
+            NacelleError::ResourceLimit("test_listener_failure")
+        ));
+        drained_rx
+            .await
+            .expect("remaining listener should observe shutdown and drain");
     }
 }
