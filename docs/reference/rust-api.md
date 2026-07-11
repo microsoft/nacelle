@@ -29,12 +29,15 @@ Start with these public entry points:
   app-first serving path across TCP, Unix sockets, HTTP, and TLS.
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
 - `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
-  `run_local_tcp_thread_per_core(...)` for experimental Linux-only worker-local
-  plain TCP execution. This mode requires explicit selection and does not
-  silently fall back to the shared runtime.
+  the `run_local_*_thread_per_core(...)` functions for experimental Linux-only
+  worker-local TCP, HTTP, Rustls, and required OpenSSL execution. This mode
+  requires explicit selection and does not silently fall back to the shared
+  runtime.
 - `ThreadPerCoreLimits::Global` for exact process-wide counters, or
   `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
   mode still enforces one shared hard memory ceiling across all workers.
+- `WorkerContext::offload_blocking(...)` for explicit blocking work whose
+  completion is awaited back on the originating local worker.
 - `Protocol` for TCP wire-format adapters.
 - `NacelleTelemetry` and `NacelleTelemetryConfig` for metrics and telemetry.
 - `NacelleMemoryBudget`, `NacelleMemoryAllocation`, and

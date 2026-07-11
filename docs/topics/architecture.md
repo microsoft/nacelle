@@ -67,11 +67,12 @@ once per accepted connection, and handlers receive it as
 extension map participates in the request path.
 
 The shared multi-thread Tokio runtime remains the default. Experimental
-thread-per-core execution is explicit and currently supports plain TCP on
-Linux. Each selected worker owns a current-thread Tokio runtime, `LocalSet`,
-reuse-port listener, protocol, and `LocalHandler` pipeline. Accepted streams and
-connection tasks remain on the accepting worker. Unsupported platforms fail
-configuration; Nacelle does not silently switch runtime topology.
+thread-per-core execution is explicit and currently supports TCP, HTTP, Rustls
+TCP/HTTPS, and required OpenSSL TCP on Linux. Each selected worker owns a
+current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
+`LocalHandler` pipeline. Accepted streams, handshakes, and connection tasks
+remain on the accepting worker. Unsupported platforms fail configuration;
+Nacelle does not silently switch runtime topology.
 
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
