@@ -10,7 +10,8 @@ use nacelle::{
     NacelleTelemetry, NacelleTransport, Protocol,
 };
 use nacelle_pipeline_prototype::{
-    Handler as TypedHandler, Layer, ObserveLayer, RequestContext, TcpEcho, TcpRequest, TcpResponder,
+    Handler as TypedHandler, Layer, ObserveLayer, RequestContext, RequiredResponder, TcpEcho,
+    TcpRequest, TcpResponder, connection,
 };
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use std::future::Future;
@@ -64,12 +65,14 @@ fn handler_boundary_benches(c: &mut Criterion) {
                         request_id: 7,
                         body: body.clone(),
                     },
-                    TcpResponder::new(7, &mut output),
+                    RequiredResponder::new(TcpResponder::new(7, &mut output)),
                     (),
+                    connection(()),
                 );
                 black_box(
                     complete_immediately(TypedHandler::call(&typed, context))
-                        .expect("typed TCP completion is infallible"),
+                        .expect("typed TCP completion is infallible")
+                        .into_inner(),
                 );
                 black_box(output)
             },
@@ -85,12 +88,14 @@ fn handler_boundary_benches(c: &mut Criterion) {
                         request_id: 7,
                         body: body.clone(),
                     },
-                    TcpResponder::new(7, &mut output),
+                    RequiredResponder::new(TcpResponder::new(7, &mut output)),
                     (),
+                    connection(()),
                 );
                 black_box(
                     complete_immediately(TypedHandler::call(&observed, context))
-                        .expect("typed TCP completion is infallible"),
+                        .expect("typed TCP completion is infallible")
+                        .into_inner(),
                 );
                 black_box(output)
             },

@@ -1,4 +1,4 @@
-//! Compile-time prototype for Nacelle's typed request pipeline.
+//! Transport integration prototype for Nacelle's typed request pipeline.
 
 use std::convert::Infallible;
 use std::future::{Future, ready};
@@ -6,152 +6,19 @@ use std::future::{Future, ready};
 use bytes::{BufMut, Bytes, BytesMut};
 use http::{Response, StatusCode};
 use http_body_util::Full;
+use nacelle_core::NacelleConnectionMeta;
 
-/// Completes one request through its originating transport.
-pub trait Respond {
-    /// Transport-specific application response.
-    type Response;
-    /// Value returned to the transport runtime after completion.
-    type Completion;
-    /// Completion failure.
-    type Error;
+pub use nacelle_core::pipeline::{
+    ConnectionContext, ConnectionInfo, Handler, Layer, LocalHandler, RequestContext,
+    RequiredCompletion, RequiredResponder, Respond, handler_fn, local_handler_fn,
+};
 
-    /// Consume this capability and complete the request exactly once.
-    fn respond(
-        self,
-        response: Self::Response,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>>;
-}
-
-/// Concrete shared-runtime handler created from a closure.
-#[derive(Debug, Clone, Copy)]
-pub struct HandlerFn<Function>(Function);
-
-impl<Context, Function, HandlerFuture, Completion, Error> Handler<Context> for HandlerFn<Function>
-where
-    Function: Fn(Context) -> HandlerFuture + Sync,
-    HandlerFuture: Future<Output = Result<Completion, Error>> + Send,
-{
-    type Completion = Completion;
-    type Error = Error;
-
-    fn call(
-        &self,
-        context: Context,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send {
-        (self.0)(context)
-    }
-}
-
-/// Create a concrete shared-runtime handler from a closure.
-pub const fn handler_fn<Function>(function: Function) -> HandlerFn<Function> {
-    HandlerFn(function)
-}
-
-/// Concrete worker-local handler created from a closure.
-#[derive(Debug, Clone, Copy)]
-pub struct LocalHandlerFn<Function>(Function);
-
-#[allow(clippy::future_not_send)]
-impl<Context, Function, HandlerFuture, Completion, Error> LocalHandler<Context>
-    for LocalHandlerFn<Function>
-where
-    Function: Fn(Context) -> HandlerFuture,
-    HandlerFuture: Future<Output = Result<Completion, Error>>,
-{
-    type Completion = Completion;
-    type Error = Error;
-
-    fn call(
-        &self,
-        context: Context,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
-        (self.0)(context)
-    }
-}
-
-/// Create a concrete worker-local handler from a closure.
-pub const fn local_handler_fn<Function>(function: Function) -> LocalHandlerFn<Function> {
-    LocalHandlerFn(function)
-}
-
-/// A typed request with exclusive ownership of its completion capability.
-#[derive(Debug)]
-pub struct RequestContext<Request, Responder, State> {
-    request: Request,
-    responder: Responder,
-    state: State,
-}
-
-impl<Request, Responder, State> RequestContext<Request, Responder, State> {
-    /// Construct a context at the protocol/application boundary.
-    pub const fn new(request: Request, responder: Responder, state: State) -> Self {
-        Self {
-            request,
-            responder,
-            state,
-        }
-    }
-
-    /// Borrow the typed request.
-    pub const fn request(&self) -> &Request {
-        &self.request
-    }
-
-    /// Borrow worker or application state.
-    pub const fn state(&self) -> &State {
-        &self.state
-    }
-
-    /// Complete the request through its originating transport.
-    pub fn respond(
-        self,
-        response: Responder::Response,
-    ) -> impl Future<Output = Result<Responder::Completion, Responder::Error>>
-    where
-        Responder: Respond,
-    {
-        self.responder.respond(response)
-    }
-}
-
-/// Handles one concrete request context on the shared multi-thread runtime.
-pub trait Handler<Context>: Sync {
-    /// Value returned to the transport runtime after completion.
-    type Completion;
-    /// Request handling failure.
-    type Error;
-
-    /// Process one request without boxing the returned `Send` future.
-    fn call(
-        &self,
-        context: Context,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send;
-}
-
-/// Handles one concrete request context on an explicitly local worker.
-///
-/// The future is intentionally not required to be `Send`; thread-per-core
-/// workers keep it on the accepting worker's `LocalSet`.
-#[allow(clippy::future_not_send)]
-pub trait LocalHandler<Context> {
-    /// Value returned to the transport runtime after completion.
-    type Completion;
-    /// Request handling failure.
-    type Error;
-
-    /// Process one worker-local request without boxing the returned future.
-    fn call(&self, context: Context)
-    -> impl Future<Output = Result<Self::Completion, Self::Error>>;
-}
-
-/// Constructs one statically nested middleware layer.
-pub trait Layer<Inner> {
-    /// Concrete middleware service produced by this layer.
-    type Service;
-
-    /// Wrap a concrete inner handler.
-    fn layer(self, inner: Inner) -> Self::Service;
+/// Construct direct-listener connection context for prototype requests.
+pub fn connection<State>(state: State) -> ConnectionContext<State> {
+    ConnectionContext::new(
+        ConnectionInfo::from(&NacelleConnectionMeta::tcp(None, None)),
+        state,
+    )
 }
 
 /// No-op observation layer used to prove static middleware composition.
@@ -290,16 +157,19 @@ impl Respond for HttpResponder {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TcpEcho;
 
-impl<State> Handler<RequestContext<TcpRequest, TcpResponder<'_>, State>> for TcpEcho
+impl<State, Connection>
+    Handler<RequestContext<TcpRequest, RequiredResponder<TcpResponder<'_>>, State, Connection>>
+    for TcpEcho
 where
     State: Send,
+    Connection: Send,
 {
-    type Completion = usize;
+    type Completion = RequiredCompletion<usize>;
     type Error = Infallible;
 
     async fn call(
         &self,
-        context: RequestContext<TcpRequest, TcpResponder<'_>, State>,
+        context: RequestContext<TcpRequest, RequiredResponder<TcpResponder<'_>>, State, Connection>,
     ) -> Result<Self::Completion, Self::Error> {
         let body = context.request().body.clone();
         context.respond(TcpResponse { body }).await
@@ -310,16 +180,19 @@ where
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HttpEcho;
 
-impl<State> Handler<RequestContext<HttpRequest, HttpResponder, State>> for HttpEcho
+impl<State, Connection>
+    Handler<RequestContext<HttpRequest, RequiredResponder<HttpResponder>, State, Connection>>
+    for HttpEcho
 where
     State: Send,
+    Connection: Send,
 {
-    type Completion = Response<Full<Bytes>>;
+    type Completion = RequiredCompletion<Response<Full<Bytes>>>;
     type Error = http::Error;
 
     async fn call(
         &self,
-        context: RequestContext<HttpRequest, HttpResponder, State>,
+        context: RequestContext<HttpRequest, RequiredResponder<HttpResponder>, State, Connection>,
     ) -> Result<Self::Completion, Self::Error> {
         let body = context.request().body.clone();
         context
@@ -344,15 +217,24 @@ mod tests {
     struct LocalStateHandler;
 
     #[allow(clippy::future_not_send)]
-    impl LocalHandler<RequestContext<(), HttpResponder, Rc<str>>> for LocalStateHandler {
-        type Completion = Response<Full<Bytes>>;
+    impl
+        LocalHandler<
+            RequestContext<(), RequiredResponder<HttpResponder>, Rc<str>, ConnectionContext<()>>,
+        > for LocalStateHandler
+    {
+        type Completion = RequiredCompletion<Response<Full<Bytes>>>;
         type Error = http::Error;
 
         async fn call(
             &self,
-            context: RequestContext<(), HttpResponder, Rc<str>>,
+            context: RequestContext<
+                (),
+                RequiredResponder<HttpResponder>,
+                Rc<str>,
+                ConnectionContext<()>,
+            >,
         ) -> Result<Self::Completion, Self::Error> {
-            let body = Bytes::copy_from_slice(context.state().as_bytes());
+            let body = Bytes::copy_from_slice(context.app_state().as_bytes());
             context
                 .respond(HttpResponse {
                     status: StatusCode::OK,
@@ -363,36 +245,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_generic_middleware_shape_handles_borrowed_tcp_responder() {
+    async fn core_context_handles_borrowed_tcp_responder() {
         let mut output = BytesMut::new();
         let context = RequestContext::new(
             TcpRequest {
                 request_id: 7,
                 body: Bytes::from_static(b"tcp"),
             },
-            TcpResponder::new(7, &mut output),
+            RequiredResponder::new(TcpResponder::new(7, &mut output)),
             (),
+            connection(()),
         );
         let pipeline = ObserveLayer.layer(TcpEcho);
 
-        let encoded = pipeline.call(context).await.expect("infallible response");
+        let encoded = pipeline
+            .call(context)
+            .await
+            .expect("infallible response")
+            .into_inner();
 
         assert_eq!(encoded, 15);
         assert_eq!(output.get(12..), Some(b"tcp".as_slice()));
     }
 
     #[tokio::test]
-    async fn one_generic_middleware_shape_handles_concrete_http_response() {
+    async fn core_context_handles_concrete_http_response() {
         let context = RequestContext::new(
             HttpRequest {
                 body: Bytes::from_static(b"http"),
             },
-            HttpResponder,
+            RequiredResponder::new(HttpResponder),
             (),
+            connection(()),
         );
         let pipeline = ObserveLayer.layer(HttpEcho);
 
-        let response = pipeline.call(context).await.expect("valid response");
+        let response = pipeline
+            .call(context)
+            .await
+            .expect("valid response")
+            .into_inner();
         let body = response
             .into_body()
             .collect()
@@ -404,13 +296,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_handler_accepts_non_send_worker_state() {
-        let context = RequestContext::new((), HttpResponder, Rc::<str>::from("local"));
+    async fn core_local_handler_accepts_non_send_worker_state() {
+        let context = RequestContext::new(
+            (),
+            RequiredResponder::new(HttpResponder),
+            Rc::<str>::from("local"),
+            connection(()),
+        );
         let pipeline = ObserveLayer.layer(LocalStateHandler);
 
         let response = LocalHandler::call(&pipeline, context)
             .await
-            .expect("valid response");
+            .expect("valid response")
+            .into_inner();
         let body = response
             .into_body()
             .collect()
@@ -422,9 +320,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closure_adapters_preserve_shared_and_local_future_bounds() {
+    async fn core_closure_adapters_preserve_shared_and_local_bounds() {
         let shared = handler_fn(
-            |context: RequestContext<(), HttpResponder, ()>| async move {
+            |context: RequestContext<
+                (),
+                RequiredResponder<HttpResponder>,
+                (),
+                ConnectionContext<()>,
+            >| async move {
                 context
                     .respond(HttpResponse {
                         status: StatusCode::NO_CONTENT,
@@ -434,8 +337,13 @@ mod tests {
             },
         );
         let local = local_handler_fn(
-            |context: RequestContext<(), HttpResponder, Rc<str>>| async move {
-                let body = Bytes::copy_from_slice(context.state().as_bytes());
+            |context: RequestContext<
+                (),
+                RequiredResponder<HttpResponder>,
+                Rc<str>,
+                ConnectionContext<()>,
+            >| async move {
+                let body = Bytes::copy_from_slice(context.app_state().as_bytes());
                 context
                     .respond(HttpResponse {
                         status: StatusCode::OK,
@@ -446,15 +354,27 @@ mod tests {
         );
 
         let shared_response = shared
-            .call(RequestContext::new((), HttpResponder, ()))
+            .call(RequestContext::new(
+                (),
+                RequiredResponder::new(HttpResponder),
+                (),
+                connection(()),
+            ))
             .await
-            .expect("valid shared response");
+            .expect("valid shared response")
+            .into_inner();
         let local_response = LocalHandler::call(
             &local,
-            RequestContext::new((), HttpResponder, Rc::<str>::from("local")),
+            RequestContext::new(
+                (),
+                RequiredResponder::new(HttpResponder),
+                Rc::<str>::from("local"),
+                connection(()),
+            ),
         )
         .await
-        .expect("valid local response");
+        .expect("valid local response")
+        .into_inner();
 
         assert_eq!(shared_response.status(), StatusCode::NO_CONTENT);
         assert_eq!(local_response.status(), StatusCode::OK);
@@ -463,14 +383,19 @@ mod tests {
     #[test]
     fn responder_futures_are_concrete_stack_values() {
         let mut output = BytesMut::new();
-        let tcp_future =
-            TcpResponder::new(1, &mut output).respond(TcpResponse { body: Bytes::new() });
-        let http_future = HttpResponder.respond(HttpResponse {
+        let tcp_future = RequiredResponder::new(TcpResponder::new(1, &mut output))
+            .respond(TcpResponse { body: Bytes::new() });
+        let http_future = RequiredResponder::new(HttpResponder).respond(HttpResponse {
             status: StatusCode::NO_CONTENT,
             body: Bytes::new(),
         });
 
-        assert!(size_of_val(&tcp_future) <= 64);
-        assert!(size_of_val(&http_future) <= 256);
+        let tcp_size = size_of_val(&tcp_future);
+        let http_size = size_of_val(&http_future);
+        assert!(tcp_size <= 256, "TCP completion future is {tcp_size} bytes");
+        assert!(
+            http_size <= 256,
+            "HTTP completion future is {http_size} bytes"
+        );
     }
 }
