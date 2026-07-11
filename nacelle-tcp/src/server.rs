@@ -140,15 +140,25 @@ where
     }
 
     #[doc(hidden)]
-    pub fn with_runtime_context(
-        mut self,
-        telemetry: NacelleTelemetry<Observer>,
+    pub fn with_runtime_context<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> Self {
+    ) -> LocalTcpServer<P, H, OH, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(runtime_state.clone());
-        self.telemetry = telemetry;
-        self.runtime_state = runtime_state;
-        self
+        LocalTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: self.one_way_handler,
+            config: self.config,
+            telemetry,
+            runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
     }
 
     /// Set the stable listener label recorded in connection metadata.
@@ -294,15 +304,25 @@ where
     }
 
     #[doc(hidden)]
-    pub fn with_runtime_context(
-        mut self,
-        telemetry: NacelleTelemetry<Observer>,
+    pub fn with_runtime_context<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> Self {
+    ) -> NacelleServer<P, H, OH, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(runtime_state.clone());
-        self.telemetry = telemetry;
-        self.runtime_state = runtime_state;
-        self
+        NacelleServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: self.one_way_handler,
+            config: self.config,
+            telemetry,
+            runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
     }
 
     pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
