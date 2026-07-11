@@ -5,10 +5,9 @@ use std::time::Duration;
 use openssl::ssl::{NameType, Ssl, SslRef};
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::NacelleTransport;
@@ -23,7 +22,7 @@ pub async fn serve_tcp_openssl<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_shutdown(server, addr, tls_config, token).await
@@ -37,7 +36,7 @@ pub async fn serve_tcp_openssl_with_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_shutdown_timeout(
         server,
@@ -58,7 +57,7 @@ pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_shutdown_deadline(
         server,
@@ -78,7 +77,7 @@ pub async fn serve_tcp_openssl_with_options<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_options_and_shutdown(server, addr, tls_config, tcp_options, token).await
@@ -93,7 +92,7 @@ pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_options_and_shutdown_timeout(
         server,
@@ -116,7 +115,7 @@ pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_options_and_shutdown_deadline(
         server,
@@ -139,7 +138,7 @@ pub async fn serve_tcp_openssl_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -163,7 +162,7 @@ pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -187,7 +186,7 @@ pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_openssl_listener_with_options_and_shutdown_deadline(
@@ -211,7 +210,7 @@ pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_openssl_listener_with_options_and_shutdown_deadline(
         server,
@@ -235,7 +234,7 @@ pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<P, H>
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     run_accept_loop(

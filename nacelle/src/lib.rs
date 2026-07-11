@@ -77,8 +77,7 @@ pub use nacelle_core::NacelleTlsProvider;
 #[cfg(feature = "tower")]
 pub use nacelle_core::handler_from_tower_service;
 pub use nacelle_core::{
-    BoxError, Handler, HandlerFn, NacelleBody, NacelleConnectionExtension,
-    NacelleConnectionExtensionFactory, NacelleConnectionMeta, NacelleConnectionTlsMeta,
+    BoxError, Handler, HandlerFn, NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta,
     NacelleError, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation,
     NacelleMemoryBudget, NacelleMetricsContext, NacelleRequest, NacelleRequestMeta,
     NacelleRequestMetricsConfig, NacelleResponse, NacelleResponseMeta, NacelleRuntimeState,

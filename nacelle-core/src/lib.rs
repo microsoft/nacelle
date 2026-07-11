@@ -23,9 +23,8 @@ pub use limits::{
 #[cfg(feature = "http-types")]
 pub use request::HttpRequestMeta;
 pub use request::{
-    NacelleBody, NacelleConnectionExtension, NacelleConnectionExtensionFactory,
-    NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleRequest, NacelleRequestMeta,
-    TcpRequestMeta,
+    NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleRequest,
+    NacelleRequestMeta, TcpRequestMeta,
 };
 #[cfg(feature = "http-types")]
 pub use response::HttpResponseMeta;

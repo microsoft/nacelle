@@ -48,7 +48,7 @@ pub(super) async fn pump_request_body<R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     body_len: usize,
-    tx: &mpsc::Sender<Result<Bytes, NacelleError>>,
+    tx: mpsc::Sender<Result<Bytes, NacelleError>>,
     config: &NacelleTcpConfig,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<(), NacelleError>
@@ -72,8 +72,22 @@ where
     while remaining > 0 {
         let next_len = remaining.min(config.request_body_chunk_size);
         let mut chunk = BytesMut::with_capacity(next_len);
-        let bytes_read =
-            read_buf_with_timeout(reader, &mut chunk, tcp_limits, "request_body_read").await?;
+        let bytes_read = match read_buf_with_timeout(
+            reader,
+            &mut chunk,
+            tcp_limits,
+            "request_body_read",
+        )
+        .await
+        {
+            Ok(bytes_read) => bytes_read,
+            Err(error) => {
+                if receiver_open {
+                    let _ = tx.send(Err(body_read_error(&error))).await;
+                }
+                return Err(error);
+            }
+        };
         if bytes_read == 0 {
             if receiver_open {
                 let _ = tx.send(Err(NacelleError::UnexpectedEof)).await;
@@ -88,6 +102,16 @@ where
     }
 
     Ok(())
+}
+
+fn body_read_error(error: &NacelleError) -> NacelleError {
+    match error {
+        NacelleError::Timeout(name) => NacelleError::Timeout(name),
+        NacelleError::Io(error) => {
+            NacelleError::Io(std::io::Error::new(error.kind(), error.to_string()))
+        }
+        _ => NacelleError::Io(std::io::Error::other(error.to_string())),
+    }
 }
 
 pub(super) fn buffered_request_body(

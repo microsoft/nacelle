@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -14,10 +13,6 @@ use tokio::sync::mpsc;
 use crate::error::NacelleError;
 use crate::limits::NacelleMemoryAllocation;
 use crate::telemetry::NacelleTransport;
-
-pub type NacelleConnectionExtension = Arc<dyn Any + Send + Sync>;
-pub type NacelleConnectionExtensionFactory =
-    Arc<dyn Fn(&NacelleConnectionMeta) -> Option<NacelleConnectionExtension> + Send + Sync>;
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -79,7 +74,6 @@ pub struct NacelleConnectionMeta {
     pub local_addr: Option<SocketAddr>,
     pub local_path: Option<PathBuf>,
     pub tls: Option<NacelleConnectionTlsMeta>,
-    extension: Option<NacelleConnectionExtension>,
 }
 
 impl fmt::Debug for NacelleConnectionMeta {
@@ -93,7 +87,6 @@ impl fmt::Debug for NacelleConnectionMeta {
             .field("local_addr", &self.local_addr)
             .field("local_path", &self.local_path)
             .field("tls", &self.tls)
-            .field("extension", &self.extension.as_ref().map(|_| "<extension>"))
             .finish()
     }
 }
@@ -109,7 +102,6 @@ impl NacelleConnectionMeta {
             local_addr,
             local_path: None,
             tls: None,
-            extension: None,
         }
     }
 
@@ -123,7 +115,6 @@ impl NacelleConnectionMeta {
             local_addr: None,
             local_path,
             tls: None,
-            extension: None,
         }
     }
 
@@ -137,7 +128,6 @@ impl NacelleConnectionMeta {
             local_addr: None,
             local_path: None,
             tls: None,
-            extension: None,
         }
     }
 
@@ -158,25 +148,6 @@ impl NacelleConnectionMeta {
     pub fn with_connection_id(mut self, connection_id: u64) -> Self {
         self.connection_id = connection_id;
         self
-    }
-
-    pub fn with_extension<T>(self, extension: T) -> Self
-    where
-        T: Any + Send + Sync + 'static,
-    {
-        self.with_extension_arc(Arc::new(extension))
-    }
-
-    pub fn with_extension_arc(mut self, extension: NacelleConnectionExtension) -> Self {
-        self.extension = Some(extension);
-        self
-    }
-
-    pub fn extension<T>(&self) -> Option<Arc<T>>
-    where
-        T: Any + Send + Sync + 'static,
-    {
-        self.extension.clone()?.downcast::<T>().ok()
     }
 }
 

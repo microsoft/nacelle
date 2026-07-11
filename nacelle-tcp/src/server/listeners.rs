@@ -8,9 +8,8 @@ use crate::options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 use crate::options::NacelleUnixSocketOptions;
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 #[cfg(feature = "openssl")]
 use nacelle_core::tls::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
@@ -21,7 +20,7 @@ use super::NacelleServer;
 impl<P, H> NacelleServer<P, H>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     pub async fn serve_tcp(&self, addr: SocketAddr) -> Result<(), NacelleError> {
         crate::runtime::serve_tcp(Arc::<NacelleServer<P, H>>::new(self.clone()), addr).await

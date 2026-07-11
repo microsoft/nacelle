@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use http::StatusCode;
+use nacelle::core::pipeline::handler_fn as tcp_handler_fn;
+use nacelle::tcp::{TcpRequestContext, TcpResponse};
 use nacelle::{
     HyperServer, NacelleError, NacelleHost, NacelleRequest, NacelleResponse, NacelleTelemetry,
-    TcpServer, handler_fn,
+    TcpServer, handler_fn as http_handler_fn,
 };
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
@@ -30,15 +32,14 @@ async fn main() -> Result<(), NacelleError> {
         response_prefix: b"",
     });
     let telemetry = NacelleTelemetry::default();
-    let handler = handler_fn({
+    let tcp_handler = tcp_handler_fn({
         let app = app.clone();
-        move |mut request: NacelleRequest| {
+        move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
             let app = app.clone();
             async move {
-                if let Some(opcode) = request.tcp_opcode()
-                    && opcode != 1
-                {
-                    while let Some(chunk) = request.body.next_chunk().await {
+                let opcode = context.request().head.opcode;
+                if opcode != 1 {
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
                         let _ = chunk?;
                     }
                     return Err(NacelleError::handler(std::io::Error::other(format!(
@@ -46,18 +47,28 @@ async fn main() -> Result<(), NacelleError> {
                     ))));
                 }
 
-                let is_http = request.http_meta().is_some();
+                let mut echoed = BytesMut::new();
+                echoed.extend_from_slice(app.response_prefix);
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    echoed.extend_from_slice(&chunk?);
+                }
+
+                context.respond(TcpResponse::bytes(echoed.freeze())).await
+            }
+        }
+    });
+    let http_handler = http_handler_fn({
+        let app = app.clone();
+        move |mut request: NacelleRequest| {
+            let app = app.clone();
+            async move {
                 let mut echoed = BytesMut::new();
                 echoed.extend_from_slice(app.response_prefix);
                 while let Some(chunk) = request.body.next_chunk().await {
                     echoed.extend_from_slice(&chunk?);
                 }
 
-                if is_http {
-                    Ok(NacelleResponse::http_bytes(StatusCode::OK, echoed.freeze()))
-                } else {
-                    Ok(NacelleResponse::tcp_bytes(echoed.freeze()))
-                }
+                Ok(NacelleResponse::http_bytes(StatusCode::OK, echoed.freeze()))
             }
         }
     });
@@ -65,9 +76,9 @@ async fn main() -> Result<(), NacelleError> {
     let tcp_server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .telemetry(telemetry.clone())
-        .handler(handler.clone())
+        .handler(tcp_handler)
         .build()?;
-    let http_server = HyperServer::new(handler).with_telemetry(telemetry.clone());
+    let http_server = HyperServer::new(http_handler).with_telemetry(telemetry.clone());
 
     println!("nacelle TCP echo listening on {tcp_addr}");
     println!("nacelle HTTP echo listening on {http_addr}");

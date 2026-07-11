@@ -90,7 +90,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -131,7 +131,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -173,7 +173,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -214,7 +214,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -257,7 +257,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -301,7 +301,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -343,7 +343,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         self.enable_tcp_openssl_with_options(
             name,
@@ -365,7 +365,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         self.enable_tcp_openssl_with_bind_options(
             name,
@@ -387,7 +387,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -431,7 +431,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         self.enable_tcp_optional_openssl_with_options(
             name,
@@ -455,7 +455,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
             name,
@@ -479,7 +479,7 @@ impl NacelleHost {
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
-        H: nacelle_core::handler::Handler,
+        H: nacelle_tcp::TcpHandler<P>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();

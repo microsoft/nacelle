@@ -1,17 +1,14 @@
 use bytes::BytesMut;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{DecodedRequest, Protocol};
+use crate::protocol::{DecodedRequest, Protocol, TcpHandler, TcpRequest, TcpResponder};
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::{
-    NacelleBody, NacelleConnectionMeta, NacelleRequest, NacelleRequestMeta, TcpRequestMeta,
-};
-use nacelle_core::response::NacelleResponse;
+use nacelle_core::pipeline::{ConnectionContext, RequestContext, RequiredResponder};
+use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
 
 use super::body::{buffered_request_body, pump_request_body, read_buffered_request_body};
@@ -22,8 +19,9 @@ use super::metrics::{
 use super::response::{encode_response_body, write_error};
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_request<P, H, R>(
+pub(super) async fn run_request<P, H, R, W>(
     reader: &mut R,
+    writer: &mut W,
     read_buf: &mut BytesMut,
     write_buf: &mut BytesMut,
     protocol: &P,
@@ -35,12 +33,14 @@ pub(super) async fn run_request<P, H, R>(
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
     connection: &NacelleConnectionMeta,
+    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
     R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin,
 {
     let request = decoded.request;
     let detailed_request_metrics = telemetry.request_metrics_enabled();
@@ -50,9 +50,8 @@ where
     let request_started = (core_request_duration_metrics
         || telemetry.request_duration_metrics_enabled())
     .then(std::time::Instant::now);
-    let request_bytes = 4 + 20 + decoded.body_len;
+    let request_bytes = protocol.request_wire_bytes(&request, decoded.body_len);
     let response_context = protocol.response_context(&request);
-    let request_meta = protocol.request_meta(&request, decoded.body_len);
     let max_request_body_bytes = protocol.max_request_body_bytes(
         &request,
         connection,
@@ -68,13 +67,22 @@ where
             request_started,
             &error,
         );
-        write_error::<P>(
-            write_buf,
+        if let Err(delivery_error) = write_error::<P, W>(
+            writer,
             protocol,
             Some(error_context),
-            error,
+            &error,
             config.response_buffer_capacity,
-        )?;
+            tcp_limits,
+            write_buf,
+            runtime_state,
+            telemetry,
+            metrics_context,
+        )
+        .await
+        {
+            return Err(delivery_error.error);
+        }
         return Err(NacelleError::ResourceLimit("request_body_bytes"));
     }
     let _request_permit = match runtime_state.acquire_request_tracked() {
@@ -103,10 +111,10 @@ where
         execute_handler_with_metrics(
             handler,
             request,
-            request_meta,
             body,
+            response_context,
             runtime_state,
-            connection,
+            connection_context,
             telemetry,
             metrics_context,
         )
@@ -133,10 +141,10 @@ where
         execute_handler_with_metrics(
             handler,
             request,
-            request_meta,
             body,
+            response_context,
             runtime_state,
-            connection,
+            connection_context,
             telemetry,
             metrics_context,
         )
@@ -159,68 +167,79 @@ where
             })?;
         let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
         let body = NacelleBody::new(body_rx, decoded.body_len);
-        let h = handler.clone();
-        let state = runtime_state.clone();
-        let tcp_limits = *tcp_limits;
-        let connection = connection.clone();
-        let handler_telemetry = telemetry.clone();
-        let handler_metrics_context = metrics_context.cloned();
-        let handler_task = nacelle_core::runtime::spawn(async move {
-            execute_handler_with_metrics(
-                &h,
-                request,
-                request_meta,
-                body,
-                &state,
-                &connection,
-                &handler_telemetry,
-                handler_metrics_context.as_ref(),
-            )
-            .await
-        });
-
-        let body_started = start_tcp_phase(telemetry);
-        let pump_result = pump_request_body(
+        let handler_future = execute_handler_with_metrics(
+            handler,
+            request,
+            body,
+            response_context,
+            runtime_state,
+            connection_context,
+            telemetry,
+            metrics_context,
+        );
+        let pump_future = pump_request_body(
             reader,
             read_buf,
             decoded.body_len,
-            &body_tx,
+            body_tx,
             config,
-            &tcp_limits,
-        )
-        .await;
-        finish_tcp_phase(
-            telemetry,
-            metrics_context,
-            "request_body_read",
-            body_started,
+            tcp_limits,
         );
-        if let Err(error) = &pump_result {
-            record_tcp_error(telemetry, metrics_context, "request_body_read", error);
-        }
-        drop(body_tx);
-        let outcome = match handler_task.await {
-            Ok(outcome) => outcome?,
-            Err(error) => {
-                let error = NacelleError::from(error);
-                record_tcp_error(telemetry, metrics_context, "handler_join", &error);
-                return Err(error);
+        tokio::pin!(handler_future);
+        tokio::pin!(pump_future);
+
+        tokio::select! {
+            biased;
+            pump_result = &mut pump_future => {
+                match pump_result {
+                    Ok(()) => handler_future.await,
+                    Err(error) => {
+                        record_tcp_error(
+                            telemetry,
+                            metrics_context,
+                            "request_body_read",
+                            &error,
+                        );
+                        Err(error)
+                    }
+                }
             }
-        };
-        pump_result?;
-        Ok(outcome)
+            handler_result = &mut handler_future => {
+                match handler_result {
+                    Ok(completion) => {
+                        let body_started = start_tcp_phase(telemetry);
+                        let pump_result = pump_future.await;
+                        finish_tcp_phase(
+                            telemetry,
+                            metrics_context,
+                            "request_body_read",
+                            body_started,
+                        );
+                        if let Err(error) = &pump_result {
+                            record_tcp_error(telemetry, metrics_context, "request_body_read", error);
+                        }
+                        pump_result?;
+                        Ok(completion)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+        }
     };
 
     match outcome {
-        Ok(response) => {
-            let prev_response_len = write_buf.len();
+        Ok(completion) => {
             let encode_started = start_tcp_phase(telemetry);
-            let encode_result = encode_response_body::<P>(
+            let encode_result = encode_response_body::<P, W>(
                 protocol,
-                response_context,
-                response,
+                completion.into_inner(),
+                writer,
+                tcp_limits,
                 write_buf,
+                config.response_buffer_capacity,
                 runtime_state,
+                telemetry,
+                metrics_context,
             )
             .await;
             finish_tcp_phase(
@@ -229,11 +248,19 @@ where
                 "response_encode",
                 encode_started,
             );
-            if let Err(error) = encode_result {
-                record_tcp_error(telemetry, metrics_context, "response_encode", &error);
-                return Err(error);
-            }
-            let response_bytes = write_buf.len().saturating_sub(prev_response_len);
+            let response_bytes = match encode_result {
+                Ok(response_bytes) => response_bytes,
+                Err(delivery_error) => {
+                    record_tcp_error(
+                        telemetry,
+                        metrics_context,
+                        "response_encode",
+                        &delivery_error.error,
+                    );
+                    request_metrics.complete("error", delivery_error.delivered_bytes);
+                    return Err(delivery_error.error);
+                }
+            };
             record_core_request_completed(
                 telemetry,
                 core_request_events,
@@ -245,7 +272,6 @@ where
             request_metrics.complete("ok", response_bytes);
         }
         Err(error) => {
-            let prev_response_len = write_buf.len();
             record_tcp_error(telemetry, metrics_context, "handler", &error);
             record_core_request_failed(
                 telemetry,
@@ -254,14 +280,26 @@ where
                 request_started,
                 &error,
             );
-            write_error::<P>(
-                write_buf,
+            let response_bytes = match write_error::<P, W>(
+                writer,
                 protocol,
                 Some(error_context),
-                error,
+                &error,
                 config.response_buffer_capacity,
-            )?;
-            let response_bytes = write_buf.len().saturating_sub(prev_response_len);
+                tcp_limits,
+                write_buf,
+                runtime_state,
+                telemetry,
+                metrics_context,
+            )
+            .await
+            {
+                Ok(response_bytes) => response_bytes,
+                Err(delivery_error) => {
+                    request_metrics.complete("error", delivery_error.delivered_bytes);
+                    return Err(delivery_error.error);
+                }
+            };
             record_core_request_completed(
                 telemetry,
                 core_request_events,
@@ -271,6 +309,7 @@ where
                 request_started,
             );
             request_metrics.complete("error", response_bytes);
+            return Err(error);
         }
     }
 
@@ -278,52 +317,56 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_handler_with_metrics<Req, H>(
+async fn execute_handler_with_metrics<P, H>(
     handler: &H,
-    request: Req,
-    request_meta: TcpRequestMeta,
+    request: P::Request,
     body: NacelleBody,
+    response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
-    connection: &NacelleConnectionMeta,
+    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
     telemetry: &NacelleTelemetry,
     metrics_context: Option<&NacelleMetricsContext>,
-) -> Result<NacelleResponse, NacelleError>
+) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
-    Req: Send + 'static,
-    H: Handler,
+    P: Protocol,
+    H: TcpHandler<P>,
 {
     let handler_started = metrics_context.and_then(|_| start_tcp_phase(telemetry));
     let result = execute_handler(
         handler,
         request,
-        request_meta,
         body,
+        response_context,
         runtime_state,
-        connection,
+        connection_context,
     )
     .await;
     finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
     result
 }
 
-async fn execute_handler<Req, H>(
+async fn execute_handler<P, H>(
     handler: &H,
-    _request: Req,
-    request_meta: TcpRequestMeta,
+    request: P::Request,
     body: NacelleBody,
+    response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
-    connection: &NacelleConnectionMeta,
-) -> Result<NacelleResponse, NacelleError>
+    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
-    Req: Send + 'static,
-    H: Handler,
+    P: Protocol,
+    H: TcpHandler<P>,
 {
-    let request = NacelleRequest {
-        connection: connection.clone(),
-        meta: NacelleRequestMeta::Tcp(request_meta),
-        body,
-    };
-    let future = handler.call(request);
+    let context = RequestContext::new(
+        TcpRequest {
+            head: request,
+            body,
+        },
+        RequiredResponder::new(TcpResponder::new(response_context)),
+        (),
+        connection_context.clone(),
+    );
+    let future = handler.call(context);
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await

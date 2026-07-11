@@ -3,10 +3,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 
 use super::common::{bind_tcp_listener, run_accept_loop};
@@ -18,7 +17,7 @@ pub async fn serve_tcp<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_shutdown(server, addr, token).await
@@ -32,7 +31,7 @@ pub async fn serve_tcp_with_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_with_shutdown_timeout(server, addr, shutdown, Duration::from_secs(30)).await
 }
@@ -47,7 +46,7 @@ pub async fn serve_tcp_with_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_with_shutdown_deadline(
         server,
@@ -66,7 +65,7 @@ pub async fn serve_tcp_with_options<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_options_and_shutdown(server, addr, tcp_options, token).await
@@ -81,7 +80,7 @@ pub async fn serve_tcp_with_options_and_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_with_options_and_shutdown_timeout(
         server,
@@ -104,7 +103,7 @@ pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_with_options_and_shutdown_deadline(
         server,
@@ -126,7 +125,7 @@ pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -148,7 +147,7 @@ pub async fn serve_tcp_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &NacelleTcpBindOptions::default())?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -171,7 +170,7 @@ pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let bind_options = NacelleTcpBindOptions::from(tcp_options.clone());
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -194,7 +193,7 @@ pub async fn serve_tcp_listener_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_listener_with_options_and_shutdown_deadline(
         server,
@@ -216,7 +215,7 @@ pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     run_accept_loop(
         server,

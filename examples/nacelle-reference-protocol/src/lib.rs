@@ -1,9 +1,10 @@
 //! Example length-delimited protocol used by Nacelle examples and tests.
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::{NacelleError, TcpRequestMeta, TcpResponseMeta};
-use nacelle_tcp::{DecodedRequest, Protocol};
+use nacelle_core::pipeline::ConnectionInfo;
+use nacelle_core::{NacelleBody, NacelleError};
+use nacelle_tcp::{DecodedRequest, FrameBuffer, Protocol, TcpResponse};
 
 const HEADER_LEN: usize = 24;
 const FIXED_FRAME_FIELDS_LEN: usize = HEADER_LEN - 4;
@@ -49,7 +50,8 @@ impl LengthDelimitedProtocol {
         body: &[u8],
     ) -> Result<Bytes, NacelleError> {
         let mut dst = BytesMut::with_capacity(HEADER_LEN + body.len());
-        encode_frame(request_id, opcode, flags, body, &mut dst)?;
+        let mut frame = FrameBuffer::new(&mut dst, HEADER_LEN + body.len());
+        encode_frame(request_id, opcode, flags, body, &mut frame)?;
         Ok(dst.freeze())
     }
 }
@@ -100,6 +102,8 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
 
 impl Protocol for LengthDelimitedProtocol {
     type Request = FrameRequest;
+    type Response = TcpResponse;
+    type ConnectionState = ();
     type Decoder = LengthDelimitedRequestDecoder;
     type ResponseContext = FrameResponseContext;
     type ErrorContext = FrameErrorContext;
@@ -108,13 +112,10 @@ impl Protocol for LengthDelimitedProtocol {
         LengthDelimitedRequestDecoder { max_frame_len }
     }
 
-    fn request_meta(&self, request: &Self::Request, _body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: Some(request.request_id),
-            opcode: request.opcode,
-            flags: request.flags,
-            body_len: request.body_len,
-        }
+    fn connection_state(&self, _: &ConnectionInfo) {}
+
+    fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
+        HEADER_LEN + body_len
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
@@ -132,20 +133,21 @@ impl Protocol for LengthDelimitedProtocol {
         }
     }
 
-    fn apply_tcp_response_meta(&self, context: &mut Self::ResponseContext, meta: &TcpResponseMeta) {
-        if let Some(request_id) = meta.request_id {
-            context.request_id = request_id;
-        }
-        if let Some(opcode) = meta.opcode {
-            context.opcode = opcode;
-        }
+    fn apply_response(&self, _context: &mut Self::ResponseContext, _response: &Self::Response) {}
+
+    fn max_response_frame_overhead(&self) -> usize {
+        HEADER_LEN
+    }
+
+    fn response_body(&self, response: Self::Response) -> NacelleBody {
+        response.body
     }
 
     fn encode_response_chunk(
         &self,
         context: &mut Self::ResponseContext,
         chunk: Bytes,
-        dst: &mut BytesMut,
+        dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let mut flags = 0;
         if !context.started {
@@ -159,7 +161,7 @@ impl Protocol for LengthDelimitedProtocol {
     fn encode_response_end(
         &self,
         context: &mut Self::ResponseContext,
-        dst: &mut BytesMut,
+        dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let mut flags = FRAME_FLAG_END;
         if !context.started {
@@ -174,7 +176,7 @@ impl Protocol for LengthDelimitedProtocol {
         &self,
         context: &mut Self::ResponseContext,
         chunk: Bytes,
-        dst: &mut BytesMut,
+        dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let mut flags = FRAME_FLAG_END;
         if !context.started {
@@ -189,7 +191,7 @@ impl Protocol for LengthDelimitedProtocol {
         &self,
         context: Option<&Self::ErrorContext>,
         error: &NacelleError,
-        dst: &mut BytesMut,
+        dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let (request_id, opcode) = context
             .map(|context| (context.request_id, context.opcode))
@@ -210,19 +212,18 @@ fn encode_frame(
     opcode: u64,
     flags: u32,
     body: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut FrameBuffer<'_>,
 ) -> Result<(), NacelleError> {
     let frame_len = FIXED_FRAME_FIELDS_LEN + body.len();
     let frame_len = u32::try_from(frame_len).map_err(|_| NacelleError::FrameTooLarge {
         len: frame_len,
         max: u32::MAX as usize,
     })?;
-    dst.reserve(HEADER_LEN + body.len());
-    dst.put_u32_le(frame_len);
-    dst.put_u64_le(request_id);
-    dst.put_u64_le(opcode);
-    dst.put_u32_le(flags);
-    dst.extend_from_slice(body);
+    dst.put_u32_le(frame_len)?;
+    dst.put_u64_le(request_id)?;
+    dst.put_u64_le(opcode)?;
+    dst.put_u32_le(flags)?;
+    dst.extend_from_slice(body)?;
     Ok(())
 }
 

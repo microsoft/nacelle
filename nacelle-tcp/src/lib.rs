@@ -19,7 +19,10 @@ pub use options::NacelleUnixSocketOptions;
 pub use options::{
     NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions, NacelleTlsDetectionOptions,
 };
-pub use protocol::{DecodedRequest, Protocol};
+pub use protocol::{
+    DecodedRequest, FrameBuffer, Protocol, TcpCompletion, TcpHandler, TcpHandlerCompletion,
+    TcpRequest, TcpRequestContext, TcpResponder, TcpResponse,
+};
 pub use server::{NacelleServer, NacelleServerBuilder, TcpServer};
 pub use telemetry::{
     NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleTelemetry, NacelleTelemetryConfig,

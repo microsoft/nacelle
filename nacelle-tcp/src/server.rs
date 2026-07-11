@@ -8,13 +8,10 @@ use crate::connection::{
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::{
-    NacelleConnectionExtension, NacelleConnectionExtensionFactory, NacelleConnectionMeta,
-};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::NacelleTelemetry;
 use std::sync::Arc as StdArc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -26,21 +23,17 @@ pub struct Present;
 
 pub struct NacelleServer<P, H = ()> {
     protocol: Arc<P>,
-    handler: H,
+    handler: Arc<H>,
     config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
-    connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
 }
 
 pub type TcpServer<P, H = ()> = NacelleServer<P, H>;
 
-impl<P, H> Clone for NacelleServer<P, H>
-where
-    H: Clone,
-{
+impl<P, H> Clone for NacelleServer<P, H> {
     fn clone(&self) -> Self {
         Self {
             protocol: self.protocol.clone(),
@@ -50,7 +43,6 @@ where
             runtime_state: self.runtime_state.clone(),
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
-            connection_extension_factory: self.connection_extension_factory.clone(),
         }
     }
 }
@@ -65,7 +57,6 @@ impl<P> NacelleServer<P, ()> {
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: StdArc::from("direct"),
-            connection_extension_factory: None,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
@@ -75,7 +66,7 @@ impl<P> NacelleServer<P, ()> {
 impl<P, H> NacelleServer<P, H>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
         &self.config
@@ -123,20 +114,6 @@ where
         self
     }
 
-    fn attach_connection_extension(
-        &self,
-        connection: NacelleConnectionMeta,
-    ) -> NacelleConnectionMeta {
-        let Some(factory) = &self.connection_extension_factory else {
-            return connection.with_listener(self.listener.clone());
-        };
-        let connection = connection.with_listener(self.listener.clone());
-        let Some(extension) = factory(&connection) else {
-            return connection;
-        };
-        connection.with_extension_arc(extension)
-    }
-
     pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
     where
         R: AsyncRead + Unpin + Send + 'static,
@@ -151,7 +128,7 @@ where
             self.telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
-            self.attach_connection_extension(NacelleConnectionMeta::tcp(None, None)),
+            NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
         )
         .await
     }
@@ -176,7 +153,7 @@ where
             self.telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
-            self.attach_connection_extension(connection),
+            connection.with_listener(self.listener.clone()),
         )
         .await
     }
@@ -194,7 +171,7 @@ where
             self.telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
-            self.attach_connection_extension(NacelleConnectionMeta::tcp(None, None)),
+            NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
         )
         .await
     }
@@ -216,7 +193,7 @@ where
             self.telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
-            self.attach_connection_extension(connection),
+            connection.with_listener(self.listener.clone()),
         )
         .await
     }
@@ -237,7 +214,7 @@ where
             self.telemetry.clone(),
             self.runtime_state.clone(),
             self.tcp_limits,
-            self.attach_connection_extension(connection),
+            connection.with_listener(self.listener.clone()),
         )
         .await
     }
@@ -251,7 +228,6 @@ pub struct NacelleServerBuilder<ProtocolState, HandlerState, P, H> {
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
-    connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
     _protocol: PhantomData<ProtocolState>,
     _handler: PhantomData<HandlerState>,
 }
@@ -281,36 +257,6 @@ impl<ProtocolState, HandlerState, P, H> NacelleServerBuilder<ProtocolState, Hand
         self.listener = listener.into();
         self
     }
-
-    pub fn connection_extension_factory<F, E>(mut self, factory: F) -> Self
-    where
-        F: Fn(&NacelleConnectionMeta) -> E + Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        self.connection_extension_factory = Some(Arc::new(move |meta| {
-            Some(Arc::new(factory(meta)) as NacelleConnectionExtension)
-        }));
-        self
-    }
-
-    pub fn optional_connection_extension_factory<F, E>(mut self, factory: F) -> Self
-    where
-        F: Fn(&NacelleConnectionMeta) -> Option<E> + Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        self.connection_extension_factory = Some(Arc::new(move |meta| {
-            factory(meta).map(|extension| Arc::new(extension) as NacelleConnectionExtension)
-        }));
-        self
-    }
-
-    pub fn connection_extension_factory_arc(
-        mut self,
-        factory: NacelleConnectionExtensionFactory,
-    ) -> Self {
-        self.connection_extension_factory = Some(factory);
-        self
-    }
 }
 
 impl<HandlerState, P, H> NacelleServerBuilder<Missing, HandlerState, P, H> {
@@ -323,7 +269,6 @@ impl<HandlerState, P, H> NacelleServerBuilder<Missing, HandlerState, P, H> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-            connection_extension_factory: self.connection_extension_factory,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
@@ -340,7 +285,6 @@ impl<ProtocolState, P, H> NacelleServerBuilder<ProtocolState, Missing, P, H> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-            connection_extension_factory: self.connection_extension_factory,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
@@ -350,7 +294,7 @@ impl<ProtocolState, P, H> NacelleServerBuilder<ProtocolState, Missing, P, H> {
 impl<P, H> NacelleServerBuilder<Present, Present, P, H>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     pub fn build(self) -> Result<NacelleServer<P, H>, NacelleError> {
         let protocol = self.protocol.ok_or(NacelleError::MissingProtocol)?;
@@ -361,13 +305,12 @@ where
 
         Ok(NacelleServer {
             protocol,
-            handler,
+            handler: Arc::new(handler),
             config: self.config,
             telemetry: self.telemetry,
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-            connection_extension_factory: self.connection_extension_factory,
         })
     }
 }

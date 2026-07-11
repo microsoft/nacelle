@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
+use nacelle::core::pipeline::handler_fn;
 use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown};
 use nacelle::prelude::*;
-use nacelle::tcp::{NacelleTcpConfig, TcpServer};
+use nacelle::tcp::{NacelleTcpConfig, TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR, LengthDelimitedProtocol};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -38,15 +39,17 @@ async fn main() -> Result<(), NacelleError> {
         .with_max_frame_len(HELD_BODY_BYTES + 20);
     let server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
-        .handler(handler_fn(|mut request: NacelleRequest| async move {
-            let mut bytes = 0_usize;
-            while let Some(chunk) = request.body.next_chunk().await {
-                bytes += chunk?.len();
-            }
-            Ok(NacelleResponse::tcp_bytes(format!(
-                "accepted {bytes} bytes\n"
-            )))
-        }))
+        .handler(handler_fn(
+            |mut context: TcpRequestContext<LengthDelimitedProtocol>| async move {
+                let mut bytes = 0_usize;
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    bytes += chunk?.len();
+                }
+                context
+                    .respond(TcpResponse::bytes(format!("accepted {bytes} bytes\n")))
+                    .await
+            },
+        ))
         .tcp_config(config)
         .runtime_state(runtime_state.clone())
         .build()?;

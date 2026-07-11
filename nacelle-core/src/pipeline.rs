@@ -22,10 +22,6 @@ use crate::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
 use crate::telemetry::NacelleTransport;
 
 /// Immutable transport metadata for one accepted connection.
-///
-/// Unlike [`NacelleConnectionMeta`], this type does not contain a dynamically
-/// typed extension. New low-latency pipelines should carry connection state in
-/// [`ConnectionContext::state`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo {
     /// Stable connection identifier.
@@ -636,12 +632,28 @@ mod tests {
     }
 
     #[test]
-    fn connection_info_drops_dynamic_extension() {
-        let metadata = NacelleConnectionMeta::tcp(None, None).with_extension(42_u64);
+    fn connection_info_conversion_preserves_metadata() {
+        let peer_addr = "192.0.2.10:1234".parse().expect("valid peer address");
+        let local_addr = "192.0.2.20:4321".parse().expect("valid local address");
+        let metadata = NacelleConnectionMeta::tcp(Some(peer_addr), Some(local_addr))
+            .with_connection_id(42)
+            .with_listener("test-listener")
+            .with_tls(NacelleConnectionTlsMeta::new("test-tls").with_protocol("test-protocol"));
         let info = ConnectionInfo::from(&metadata);
 
-        assert_eq!(info.connection_id, metadata.connection_id);
-        assert_eq!(info.transport, metadata.transport);
+        assert_eq!(
+            info,
+            ConnectionInfo {
+                connection_id: metadata.connection_id,
+                transport: metadata.transport,
+                listener: metadata.listener.clone(),
+                peer_addr: metadata.peer_addr,
+                peer_ip: metadata.peer_ip,
+                local_addr: metadata.local_addr,
+                local_path: metadata.local_path.clone(),
+                tls: metadata.tls.clone(),
+            }
+        );
     }
 
     #[tokio::test]

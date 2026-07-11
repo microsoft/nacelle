@@ -5,21 +5,21 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::handler_fn;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
-use nacelle_core::request::{NacelleRequest, TcpRequestMeta};
-use nacelle_core::response::NacelleResponse;
+use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::tls::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::protocol::{DecodedRequest, Protocol};
+use crate::protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse};
 use crate::server::TcpServer;
 
 use super::openssl::serve_tcp_openssl_listener_with_shutdown_deadline;
 use super::openssl_optional::peeked_bytes_can_be_tls;
 
 #[derive(Debug)]
-struct PlainRequest;
+struct PlainRequest {
+    head_len: usize,
+}
 
 struct PlainProtocol;
 
@@ -33,9 +33,10 @@ impl MessageDecoder for PlainDecoder {
         if src.is_empty() {
             return Ok(None);
         }
+        let head_len = src.len();
         src.clear();
         Ok(Some(DecodedRequest {
-            request: PlainRequest,
+            request: PlainRequest { head_len },
             body_len: 0,
         }))
     }
@@ -43,6 +44,8 @@ impl MessageDecoder for PlainDecoder {
 
 impl Protocol for PlainProtocol {
     type Request = PlainRequest;
+    type Response = TcpResponse;
+    type ConnectionState = ();
     type Decoder = PlainDecoder;
     type ResponseContext = ();
     type ErrorContext = ();
@@ -51,33 +54,49 @@ impl Protocol for PlainProtocol {
         PlainDecoder
     }
 
-    fn request_meta(&self, _request: &Self::Request, body_len: usize) -> TcpRequestMeta {
-        TcpRequestMeta {
-            request_id: None,
-            opcode: 1,
-            flags: 0,
-            body_len,
-        }
+    fn connection_state(&self, _: &ConnectionInfo) {}
+
+    fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize {
+        request.head_len + body_len
     }
 
     fn response_context(&self, _req: &PlainRequest) -> Self::ResponseContext {}
 
     fn error_context(&self, _req: &PlainRequest) -> Self::ErrorContext {}
 
+    fn apply_response(&self, _context: &mut Self::ResponseContext, _response: &Self::Response) {}
+
+    fn max_response_frame_overhead(&self) -> usize {
+        0
+    }
+
+    fn response_body(&self, response: Self::Response) -> nacelle_core::request::NacelleBody {
+        response.body
+    }
+
     fn encode_response_chunk(
         &self,
         _context: &mut Self::ResponseContext,
         chunk: Bytes,
-        dst: &mut BytesMut,
+        dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
-        dst.extend_from_slice(&chunk);
+        dst.extend_from_slice(&chunk)?;
         Ok(())
+    }
+
+    fn encode_response_terminal_chunk(
+        &self,
+        context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        self.encode_response_chunk(context, chunk, dst)
     }
 
     fn encode_response_end(
         &self,
         _context: &mut Self::ResponseContext,
-        _dst: &mut BytesMut,
+        _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())
     }
@@ -86,7 +105,7 @@ impl Protocol for PlainProtocol {
         &self,
         _context: Option<&Self::ErrorContext>,
         _error: &NacelleError,
-        _dst: &mut BytesMut,
+        _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())
     }
@@ -118,9 +137,9 @@ async fn required_openssl_rejects_plaintext_before_handler() {
         .protocol(PlainProtocol)
         .handler(handler_fn({
             let handler_called = handler_called.clone();
-            move |_request: NacelleRequest| {
+            move |context: TcpRequestContext<PlainProtocol>| {
                 handler_called.store(true, Ordering::SeqCst);
-                async move { Ok(NacelleResponse::empty_tcp()) }
+                async move { context.respond(TcpResponse::empty()).await }
             }
         }))
         .build()

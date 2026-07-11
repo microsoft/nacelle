@@ -1,10 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nacelle::codec::MessageReader;
-use nacelle::core::{
-    Handler as CurrentHandler, NacelleBody, NacelleConnectionMeta, NacelleRequest,
-    NacelleRequestMeta, NacelleResponse, TcpRequestMeta, handler_fn as current_handler_fn,
-};
+use nacelle::tcp::FrameBuffer;
 use nacelle::{
     MessageDecoder, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleRuntimeState,
     NacelleTelemetry, NacelleTransport, Protocol,
@@ -29,33 +26,10 @@ const PIPELINE_BODY_LEN: usize = 32;
 
 fn handler_boundary_benches(c: &mut Criterion) {
     let body = Bytes::from_static(&[0xAB; PIPELINE_BODY_LEN]);
-    let current = current_handler_fn(|request: NacelleRequest| async move {
-        Ok(NacelleResponse::tcp(request.body))
-    });
     let typed = TcpEcho;
     let observed = ObserveLayer.layer(TcpEcho);
 
-    let mut group = c.benchmark_group("handler_boundary_32_bytes");
-    group.bench_function("current_detached_response", |b| {
-        b.iter_batched(
-            || NacelleRequest {
-                connection: NacelleConnectionMeta::tcp(None, None),
-                meta: NacelleRequestMeta::Tcp(TcpRequestMeta {
-                    request_id: Some(7),
-                    opcode: 1,
-                    flags: 0,
-                    body_len: body.len(),
-                }),
-                body: NacelleBody::bytes(body.clone()),
-            },
-            |request| {
-                black_box(complete_immediately(CurrentHandler::call(
-                    &current, request,
-                )))
-            },
-            BatchSize::SmallInput,
-        )
-    });
+    let mut group = c.benchmark_group("typed_handler_boundary_32_bytes");
     group.bench_function("typed_direct_tcp_encode", |b| {
         b.iter_batched(
             || BytesMut::with_capacity(64),
@@ -200,8 +174,10 @@ fn protocol_frame_benches(c: &mut Criterion) {
                 )
             },
             |(mut context, mut dst)| {
+                let frame_capacity = protocol.max_response_frame_overhead() + response_chunk.len();
+                let mut frame = FrameBuffer::new(&mut dst, frame_capacity);
                 protocol
-                    .encode_response_chunk(&mut context, response_chunk.clone(), &mut dst)
+                    .encode_response_chunk(&mut context, response_chunk.clone(), &mut frame)
                     .expect("response chunk should encode");
                 black_box(dst)
             },

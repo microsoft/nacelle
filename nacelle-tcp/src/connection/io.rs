@@ -46,22 +46,92 @@ where
     }
 }
 
-pub(super) async fn write_all_with_timeout<W>(
+pub(super) async fn write_all_tracked_with_timeout<W>(
     writer: &mut W,
     buf: &[u8],
     tcp_limits: &NacelleTcpLimits,
     name: &'static str,
-) -> Result<(), NacelleError>
+) -> Result<usize, (NacelleError, usize)>
 where
     W: AsyncWrite + Unpin,
 {
-    let future = writer.write_all(buf);
+    async fn write_loop<W>(
+        writer: &mut W,
+        mut buf: &[u8],
+        written: &mut usize,
+    ) -> Result<(), NacelleError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        while !buf.is_empty() {
+            let bytes = writer.write(buf).await.map_err(NacelleError::from)?;
+            if bytes == 0 {
+                return Err(NacelleError::ConnectionClosed);
+            }
+            *written = written.saturating_add(bytes);
+            buf = buf.get(bytes..).unwrap_or_default();
+        }
+        Ok(())
+    }
+
+    let mut written = 0_usize;
     if let Some(timeout) = tcp_limits.write_timeout {
-        tokio::time::timeout(timeout, future)
-            .await
-            .map_err(|_| NacelleError::Timeout(name))?
-            .map_err(NacelleError::from)
+        match tokio::time::timeout(timeout, write_loop(writer, buf, &mut written)).await {
+            Ok(Ok(())) => Ok(written),
+            Ok(Err(error)) => Err((error, written)),
+            Err(_) => Err((NacelleError::Timeout(name), written)),
+        }
     } else {
-        future.await.map_err(NacelleError::from)
+        write_loop(writer, buf, &mut written)
+            .await
+            .map(|()| written)
+            .map_err(|error| (error, written))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use std::time::Duration;
+
+    use tokio::io::AsyncWrite;
+
+    use super::*;
+
+    struct PartialThenPending {
+        wrote: bool,
+    }
+
+    impl AsyncWrite for PartialThenPending {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.wrote {
+                return Poll::Pending;
+            }
+            self.wrote = true;
+            Poll::Ready(Ok(buf.len().min(3)))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_frame_timeout_preserves_partial_progress() {
+        let mut writer = PartialThenPending { wrote: false };
+        let limits = NacelleTcpLimits::default().with_write_timeout(Duration::from_millis(10));
+
+        let result = write_all_tracked_with_timeout(&mut writer, b"abcdef", &limits, "test").await;
+
+        assert!(matches!(result, Err((NacelleError::Timeout("test"), 3))));
     }
 }

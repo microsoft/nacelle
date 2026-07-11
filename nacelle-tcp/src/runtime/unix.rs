@@ -5,10 +5,9 @@ use std::time::Duration;
 use tokio::net::UnixListener;
 
 use crate::options::NacelleUnixSocketOptions;
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
@@ -28,7 +27,7 @@ pub async fn serve_unix<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_unix_with_shutdown(server, path, token).await
@@ -42,7 +41,7 @@ pub async fn serve_unix_with_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_unix_with_shutdown_timeout(server, path, shutdown, Duration::from_secs(30)).await
 }
@@ -57,7 +56,7 @@ pub async fn serve_unix_with_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_unix_with_shutdown_deadline(
         server,
@@ -76,7 +75,7 @@ pub async fn serve_unix_with_options<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_unix_with_options_and_shutdown(server, path, unix_options, token).await
@@ -92,7 +91,7 @@ pub async fn serve_unix_with_options_and_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_unix_with_options_and_shutdown_timeout(
         server,
@@ -115,7 +114,7 @@ pub async fn serve_unix_with_options_and_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_unix_with_options_and_shutdown_deadline(
         server,
@@ -136,7 +135,7 @@ pub async fn serve_unix_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_unix_with_options_and_shutdown_deadline(
         server,
@@ -158,7 +157,7 @@ pub async fn serve_unix_with_options_and_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let path = path.as_ref();
     unix_options.prepare_path(path)?;
@@ -184,7 +183,7 @@ pub async fn serve_unix_listener_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let mut connections = tokio::task::JoinSet::new();
     loop {

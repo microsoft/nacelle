@@ -1,16 +1,14 @@
 #[cfg(feature = "tcp")]
+use std::marker::PhantomData;
+#[cfg(feature = "tcp")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(all(feature = "tcp", unix))]
 use std::path::Path;
 use std::sync::Arc;
 
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::NacelleShutdown;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
-use nacelle_core::request::{
-    NacelleConnectionExtension, NacelleConnectionExtensionFactory, NacelleConnectionMeta,
-};
 use nacelle_core::telemetry::NacelleTelemetry;
 
 use crate::host::NacelleHost;
@@ -24,11 +22,11 @@ use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{
     NacelleTcpBindOptions, NacelleTcpConfig, NacelleTcpLimits, NacelleTcpOptions, Protocol,
-    TcpServer,
+    TcpHandler, TcpServer,
 };
 
 pub struct NacelleApp<H> {
-    handler: H,
+    handler: Arc<H>,
     #[cfg(feature = "tcp")]
     tcp_config: NacelleTcpConfig,
     telemetry: NacelleTelemetry,
@@ -38,17 +36,13 @@ pub struct NacelleApp<H> {
     shutdown: NacelleShutdown,
     ctrl_c_shutdown: bool,
     drain_timeout: std::time::Duration,
-    connection_extension_factory: Option<NacelleConnectionExtensionFactory>,
 }
 
-impl<H> NacelleApp<H>
-where
-    H: Handler,
-{
+impl<H> NacelleApp<H> {
     /// Create an app from the handler used by every configured transport.
     pub fn new(handler: H) -> Self {
         Self {
-            handler,
+            handler: Arc::new(handler),
             #[cfg(feature = "tcp")]
             tcp_config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
@@ -58,7 +52,6 @@ where
             shutdown: NacelleShutdown::new(),
             ctrl_c_shutdown: false,
             drain_timeout: std::time::Duration::from_secs(30),
-            connection_extension_factory: None,
         }
     }
 
@@ -113,30 +106,8 @@ where
         self
     }
 
-    pub fn with_connection_extension_factory<F, E>(mut self, factory: F) -> Self
-    where
-        F: Fn(&NacelleConnectionMeta) -> E + Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        self.connection_extension_factory = Some(Arc::new(move |meta| {
-            Some(Arc::new(factory(meta)) as NacelleConnectionExtension)
-        }));
-        self
-    }
-
-    pub fn with_optional_connection_extension_factory<F, E>(mut self, factory: F) -> Self
-    where
-        F: Fn(&NacelleConnectionMeta) -> Option<E> + Send + Sync + 'static,
-        E: Send + Sync + 'static,
-    {
-        self.connection_extension_factory = Some(Arc::new(move |meta| {
-            factory(meta).map(|extension| Arc::new(extension) as NacelleConnectionExtension)
-        }));
-        self
-    }
-
     pub fn handler(&self) -> &H {
-        &self.handler
+        self.handler.as_ref()
     }
 
     /// Install the configured protocols and run the app until shutdown.
@@ -167,13 +138,11 @@ impl<H> NacelleProtocols<H> {
 }
 
 #[cfg(feature = "tcp")]
-impl<H> NacelleProtocols<H>
-where
-    H: Handler,
-{
+impl<H> NacelleProtocols<H> {
     pub fn tcp<P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_with_options(name, addr, protocol, NacelleTcpOptions::default())
     }
@@ -187,6 +156,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_with_bind_options(
             name,
@@ -205,6 +175,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -218,6 +189,7 @@ where
     pub fn tcp_dual_stack<P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         self.tcp_dual_stack_with_options(name, port, protocol, NacelleTcpOptions::default())
     }
@@ -231,6 +203,7 @@ where
     ) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -261,6 +234,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.unix_socket_with_options(name, path, protocol, NacelleUnixSocketOptions::default())
     }
@@ -275,6 +249,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -296,6 +271,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_openssl_with_options(
             name,
@@ -317,6 +293,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_openssl_with_bind_options(
             name,
@@ -338,6 +315,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -358,6 +336,7 @@ where
     ) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         self.tcp_openssl_dual_stack_with_options(
             name,
@@ -379,6 +358,7 @@ where
     ) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -412,6 +392,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_with_options(
             name,
@@ -435,6 +416,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_with_bind_options(
             name,
@@ -459,6 +441,7 @@ where
     ) -> Self
     where
         P: Protocol,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         self.installers.push(Box::new(move |host, app| {
@@ -486,6 +469,7 @@ where
     ) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         self.tcp_optional_openssl_dual_stack_with_options(
             name,
@@ -510,6 +494,7 @@ where
     ) -> Self
     where
         P: Protocol + Clone,
+        H: TcpHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
@@ -539,10 +524,7 @@ where
 pub async fn serve<H>(
     protocols: NacelleProtocols<H>,
     app: NacelleApp<H>,
-) -> Result<(), NacelleError>
-where
-    H: Handler,
-{
+) -> Result<(), NacelleError> {
     let ctrl_c_task = app
         .ctrl_c_shutdown
         .then(|| spawn_ctrl_c_shutdown(app.shutdown.clone()));
@@ -569,10 +551,37 @@ fn spawn_ctrl_c_shutdown(shutdown: NacelleShutdown) -> tokio::task::JoinHandle<(
 }
 
 #[cfg(feature = "tcp")]
-fn tcp_server<P, H>(protocol: P, app: &NacelleApp<H>) -> Result<TcpServer<P, H>, NacelleError>
+struct SharedTcpHandler<P, H> {
+    handler: Arc<H>,
+    _protocol: PhantomData<fn() -> P>,
+}
+
+#[cfg(feature = "tcp")]
+impl<P, H> nacelle_core::pipeline::Handler<nacelle_tcp::TcpRequestContext<P>>
+    for SharedTcpHandler<P, H>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
+{
+    type Completion = nacelle_tcp::TcpHandlerCompletion<P>;
+    type Error = NacelleError;
+
+    async fn call(
+        &self,
+        context: nacelle_tcp::TcpRequestContext<P>,
+    ) -> Result<Self::Completion, Self::Error> {
+        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context).await
+    }
+}
+
+#[cfg(feature = "tcp")]
+fn tcp_server<P, H>(
+    protocol: P,
+    app: &NacelleApp<H>,
+) -> Result<TcpServer<P, SharedTcpHandler<P, H>>, NacelleError>
+where
+    P: Protocol,
+    H: TcpHandler<P>,
 {
     let builder = TcpServer::<P>::builder()
         .protocol(protocol)
@@ -580,12 +589,12 @@ where
         .telemetry(app.telemetry.clone())
         .runtime_state(app.runtime_state.clone());
     let builder = builder.tcp_limits(app.tcp_limits);
-    let builder = if let Some(factory) = app.connection_extension_factory.clone() {
-        builder.connection_extension_factory_arc(factory)
-    } else {
-        builder
-    };
-    builder.handler(app.handler.clone()).build()
+    builder
+        .handler(SharedTcpHandler {
+            handler: app.handler.clone(),
+            _protocol: PhantomData,
+        })
+        .build()
 }
 
 #[cfg(test)]
@@ -601,31 +610,34 @@ mod tests {
 
     #[cfg(feature = "tcp")]
     mod tcp_tests {
-        use std::future::{Ready, ready};
-
         use bytes::{Bytes, BytesMut};
-        use nacelle_core::request::{NacelleRequest, TcpRequestMeta};
-        use nacelle_core::response::NacelleResponse;
-        use nacelle_tcp::{DecodedRequest, MessageDecoder};
+        use nacelle_core::pipeline::{ConnectionInfo, Handler as PipelineHandler};
+        use nacelle_tcp::{
+            DecodedRequest, FrameBuffer, MessageDecoder, TcpHandlerCompletion, TcpRequestContext,
+            TcpResponse,
+        };
 
         use super::*;
-
-        #[derive(Clone)]
-        struct TestHandler;
-
-        impl Handler for TestHandler {
-            type Future = Ready<Result<NacelleResponse, NacelleError>>;
-
-            fn call(&self, _request: NacelleRequest) -> Self::Future {
-                ready(Ok(NacelleResponse::empty_tcp()))
-            }
-        }
 
         #[derive(Debug)]
         struct TestRequest;
 
         #[derive(Clone)]
         struct TestProtocol;
+
+        struct TestHandler;
+
+        impl PipelineHandler<TcpRequestContext<TestProtocol>> for TestHandler {
+            type Completion = TcpHandlerCompletion<TestProtocol>;
+            type Error = NacelleError;
+
+            async fn call(
+                &self,
+                context: TcpRequestContext<TestProtocol>,
+            ) -> Result<Self::Completion, Self::Error> {
+                context.respond(TcpResponse::empty()).await
+            }
+        }
 
         struct TestDecoder;
 
@@ -643,6 +655,8 @@ mod tests {
 
         impl Protocol for TestProtocol {
             type Request = TestRequest;
+            type Response = TcpResponse;
+            type ConnectionState = ();
             type Decoder = TestDecoder;
             type ResponseContext = ();
             type ErrorContext = ();
@@ -651,33 +665,54 @@ mod tests {
                 TestDecoder
             }
 
-            fn request_meta(&self, _request: &Self::Request, body_len: usize) -> TcpRequestMeta {
-                TcpRequestMeta {
-                    request_id: None,
-                    opcode: 1,
-                    flags: 0,
-                    body_len,
-                }
+            fn connection_state(&self, _: &ConnectionInfo) {}
+
+            fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
+                body_len
             }
 
             fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}
 
             fn error_context(&self, _req: &TestRequest) -> Self::ErrorContext {}
 
+            fn apply_response(
+                &self,
+                _context: &mut Self::ResponseContext,
+                _response: &Self::Response,
+            ) {
+            }
+
+            fn max_response_frame_overhead(&self) -> usize {
+                0
+            }
+
+            fn response_body(&self, response: Self::Response) -> nacelle_core::NacelleBody {
+                response.body
+            }
+
             fn encode_response_chunk(
                 &self,
                 _context: &mut Self::ResponseContext,
                 chunk: Bytes,
-                dst: &mut BytesMut,
+                dst: &mut FrameBuffer<'_>,
             ) -> Result<(), NacelleError> {
-                dst.extend_from_slice(&chunk);
+                dst.extend_from_slice(&chunk)?;
                 Ok(())
+            }
+
+            fn encode_response_terminal_chunk(
+                &self,
+                context: &mut Self::ResponseContext,
+                chunk: Bytes,
+                dst: &mut FrameBuffer<'_>,
+            ) -> Result<(), NacelleError> {
+                self.encode_response_chunk(context, chunk, dst)
             }
 
             fn encode_response_end(
                 &self,
                 _context: &mut Self::ResponseContext,
-                _dst: &mut BytesMut,
+                _dst: &mut FrameBuffer<'_>,
             ) -> Result<(), NacelleError> {
                 Ok(())
             }
@@ -686,15 +721,10 @@ mod tests {
                 &self,
                 _context: Option<&Self::ErrorContext>,
                 _error: &NacelleError,
-                _dst: &mut BytesMut,
+                _dst: &mut FrameBuffer<'_>,
             ) -> Result<(), NacelleError> {
                 Ok(())
             }
-        }
-
-        #[derive(Debug)]
-        struct TestConnectionContext {
-            connection_id: u64,
         }
 
         #[test]
@@ -706,26 +736,6 @@ mod tests {
             );
 
             assert_eq!(protocols.installers.len(), 2);
-        }
-
-        #[test]
-        fn app_connection_extension_factory_builds_typed_state() {
-            let app = NacelleApp::new(TestHandler).with_connection_extension_factory(|meta| {
-                TestConnectionContext {
-                    connection_id: meta.connection_id,
-                }
-            });
-            let meta = NacelleConnectionMeta::tcp(None, None);
-            let extension = app
-                .connection_extension_factory
-                .as_ref()
-                .and_then(|factory| factory(&meta))
-                .expect("extension should be created");
-            let context = extension
-                .downcast::<TestConnectionContext>()
-                .expect("extension should have expected type");
-
-            assert_eq!(context.connection_id, meta.connection_id);
         }
 
         #[test]

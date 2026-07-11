@@ -7,10 +7,9 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use bytes::Bytes;
-use nacelle::{
-    Handler, NacelleError, NacelleRequest, NacelleResponse, NacelleRuntimeState, NacelleTcpConfig,
-    NacelleTcpLimits, TcpServer, handler_fn,
-};
+use nacelle::core::pipeline::handler_fn;
+use nacelle::tcp::{TcpHandler, TcpRequestContext, TcpResponse};
+use nacelle::{NacelleError, NacelleRuntimeState, NacelleTcpConfig, NacelleTcpLimits, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;
 use serde::Deserialize;
@@ -218,7 +217,10 @@ pub fn configure_allocator(low_memory: bool) {
 
 pub fn build_server(
     config: &ServerConfig,
-) -> Result<TcpServer<LengthDelimitedProtocol, impl Handler>, NacelleError> {
+) -> Result<
+    TcpServer<LengthDelimitedProtocol, impl TcpHandler<LengthDelimitedProtocol>>,
+    NacelleError,
+> {
     let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
     TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
@@ -231,22 +233,24 @@ pub fn build_server(
         )
         .runtime_state(NacelleRuntimeState::new(config.limits.clone()))
         .tcp_limits(config.tcp_limits)
-        .handler(handler_fn(move |mut request: NacelleRequest| {
-            let response_payload = response_payload.clone();
-            async move {
-                let opcode = request.tcp_opcode().unwrap_or_default();
-                while let Some(chunk) = request.body.next_chunk().await {
-                    let _ = chunk?;
+        .handler(handler_fn(
+            move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
+                let response_payload = response_payload.clone();
+                async move {
+                    let opcode = context.request().head.opcode;
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        let _ = chunk?;
+                    }
+                    if opcode != STRESS_OPCODE {
+                        return Err(NacelleError::handler(std::io::Error::other(format!(
+                            "unknown opcode {}",
+                            opcode
+                        ))));
+                    }
+                    context.respond(TcpResponse::bytes(response_payload)).await
                 }
-                if opcode != STRESS_OPCODE {
-                    return Err(NacelleError::handler(std::io::Error::other(format!(
-                        "unknown opcode {}",
-                        opcode
-                    ))));
-                }
-                Ok(NacelleResponse::tcp_bytes(response_payload))
-            }
-        }))
+            },
+        ))
         .build()
 }
 

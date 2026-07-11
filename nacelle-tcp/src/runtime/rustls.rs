@@ -2,10 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::protocol::Protocol;
+use crate::protocol::{Protocol, TcpHandler};
 use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
-use nacelle_core::handler::Handler;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::NacelleTransport;
@@ -20,7 +19,7 @@ pub async fn serve_tcp_tls<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_tls_with_shutdown(server, addr, tls_config, token).await
@@ -34,7 +33,7 @@ pub async fn serve_tcp_tls_with_shutdown<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_tls_with_shutdown_timeout(server, addr, tls_config, shutdown, Duration::from_secs(30))
         .await
@@ -49,7 +48,7 @@ pub async fn serve_tcp_tls_with_shutdown_timeout<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     serve_tcp_tls_with_shutdown_deadline(
         server,
@@ -71,7 +70,7 @@ pub async fn serve_tcp_tls_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let listener = bind_tcp_listener(addr, &Default::default())?;
     serve_tcp_tls_listener_with_shutdown_deadline(
@@ -94,7 +93,7 @@ pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: Handler,
+    H: TcpHandler<P>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     run_accept_loop(
