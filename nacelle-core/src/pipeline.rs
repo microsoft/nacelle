@@ -3,6 +3,14 @@
 //! These contracts are additive and are not yet used by the TCP or HTTP
 //! transports. They remain under `nacelle_core::pipeline` until both adapters
 //! prove their completion, cancellation, and connection-state semantics.
+//!
+//! A transport enforces required completion by accepting only a handler whose
+//! successful `Completion` is the corresponding [`RequiredCompletion`] or
+//! [`OptionalCompletion`] token. Safe application code cannot construct those
+//! tokens without consuming the responder. If a context is dropped instead,
+//! its concrete responder is dropped; transport responders must treat that as
+//! abandonment by updating synchronous state or cancellation guards. `Drop`
+//! must not perform asynchronous I/O.
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -82,7 +90,7 @@ impl<State> ConnectionContext<State> {
 /// boxed future or dynamically dispatched responder.
 ///
 /// ```compile_fail
-/// use nacelle_core::{NoResponse, Respond};
+/// use nacelle_core::pipeline::{NoResponse, Respond};
 /// fn requires_response<Responder: Respond>() {}
 /// requires_response::<NoResponse>();
 /// ```
@@ -106,6 +114,54 @@ pub trait Respond {
 /// `Connection` is normally a borrowed [`ConnectionContext`], allowing the
 /// transport to retain connection state across requests. It can also be another
 /// concrete handle when a transport has different sharing requirements.
+///
+/// One-way contexts do not expose `respond`:
+///
+/// ```compile_fail
+/// use nacelle_core::pipeline::{ConnectionContext, NoResponse, RequestContext};
+///
+/// fn respond_to_one_way(
+///     context: RequestContext<(), NoResponse, (), ConnectionContext<()>>,
+/// ) {
+///     context.respond(());
+/// }
+/// ```
+///
+/// A responder accepts only its associated response type:
+///
+/// ```compile_fail
+/// use std::convert::Infallible;
+/// use std::future::{Future, ready};
+/// use nacelle_core::pipeline::{
+///     ConnectionContext, RequestContext, RequiredResponder, Respond,
+/// };
+///
+/// struct TextResponder;
+///
+/// impl Respond for TextResponder {
+///     type Response = String;
+///     type Completion = ();
+///     type Error = Infallible;
+///
+///     fn respond(
+///         self,
+///         _response: Self::Response,
+///     ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
+///         ready(Ok(()))
+///     }
+/// }
+///
+/// fn respond_with_wrong_type(
+///     context: RequestContext<
+///         (),
+///         RequiredResponder<TextResponder>,
+///         (),
+///         ConnectionContext<()>,
+///     >,
+/// ) {
+///     context.respond(42_u64);
+/// }
+/// ```
 #[must_use = "request contexts must be completed, responded to, or returned as an error"]
 #[derive(Debug)]
 pub struct RequestContext<Request, Responder, AppState, Connection = ConnectionContext<()>> {
@@ -188,6 +244,10 @@ impl<Request, AppState, Connection> RequestContext<Request, NoResponse, AppState
 }
 
 /// Required response capability around a concrete transport responder.
+///
+/// The concrete inner responder should own a synchronous abandonment guard.
+/// Dropping this value without responding must mark the request cancelled or
+/// incomplete for the transport loop; it must not perform asynchronous I/O.
 #[must_use = "required responders must produce a response completion token"]
 #[derive(Debug)]
 pub struct RequiredResponder<Inner>(Inner);
