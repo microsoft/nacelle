@@ -13,6 +13,7 @@
 //! must not perform asynchronous I/O.
 
 use std::future::Future;
+use std::marker::PhantomData;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -212,6 +213,22 @@ impl<Request, Responder, AppState, Connection>
     /// Mutably borrow the concrete connection access value.
     pub const fn connection_mut(&mut self) -> &mut Connection {
         &mut self.connection
+    }
+
+    /// Transform the concrete responder while preserving request and state.
+    ///
+    /// Response-aware middleware uses this to wrap transport completion without
+    /// extracting or dynamically dispatching the underlying responder.
+    pub fn map_responder<Mapped>(
+        self,
+        map: impl FnOnce(Responder) -> Mapped,
+    ) -> RequestContext<Request, Mapped, AppState, Connection> {
+        RequestContext {
+            request: self.request,
+            responder: map(self.responder),
+            app_state: self.app_state,
+            connection: self.connection,
+        }
     }
 
     /// Complete the request through its originating transport.
@@ -440,6 +457,42 @@ pub trait Layer<Inner> {
     fn layer(self, inner: Inner) -> Self::Service;
 }
 
+/// Concrete responder that maps an application response before completion.
+#[derive(Debug)]
+pub struct MapResponse<Inner, Map, Response> {
+    inner: Inner,
+    map: Map,
+    _response: PhantomData<fn(Response)>,
+}
+
+impl<Inner, Map, Response> MapResponse<Inner, Map, Response> {
+    /// Wrap a responder with a synchronous response transformation.
+    pub const fn new(inner: Inner, map: Map) -> Self {
+        Self {
+            inner,
+            map,
+            _response: PhantomData,
+        }
+    }
+}
+
+impl<Inner, Map, Response> Respond for MapResponse<Inner, Map, Response>
+where
+    Inner: Respond,
+    Map: FnOnce(Response) -> Inner::Response,
+{
+    type Response = Response;
+    type Completion = Inner::Completion;
+    type Error = Inner::Error;
+
+    fn respond(
+        self,
+        response: Self::Response,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
+        self.inner.respond((self.map)(response))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
@@ -589,5 +642,22 @@ mod tests {
 
         assert_eq!(info.connection_id, metadata.connection_id);
         assert_eq!(info.transport, metadata.transport);
+    }
+
+    #[tokio::test]
+    async fn response_middleware_maps_without_exposing_transport_responder() {
+        let context = RequestContext::new(
+            5_u64,
+            RequiredResponder::new(TestResponder),
+            (),
+            connection(()),
+        )
+        .map_responder(|responder| {
+            MapResponse::new(responder, |response: u32| u64::from(response) + 1)
+        });
+
+        let completion = context.respond(6_u32).await.expect("infallible response");
+
+        assert_eq!(completion.into_inner(), 7);
     }
 }
