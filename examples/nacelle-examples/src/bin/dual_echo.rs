@@ -82,8 +82,7 @@ async fn main() -> Result<(), NacelleError> {
     println!("nacelle TCP echo listening on {tcp_addr}");
     println!("nacelle HTTP echo listening on {http_addr}");
 
-    NacelleApp::new()
-        .with_telemetry(telemetry)
+    NacelleApp::with_telemetry(telemetry)
         .tcp("tcp-echo", tcp_addr, tcp_server)
         .http("http-echo", http_addr, http_server)
         .run()

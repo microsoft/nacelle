@@ -40,8 +40,7 @@ let server = TcpServer::<LengthDelimitedProtocol>::builder()
     .handler(handler)
     .build()?;
 
-NacelleApp::new()
-    .with_telemetry(NacelleTelemetry::default())
+NacelleApp::with_telemetry(NacelleTelemetry::default())
     .with_ctrl_c_shutdown()
     .tcp("echo", addr, server)
     .run()
