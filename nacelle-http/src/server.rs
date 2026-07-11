@@ -24,7 +24,9 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponder};
-use nacelle_core::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
+use nacelle_core::request::NacelleConnectionMeta;
+#[cfg(feature = "rustls")]
+use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport};
 #[cfg(feature = "rustls")]
 use nacelle_core::tls::NacelleTlsConfig;
