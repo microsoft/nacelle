@@ -3,9 +3,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use http::StatusCode;
-use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown};
-use nacelle::http::{HyperServer, NacelleHttpLimits};
-use nacelle::prelude::*;
+use nacelle::core::pipeline::handler_fn;
+use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleShutdown};
+use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer, NacelleHttpLimits};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MEMORY_LIMIT: usize = 64 * 1024;
@@ -28,16 +28,20 @@ async fn main() -> Result<(), NacelleError> {
     );
     let server_state = runtime_state.clone();
     let (shutdown, token) = NacelleShutdown::pair();
-    let server = HyperServer::new(handler_fn(|mut request: NacelleRequest| async move {
-        let mut bytes = 0_usize;
-        while let Some(chunk) = request.body.next_chunk().await {
-            bytes += chunk?.len();
-        }
-        Ok(NacelleResponse::http_bytes(
-            StatusCode::OK,
-            format!("accepted {bytes} bytes\n"),
-        ))
-    }))
+    let server = HyperServer::new(handler_fn(
+        |mut context: HttpRequestContext<()>| async move {
+            let mut bytes = 0_usize;
+            while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                bytes += chunk?.len();
+            }
+            context
+                .respond(HttpResponse::bytes(
+                    StatusCode::OK,
+                    format!("accepted {bytes} bytes\n"),
+                ))
+                .await
+        },
+    ))
     .with_runtime_state(server_state)
     .with_http_limits(NacelleHttpLimits::default().with_keep_alive(false));
     let server_task =

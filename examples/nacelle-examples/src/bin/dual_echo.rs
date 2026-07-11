@@ -2,12 +2,10 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use http::StatusCode;
-use nacelle::core::pipeline::handler_fn as tcp_handler_fn;
+use nacelle::core::pipeline::handler_fn;
+use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
 use nacelle::tcp::{TcpRequestContext, TcpResponse};
-use nacelle::{
-    HyperServer, NacelleError, NacelleHost, NacelleRequest, NacelleResponse, NacelleTelemetry,
-    TcpServer, handler_fn as http_handler_fn,
-};
+use nacelle::{NacelleError, NacelleHost, NacelleTelemetry, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[derive(Debug)]
@@ -32,7 +30,7 @@ async fn main() -> Result<(), NacelleError> {
         response_prefix: b"",
     });
     let telemetry = NacelleTelemetry::default();
-    let tcp_handler = tcp_handler_fn({
+    let tcp_handler = handler_fn({
         let app = app.clone();
         move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
             let app = app.clone();
@@ -57,18 +55,20 @@ async fn main() -> Result<(), NacelleError> {
             }
         }
     });
-    let http_handler = http_handler_fn({
+    let http_handler = handler_fn({
         let app = app.clone();
-        move |mut request: NacelleRequest| {
+        move |mut context: HttpRequestContext<()>| {
             let app = app.clone();
             async move {
                 let mut echoed = BytesMut::new();
                 echoed.extend_from_slice(app.response_prefix);
-                while let Some(chunk) = request.body.next_chunk().await {
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
                     echoed.extend_from_slice(&chunk?);
                 }
 
-                Ok(NacelleResponse::http_bytes(StatusCode::OK, echoed.freeze()))
+                context
+                    .respond(HttpResponse::bytes(StatusCode::OK, echoed.freeze()))
+                    .await
             }
         }
     });

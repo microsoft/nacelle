@@ -522,14 +522,15 @@ impl NacelleHost {
     }
 
     #[cfg(feature = "http")]
-    pub fn enable_http<H>(
+    pub fn enable_http<H, F>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_http::HyperServer<H>,
+        server: nacelle_http::HyperServer<H, F>,
     ) -> &mut Self
     where
-        H: nacelle_core::handler::Handler,
+        F: nacelle_http::HttpConnectionStateFactory,
+        H: nacelle_http::HttpHandler<F::State>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -557,15 +558,16 @@ impl NacelleHost {
     }
 
     #[cfg(all(feature = "http", feature = "rustls"))]
-    pub fn enable_http_tls<H>(
+    pub fn enable_http_tls<H, F>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_http::HyperServer<H>,
+        server: nacelle_http::HyperServer<H, F>,
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
-        H: nacelle_core::handler::Handler,
+        F: nacelle_http::HttpConnectionStateFactory,
+        H: nacelle_http::HttpHandler<F::State>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
