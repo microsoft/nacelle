@@ -22,21 +22,28 @@ Then run:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-More background:
-
-The current `main` branch has been observed around 1.9M RPS on Linux for the TCP benchmark path. This branch should be compared against that baseline on the same host, kernel, CPU governor, allocator settings, and command line.
+Record the tested commit, kernel, CPU model/topology, CPU governor, Rust toolchain,
+allocator, features, configuration, connection count, pipeline depth, payload,
+TLS provider, and client revision with every result. A throughput number without
+that context is not a comparable baseline.
 
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features bench
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 For the codec/TCP integration specifically, run both Criterion targets:
 
 ```bash
 cargo bench -p nacelle-codec --bench framed_comparison --all-features
-cargo bench -p nacelle-examples --bench critical_paths --features bench
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp"
+```
+
+The telemetry group can be run independently:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
 ```
 
 The codec target compares direct decoding with `MessageReader::decode_buffered`,
@@ -49,6 +56,43 @@ rotation replacement result as allocation cost, not per-request overhead.
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
+
+## Phase 7 local confidence checks
+
+The following measurements are local confidence checks, not portable release
+claims. They were collected from source checkpoint `9e42adb` under WSL2 kernel
+`6.6.87.2-microsoft-standard-WSL2` on an Intel Xeon Platinum 8370C host
+(8 cores / 16 logical CPUs) with `rustc 1.95.0`, Criterion defaults, the system
+allocator, and features `bench,tcp`. WSL2 did not expose a CPU governor:
+
+- disabled connection telemetry: approximately `0.58-0.62 ns`
+- disabled request-completed telemetry: approximately `1.89-1.91 ns`
+- disabled timeout telemetry: approximately `0.78-0.79 ns`
+- concrete in-memory observation: approximately `84-86 ns`, dominated by its
+	mutex and event-vector write
+
+Generated-code inspection used monomorphized release modules with ThinLTO
+disabled for readability:
+
+```bash
+cargo rustc -p nacelle-examples --bin echo --release --features tcp -- \
+	-C lto=no -C codegen-units=1 --emit=llvm-ir
+cargo rustc -p nacelle-examples --bin http_echo --release --features http -- \
+	-C lto=no -C codegen-units=1 --emit=llvm-ir
+```
+
+The complete TCP and HTTP modules contained 98 and 221 indirect calls,
+respectively, from the full dependency graph. Inspection found no Nacelle
+dynamic-observer symbols or boxed handler-future symbols. The modules retain
+Nacelle's startup-only listener-installer indirection plus calls from Tokio,
+Hyper, tracing, and allocator internals. These feature sets did not enable TLS
+or OpenTelemetry, so provider/backend indirection requires separate builds.
+No module-wide count should be presented as request-path Nacelle dispatch
+without symbol-level attribution.
+
+`perf`/flamegraph profiling was unavailable for the WSL2 kernel used for these
+checks. Run profile-level validation on the target Linux kernel before making
+throughput, latency, or production-readiness claims.
 
 Suggested RPS comparison:
 
@@ -84,6 +128,6 @@ Guardrails:
 
 - keep shutdown task tracking at the connection/listener boundary
 - avoid per-request locks in the TCP hot path
-- keep telemetry sinks optional; default operation should not push into in-memory sinks
+- keep telemetry observers optional; the default `NoopObserver` must remain allocation-free
 - preserve single-chunk body fast paths
 - tune TCP buffer sizes for the connection count instead of relying on large defaults

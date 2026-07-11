@@ -15,17 +15,46 @@ When comparing runs, keep these variables fixed:
 
 Use the performance how-to for repeatable command lines.
 
-The current `main` branch has been observed around 1.9M RPS on Linux for the TCP benchmark path. This branch should be compared against that baseline on the same host, kernel, CPU governor, allocator settings, and command line.
+Do not use a repository-wide RPS number as a baseline. Compare commits on the
+same host with the same kernel, governor, allocator, features, transport/TLS
+mode, configuration, workload, and client revision.
 
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features bench
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
+
+## Successful-path ownership and dispatch
+
+The default successful TCP and HTTP pipelines use concrete protocol, handler,
+responder, body, and telemetry observer types. Nacelle does not box handler
+futures or dynamically dispatch those contracts.
+
+Retained costs are scoped by ownership:
+
+- TCP connection buffers and decoder state are created per connection and reused
+	across requests. Oversized response frames and optional input-buffer rotation
+	can replace those buffers deliberately.
+- A non-empty HTTP request uses one bounded Tokio channel for the request-body
+	bridge; an exact zero-length body skips the channel and producer work, while
+	the small scoped future still completes immediately.
+- HTTP response bodies remain concrete `StreamBody` values rather than boxed
+	body trait objects.
+- Request/handler/read/write timeouts use concrete futures. The HTTP response
+	write deadline retains a boxed `Sleep` only after connection-level
+	backpressure because Hyper requires its I/O wrapper to remain `Unpin`.
+- Memory-wait queue allocation and its boxed timeout occur only under memory
+	contention; the available-capacity path is atomic and allocation-free.
+- Type-erased protocol/handler errors are constructed only on error paths.
+- App listener installers and worker thread closures erase startup-only closure
+	types; they are not involved in request dispatch.
+- Optional tracing, Hyper, Tokio, TLS providers, allocators, and OpenTelemetry
+	retain their own external indirection.
 
 Enable the `buffer-rotation` feature for long-lived TCP connections that may
 occasionally receive large requests. Once an oversized cumulative input buffer
@@ -67,6 +96,6 @@ Guardrails:
 
 - keep shutdown task tracking at the connection/listener boundary
 - avoid per-request locks in the TCP hot path
-- keep telemetry sinks optional; default operation should not push into in-memory sinks
+- keep telemetry observers optional; default operation uses `NoopObserver`
 - preserve single-chunk body fast paths
 - tune TCP buffer sizes for the connection count instead of relying on large defaults

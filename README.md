@@ -17,7 +17,7 @@ Nacelle is currently `0.3.x`. It is ready for experiments and prototype
 integrations, but the public API is still allowed to change before `1.0`.
 
 The typed pipeline contracts, runtime limits, host/app builders, and telemetry
-sink are the most stable parts of the API. Transport metadata, listener options,
+observer contract are the most stable parts of the API. Transport metadata, listener options,
 stress-tool configuration, optional OpenSSL TLS detection, and OpenTelemetry
 integration are still moving.
 
@@ -208,7 +208,7 @@ cargo run --release --package nacelle-stress-test -- \
     --duration-secs 15
 ```
 
-The root [config.toml](config.toml) is loaded automatically when the stress server
+The root [config.toml](https://github.com/microsoft/nacelle/blob/main/config.toml) is loaded automatically when the stress server
 is run from the repository root. It enables self-signed TCP TLS for local runs,
 so the stress client needs `--tls-insecure` with that default config.
 
@@ -246,18 +246,18 @@ Build just the stress binaries and copy them to `./artifacts/`:
 
 ## Documentation
 
-- [Getting started](docs/tutorials/getting-started.md)
-- [Architecture](docs/topics/architecture.md)
-- [Runtime limits and backpressure](docs/topics/runtime-limits.md)
-- [Operations](docs/topics/operations.md)
-- [Production configuration](docs/how-to/configure-production.md)
-- [HTTP hardening](docs/how-to/harden-http.md)
-- [Stress testing](docs/how-to/run-stress-tests.md)
-- [Performance tuning](docs/how-to/compare-performance.md)
-- [Security scanning](docs/how-to/security-scanning.md)
-- [Reference protocol](docs/reference/protocol.md)
-- [API stability](docs/reference/api-stability.md)
-- [Rust API reference](docs/reference/rust-api.md)
+- [Getting started](https://github.com/microsoft/nacelle/blob/main/docs/tutorials/getting-started.md)
+- [Architecture](https://github.com/microsoft/nacelle/blob/main/docs/topics/architecture.md)
+- [Runtime limits and backpressure](https://github.com/microsoft/nacelle/blob/main/docs/topics/runtime-limits.md)
+- [Operations](https://github.com/microsoft/nacelle/blob/main/docs/topics/operations.md)
+- [Production configuration](https://github.com/microsoft/nacelle/blob/main/docs/how-to/configure-production.md)
+- [HTTP hardening](https://github.com/microsoft/nacelle/blob/main/docs/how-to/harden-http.md)
+- [Stress testing](https://github.com/microsoft/nacelle/blob/main/docs/how-to/run-stress-tests.md)
+- [Performance tuning](https://github.com/microsoft/nacelle/blob/main/docs/how-to/compare-performance.md)
+- [Security scanning](https://github.com/microsoft/nacelle/blob/main/docs/how-to/security-scanning.md)
+- [Reference protocol](https://github.com/microsoft/nacelle/blob/main/docs/reference/protocol.md)
+- [API stability](https://github.com/microsoft/nacelle/blob/main/docs/reference/api-stability.md)
+- [Rust API reference](https://github.com/microsoft/nacelle/blob/main/docs/reference/rust-api.md)
 
 Build the mdBook site:
 
@@ -273,11 +273,15 @@ cargo doc --workspace --all-features --no-deps
 
 ## Contributing
 
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for more information on how to contribute to this project.
+Open issues and pull requests in the
+[Nacelle repository](https://github.com/microsoft/nacelle). Follow the
+[Code of Conduct](https://github.com/microsoft/nacelle/blob/main/CODE_OF_CONDUCT.md)
+when participating.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE.txt).
+This project is licensed under the
+[MIT License](https://github.com/microsoft/nacelle/blob/main/LICENSE).
 
 ## Trademarks
 
