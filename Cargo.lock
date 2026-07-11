@@ -816,7 +816,6 @@ dependencies = [
  "criterion",
  "http",
  "nacelle",
- "nacelle-pipeline-prototype",
  "nacelle-reference-protocol",
  "tokio",
 ]
@@ -836,17 +835,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
-]
-
-[[package]]
-name = "nacelle-pipeline-prototype"
-version = "0.0.0"
-dependencies = [
- "bytes",
- "http",
- "http-body-util",
- "nacelle-core",
- "tokio",
 ]
 
 [[package]]

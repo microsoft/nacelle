@@ -23,7 +23,6 @@ bench = []
 bytes = { workspace = true }
 http = { workspace = true, optional = true }
 nacelle = { path = "../../nacelle", version = "0.2.1", default-features = false }
-nacelle-pipeline-prototype = { workspace = true }
 nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 

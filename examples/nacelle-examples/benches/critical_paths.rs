@@ -6,87 +6,16 @@ use nacelle::{
     MessageDecoder, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleRuntimeState,
     NacelleTelemetry, NacelleTransport, Protocol,
 };
-use nacelle_pipeline_prototype::{
-    Handler as TypedHandler, Layer, ObserveLayer, RequestContext, RequiredResponder, TcpEcho,
-    TcpRequest, TcpResponder, connection,
-};
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
-use std::future::Future;
 use std::hint::black_box;
 use std::net::IpAddr;
-use std::pin::pin;
 use std::sync::{Arc, Barrier};
-use std::task::{Context, Poll, Waker};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MEMORY_CONTENTION_CONNECTIONS: usize = 5_000;
 const PIPELINE_REQUESTS: usize = 64;
 const PIPELINE_BODY_LEN: usize = 32;
-
-fn handler_boundary_benches(c: &mut Criterion) {
-    let body = Bytes::from_static(&[0xAB; PIPELINE_BODY_LEN]);
-    let typed = TcpEcho;
-    let observed = ObserveLayer.layer(TcpEcho);
-
-    let mut group = c.benchmark_group("typed_handler_boundary_32_bytes");
-    group.bench_function("typed_direct_tcp_encode", |b| {
-        b.iter_batched(
-            || BytesMut::with_capacity(64),
-            |mut output| {
-                let context = RequestContext::new(
-                    TcpRequest {
-                        request_id: 7,
-                        body: body.clone(),
-                    },
-                    RequiredResponder::new(TcpResponder::new(7, &mut output)),
-                    (),
-                    connection(()),
-                );
-                black_box(
-                    complete_immediately(TypedHandler::call(&typed, context))
-                        .expect("typed TCP completion is infallible")
-                        .into_inner(),
-                );
-                black_box(output)
-            },
-            BatchSize::SmallInput,
-        )
-    });
-    group.bench_function("typed_observed_tcp_encode", |b| {
-        b.iter_batched(
-            || BytesMut::with_capacity(64),
-            |mut output| {
-                let context = RequestContext::new(
-                    TcpRequest {
-                        request_id: 7,
-                        body: body.clone(),
-                    },
-                    RequiredResponder::new(TcpResponder::new(7, &mut output)),
-                    (),
-                    connection(()),
-                );
-                black_box(
-                    complete_immediately(TypedHandler::call(&observed, context))
-                        .expect("typed TCP completion is infallible")
-                        .into_inner(),
-                );
-                black_box(output)
-            },
-            BatchSize::SmallInput,
-        )
-    });
-    group.finish();
-}
-
-fn complete_immediately<Output>(future: impl Future<Output = Output>) -> Output {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("benchmark future unexpectedly yielded"),
-    }
-}
 
 fn protocol_frame_benches(c: &mut Criterion) {
     let protocol = LengthDelimitedProtocol;
@@ -448,7 +377,6 @@ fn telemetry_benches(c: &mut Criterion) {
 
 criterion_group!(
     critical_paths,
-    handler_boundary_benches,
     protocol_frame_benches,
     protocol_pipeline_benches,
     runtime_limit_benches,

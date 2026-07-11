@@ -26,8 +26,6 @@ Invoke-Step "nacelle-http full tests" { cargo test -p nacelle-http --features tl
 Invoke-Step "nacelle-http full clippy" { cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "reference protocol tests" { cargo test -p nacelle-reference-protocol --all-targets }
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
-Invoke-Step "pipeline prototype tests" { cargo test -p nacelle-pipeline-prototype --all-targets }
-Invoke-Step "pipeline prototype clippy" { cargo clippy -p nacelle-pipeline-prototype --all-targets -- -D warnings }
 Invoke-Step "examples check" { cargo check -p nacelle-examples --all-features --all-targets }
 Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
 Invoke-Step "nacelle full tests" { cargo test -p nacelle --features http, tower, otel --all-targets }
