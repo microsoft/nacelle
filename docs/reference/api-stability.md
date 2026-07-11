@@ -11,7 +11,7 @@ Stable enough for prototype integrations:
 - `NacelleApp` listener registration and `NacelleApp::run(...)`
 - `nacelle::prelude::*` for common application imports
 - `NacelleTelemetry` and `NacelleTelemetryConfig`
-- `NacelleTelemetrySink` for application telemetry bridges
+- `nacelle::core::NacelleTelemetryObserver` for statically dispatched application telemetry
 
 Experimental:
 

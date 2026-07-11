@@ -1654,8 +1654,8 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        let sink = Arc::new(nacelle_core::NacelleInMemoryTelemetrySink::new());
-        let telemetry = NacelleTelemetry::new().with_sink(sink.clone());
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
         let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
             context
                 .respond(HttpResponse::bytes(StatusCode::OK, "hello bytes"))
@@ -2322,8 +2322,8 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        let sink = Arc::new(nacelle_core::NacelleInMemoryTelemetrySink::new());
-        let telemetry = NacelleTelemetry::new().with_sink(sink.clone());
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
         let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
             context
                 .respond(HttpResponse::bytes(StatusCode::OK, "handler"))
@@ -2435,8 +2435,8 @@ mod tests {
         let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
             nacelle_core::limits::NacelleLimits::default().with_max_connections_per_peer(1),
         );
-        let sink = Arc::new(nacelle_core::NacelleInMemoryTelemetrySink::new());
-        let telemetry = NacelleTelemetry::new().with_sink(sink.clone());
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
         let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
             context
                 .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
@@ -2515,8 +2515,8 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        let sink = Arc::new(nacelle_core::NacelleInMemoryTelemetrySink::new());
-        let telemetry = NacelleTelemetry::new().with_sink(sink.clone());
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
         let server = HyperServer::new(handler)
             .with_telemetry(telemetry)
             .with_http_policy(policy);

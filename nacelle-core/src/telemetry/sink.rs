@@ -1,4 +1,4 @@
-//! Telemetry event model and pluggable sink trait. These types are independent
+//! Telemetry event model and statically dispatched observer contract. These types are independent
 //! of any metrics backend and describe the low-cardinality events Nacelle emits.
 
 use std::sync::{Arc, Mutex};
@@ -55,10 +55,6 @@ pub struct NacelleTelemetryEvent {
     pub count: u64,
 }
 
-pub trait NacelleTelemetrySink: Send + Sync + 'static {
-    fn record(&self, event: NacelleTelemetryEvent);
-}
-
 /// Statically dispatched telemetry event observer.
 pub trait NacelleTelemetryObserver: Clone + Send + Sync + Unpin + 'static {
     /// Whether this observer emits events.
@@ -81,8 +77,10 @@ impl NacelleTelemetryObserver for NoopObserver {
 
 impl<T> NacelleTelemetryObserver for Arc<T>
 where
-    T: NacelleTelemetrySink,
+    T: NacelleTelemetryObserver,
 {
+    const ENABLED: bool = T::ENABLED;
+
     #[inline]
     fn record(&self, event: NacelleTelemetryEvent) {
         self.as_ref().record(event);
@@ -117,37 +115,12 @@ where
     }
 }
 
-/// Explicit compatibility adapter for dynamically dispatched telemetry sinks.
-#[derive(Clone)]
-pub struct DynamicSinkObserver(Arc<dyn NacelleTelemetrySink>);
-
-impl DynamicSinkObserver {
-    /// Wrap a dynamically dispatched sink.
-    pub fn new(sink: Arc<dyn NacelleTelemetrySink>) -> Self {
-        Self(sink)
-    }
+#[derive(Debug, Clone, Default)]
+pub struct NacelleInMemoryObserver {
+    events: Arc<Mutex<Vec<NacelleTelemetryEvent>>>,
 }
 
-impl std::fmt::Debug for DynamicSinkObserver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynamicSinkObserver")
-            .finish_non_exhaustive()
-    }
-}
-
-impl NacelleTelemetryObserver for DynamicSinkObserver {
-    #[inline]
-    fn record(&self, event: NacelleTelemetryEvent) {
-        self.0.record(event);
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct NacelleInMemoryTelemetrySink {
-    events: Mutex<Vec<NacelleTelemetryEvent>>,
-}
-
-impl NacelleInMemoryTelemetrySink {
+impl NacelleInMemoryObserver {
     pub fn new() -> Self {
         Self::default()
     }
@@ -157,7 +130,7 @@ impl NacelleInMemoryTelemetrySink {
     }
 }
 
-impl NacelleTelemetrySink for NacelleInMemoryTelemetrySink {
+impl NacelleTelemetryObserver for NacelleInMemoryObserver {
     fn record(&self, event: NacelleTelemetryEvent) {
         self.events
             .lock()

@@ -534,7 +534,7 @@ mod tests {
     #[cfg(any(feature = "tcp", feature = "http"))]
     use nacelle_core::pipeline::handler_fn;
     #[cfg(feature = "tcp")]
-    use nacelle_core::telemetry::{NacelleInMemoryTelemetrySink, NacelleTelemetryEventKind};
+    use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetryEventKind};
     #[cfg(feature = "tcp")]
     use nacelle_tcp::{
         DecodedMessage, FrameBuffer, MessageDecoder, Protocol, TcpRequestContext, TcpResponse,
@@ -782,7 +782,7 @@ mod tests {
             .local_addr()
             .expect("listener should have an address");
         drop(listener);
-        let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
+        let sink = Arc::new(NacelleInMemoryObserver::new());
         let shutdown = NacelleShutdown::new();
         let app = NacelleApp::with_telemetry(
             nacelle_core::telemetry::NacelleTelemetry::new().with_observer(sink.clone()),

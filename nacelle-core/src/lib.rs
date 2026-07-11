@@ -17,10 +17,9 @@ pub use limits::{
 };
 pub use request::{NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta};
 pub use telemetry::{
-    CompositeObserver, DynamicSinkObserver, NacelleInMemoryTelemetrySink, NacelleMetricsContext,
-    NacelleRequestMetricsConfig, NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent,
-    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTelemetrySink, NacelleTransport,
-    NoopObserver,
+    CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetricsConfig,
+    NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
+    NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
 #[cfg(feature = "tls-self-signed")]
 pub use tls::NacelleGeneratedTlsConfig;

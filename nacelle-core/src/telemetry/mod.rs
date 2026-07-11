@@ -6,9 +6,8 @@ use std::sync::Mutex;
 
 mod sink;
 pub use sink::{
-    CompositeObserver, DynamicSinkObserver, NacelleInMemoryTelemetrySink, NacelleTelemetryEvent,
-    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTelemetrySink, NacelleTransport,
-    NoopObserver,
+    CompositeObserver, NacelleInMemoryObserver, NacelleTelemetryEvent, NacelleTelemetryEventKind,
+    NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
 
 #[cfg(feature = "otel")]
@@ -208,14 +207,6 @@ where
             #[cfg(feature = "otel")]
             metrics: self.metrics,
         }
-    }
-
-    /// Use the explicitly dynamic compatibility adapter.
-    pub fn with_sink(
-        self,
-        sink: Arc<dyn NacelleTelemetrySink>,
-    ) -> NacelleTelemetry<DynamicSinkObserver> {
-        self.with_observer(DynamicSinkObserver::new(sink))
     }
 
     pub fn with_metrics(mut self, enabled: bool) -> Self {
@@ -963,9 +954,9 @@ mod tests {
     }
 
     #[test]
-    fn in_memory_sink_records_rejection_timeout_and_shutdown_events() {
-        let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
-        let telemetry = NacelleTelemetry::new().with_sink(sink.clone());
+    fn in_memory_observer_records_rejection_timeout_and_shutdown_events() {
+        let observer = NacelleInMemoryObserver::new();
+        let telemetry = NacelleTelemetry::new().with_observer(observer.clone());
 
         telemetry.connection_rejected(NacelleTransport::new("tcp"), "connections");
         telemetry.request_rejected(NacelleTransport::new("http"), "host");
@@ -976,7 +967,7 @@ mod tests {
             NacelleTransport::new("tcp"),
         );
 
-        let events = sink.events();
+        let events = observer.events();
         assert_eq!(
             events.iter().map(|event| event.kind).collect::<Vec<_>>(),
             vec![
@@ -995,8 +986,8 @@ mod tests {
 
     #[test]
     fn concrete_and_composite_observers_record_without_dynamic_adapter() {
-        let first = Arc::new(NacelleInMemoryTelemetrySink::new());
-        let second = Arc::new(NacelleInMemoryTelemetrySink::new());
+        let first = NacelleInMemoryObserver::new();
+        let second = NacelleInMemoryObserver::new();
         let telemetry = NacelleTelemetry::new()
             .with_observer(first.clone())
             .with_additional_observer(second.clone());
@@ -1006,6 +997,9 @@ mod tests {
         assert_eq!(first.events().len(), 1);
         assert_eq!(second.events().len(), 1);
         assert!(telemetry.request_events_enabled());
+        const {
+            assert!(!<Arc<NoopObserver> as NacelleTelemetryObserver>::ENABLED);
+        }
         assert!(
             !NacelleTelemetry::default()
                 .with_metrics(false)

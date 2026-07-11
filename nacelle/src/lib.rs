@@ -75,10 +75,10 @@ pub use nacelle_core::NacelleTlsConfig;
 pub use nacelle_core::NacelleTlsProvider;
 pub use nacelle_core::{
     BoxError, NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta, NacelleError,
-    NacelleInMemoryTelemetrySink, NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget,
+    NacelleInMemoryObserver, NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget,
     NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleRuntimeState, NacelleShutdown,
     NacelleShutdownToken, NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent,
-    NacelleTelemetryEventKind, NacelleTelemetrySink, NacelleTransport, TrackedPermit,
+    NacelleTelemetryEventKind, NacelleTransport, TrackedPermit,
 };
 #[cfg(feature = "http")]
 pub use nacelle_http::{HyperServer, NacelleHttpLimits, NacelleHttpPolicy};

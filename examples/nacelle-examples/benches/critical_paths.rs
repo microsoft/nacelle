@@ -3,8 +3,8 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use nacelle::codec::MessageReader;
 use nacelle::tcp::{DecodedMessage, FrameBuffer};
 use nacelle::{
-    MessageDecoder, NacelleInMemoryTelemetrySink, NacelleLimits, NacelleRuntimeState,
-    NacelleTelemetry, NacelleTransport, Protocol,
+    MessageDecoder, NacelleInMemoryObserver, NacelleLimits, NacelleRuntimeState, NacelleTelemetry,
+    NacelleTransport, Protocol,
 };
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use std::hint::black_box;
@@ -353,9 +353,7 @@ fn contended_memory_allocation_waves(
 
 fn telemetry_benches(c: &mut Criterion) {
     let disabled = NacelleTelemetry::default();
-    let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
-    let dynamic = NacelleTelemetry::new().with_sink(sink.clone());
-    let concrete = NacelleTelemetry::new().with_observer(sink);
+    let concrete = NacelleTelemetry::new().with_observer(NacelleInMemoryObserver::new());
     let elapsed = Duration::from_micros(250);
 
     let mut group = c.benchmark_group("telemetry");
@@ -380,11 +378,6 @@ fn telemetry_benches(c: &mut Criterion) {
                 black_box(NacelleTransport::new("tcp")),
                 black_box("request_body_read"),
             );
-        })
-    });
-    group.bench_function("connection_opened_dynamic_sink", |b| {
-        b.iter(|| {
-            black_box(&dynamic).connection_opened(black_box(NacelleTransport::new("tcp")));
         })
     });
     group.bench_function("connection_opened_concrete_observer", |b| {

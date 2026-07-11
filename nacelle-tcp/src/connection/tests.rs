@@ -10,7 +10,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{NacelleInMemoryTelemetrySink, NacelleTelemetry};
+use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{
@@ -726,7 +726,7 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
 #[tokio::test]
 async fn tcp_server_with_arc_in_memory_observer_serves_and_records_request_events() {
     let (mut client, server_io) = tokio::io::duplex(64);
-    let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
+    let sink = Arc::new(NacelleInMemoryObserver::new());
     let telemetry = NacelleTelemetry::default().with_observer(sink.clone());
 
     let server = TcpServer::<MixedProtocol>::builder()
