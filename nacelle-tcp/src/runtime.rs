@@ -1,6 +1,7 @@
 //! Tokio TCP listener helpers.
 
 mod common;
+mod local;
 #[cfg(feature = "openssl")]
 mod openssl;
 #[cfg(feature = "openssl")]
@@ -16,6 +17,7 @@ mod openssl_tests;
 #[cfg(all(test, feature = "tls-self-signed"))]
 mod rustls_tests;
 
+pub use local::*;
 #[cfg(feature = "openssl")]
 pub use openssl::*;
 #[cfg(feature = "openssl")]

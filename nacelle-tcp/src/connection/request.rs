@@ -1,11 +1,15 @@
 use bytes::BytesMut;
+use std::future::Future;
+use std::rc::Rc;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
-    DecodedRequest, Protocol, TcpHandler, TcpOneWayHandler, TcpRequest, TcpResponder,
+    DecodedRequest, LocalTcpHandler, LocalTcpOneWayHandler, Protocol, TcpHandler,
+    TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder,
 };
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -20,14 +24,93 @@ use super::metrics::{
 };
 use super::response::{encode_response_body, write_error};
 
+pub(super) trait RequestDispatch<P>
+where
+    P: Protocol,
+{
+    fn call(
+        &self,
+        context: TcpRequestContext<P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>>;
+}
+
+pub(super) trait OneWayDispatch<P>
+where
+    P: Protocol,
+{
+    fn call(
+        &self,
+        context: crate::protocol::TcpOneWayContext<P>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>>;
+}
+
+pub(super) struct SharedRequestDispatch<H>(pub(super) Arc<H>);
+pub(super) struct SharedOneWayDispatch<H>(pub(super) Arc<H>);
+pub(super) struct LocalRequestDispatch<H>(pub(super) Rc<H>);
+pub(super) struct LocalOneWayDispatch<H>(pub(super) Rc<H>);
+
+impl<P, H> RequestDispatch<P> for SharedRequestDispatch<H>
+where
+    P: Protocol,
+    H: TcpHandler<P>,
+{
+    fn call(
+        &self,
+        context: TcpRequestContext<P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> {
+        nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
+    }
+}
+
+impl<P, H> OneWayDispatch<P> for SharedOneWayDispatch<H>
+where
+    P: Protocol,
+    H: TcpOneWayHandler<P>,
+{
+    fn call(
+        &self,
+        context: crate::protocol::TcpOneWayContext<P>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> {
+        nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H> RequestDispatch<P> for LocalRequestDispatch<H>
+where
+    P: Protocol,
+    H: LocalTcpHandler<P>,
+{
+    fn call(
+        &self,
+        context: TcpRequestContext<P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> {
+        nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H> OneWayDispatch<P> for LocalOneWayDispatch<H>
+where
+    P: Protocol,
+    H: LocalTcpOneWayHandler<P>,
+{
+    fn call(
+        &self,
+        context: crate::protocol::TcpOneWayContext<P>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> {
+        nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_request<P, H, R, W>(
+pub(super) async fn run_request<P, D, R, W>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
     write_buf: &mut BytesMut,
     protocol: &P,
-    handler: &H,
+    handler: &D,
     decoded: DecodedRequest<P::Request>,
     error_context: P::ErrorContext,
     config: &NacelleTcpConfig,
@@ -40,8 +123,8 @@ pub(super) async fn run_request<P, H, R, W>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: TcpHandler<P>,
-    R: AsyncRead + Unpin + Send,
+    D: RequestDispatch<P>,
+    R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let request = decoded.request;
@@ -319,11 +402,11 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_one_way<P, H, R>(
+pub(super) async fn run_one_way<P, D, R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     protocol: &P,
-    handler: &H,
+    handler: &D,
     decoded: DecodedRequest<P::OneWayRequest>,
     config: &NacelleTcpConfig,
     telemetry: &NacelleTelemetry,
@@ -335,8 +418,8 @@ pub(super) async fn run_one_way<P, H, R>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: TcpOneWayHandler<P>,
-    R: AsyncRead + Unpin + Send,
+    D: OneWayDispatch<P>,
+    R: AsyncRead + Unpin,
 {
     let request = decoded.request;
     let request_bytes = protocol.one_way_wire_bytes(&request, decoded.body_len);
@@ -436,8 +519,8 @@ where
     }
 }
 
-async fn execute_one_way<P, H>(
-    handler: &H,
+async fn execute_one_way<P, D>(
+    handler: &D,
     request: P::OneWayRequest,
     body: NacelleBody,
     runtime_state: &NacelleRuntimeState,
@@ -445,7 +528,7 @@ async fn execute_one_way<P, H>(
 ) -> Result<nacelle_core::pipeline::Completed, NacelleError>
 where
     P: Protocol,
-    H: TcpOneWayHandler<P>,
+    D: OneWayDispatch<P>,
 {
     let context = RequestContext::new(
         TcpRequest {
@@ -467,8 +550,8 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_handler_with_metrics<P, H>(
-    handler: &H,
+async fn execute_handler_with_metrics<P, D>(
+    handler: &D,
     request: P::Request,
     body: NacelleBody,
     response_context: P::ResponseContext,
@@ -479,7 +562,7 @@ async fn execute_handler_with_metrics<P, H>(
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
     P: Protocol,
-    H: TcpHandler<P>,
+    D: RequestDispatch<P>,
 {
     let handler_started = metrics_context.and_then(|_| start_tcp_phase(telemetry));
     let result = execute_handler(
@@ -495,8 +578,8 @@ where
     result
 }
 
-async fn execute_handler<P, H>(
-    handler: &H,
+async fn execute_handler<P, D>(
+    handler: &D,
     request: P::Request,
     body: NacelleBody,
     response_context: P::ResponseContext,
@@ -505,7 +588,7 @@ async fn execute_handler<P, H>(
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
     P: Protocol,
-    H: TcpHandler<P>,
+    D: RequestDispatch<P>,
 {
     let context = RequestContext::new(
         TcpRequest {

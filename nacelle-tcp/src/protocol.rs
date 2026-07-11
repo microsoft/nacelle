@@ -7,8 +7,8 @@ use nacelle_codec::MessageDecoder;
 
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{
-    Completed, ConnectionContext, ConnectionInfo, Handler, NoResponse, RequestContext,
-    RequiredCompletion, RequiredResponder, Respond,
+    Completed, ConnectionContext, ConnectionInfo, Handler, LocalHandler, NoResponse,
+    RequestContext, RequiredCompletion, RequiredResponder, Respond,
 };
 use nacelle_core::request::NacelleBody;
 use nacelle_core::request::NacelleConnectionMeta;
@@ -166,6 +166,28 @@ where
 {
 }
 
+/// Worker-local application handler for one TCP protocol.
+///
+/// Unlike [`TcpHandler`], this contract permits `!Send` futures and handler
+/// state. It is accepted only by the explicit thread-per-core runtime.
+pub trait LocalTcpHandler<P>:
+    LocalHandler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>
+where
+    P: Protocol,
+{
+}
+
+impl<P, H> LocalTcpHandler<P> for H
+where
+    P: Protocol,
+    H: LocalHandler<
+            TcpRequestContext<P>,
+            Completion = TcpHandlerCompletion<P>,
+            Error = NacelleError,
+        >,
+{
+}
+
 /// Concrete application context for one one-way TCP message.
 pub type TcpOneWayContext<P> = RequestContext<
     TcpRequest<<P as Protocol>::OneWayRequest>,
@@ -189,6 +211,21 @@ where
 {
 }
 
+/// Worker-local one-way handler for one TCP protocol.
+pub trait LocalTcpOneWayHandler<P>:
+    LocalHandler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>
+where
+    P: Protocol,
+{
+}
+
+impl<P, H> LocalTcpOneWayHandler<P> for H
+where
+    P: Protocol,
+    H: LocalHandler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>,
+{
+}
+
 /// Zero-sized handler for protocols that cannot decode one-way messages.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoOneWayHandler<P>(PhantomData<fn() -> P>);
@@ -200,6 +237,19 @@ impl<P> NoOneWayHandler<P> {
 }
 
 impl<P> Handler<TcpOneWayContext<P>> for NoOneWayHandler<P>
+where
+    P: Protocol<OneWayRequest = Infallible>,
+{
+    type Completion = Completed;
+    type Error = NacelleError;
+
+    async fn call(&self, _context: TcpOneWayContext<P>) -> Result<Self::Completion, Self::Error> {
+        unreachable!("an Infallible one-way request cannot be decoded")
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P> LocalHandler<TcpOneWayContext<P>> for NoOneWayHandler<P>
 where
     P: Protocol<OneWayRequest = Infallible>,
 {

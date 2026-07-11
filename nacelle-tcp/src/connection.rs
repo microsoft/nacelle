@@ -1,4 +1,6 @@
 use std::convert::Infallible;
+use std::ops::Deref;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -26,7 +28,10 @@ mod tests;
 use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read_error};
 use io::read_message_with_timeout;
 use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context};
-use request::{run_one_way, run_request};
+use request::{
+    LocalOneWayDispatch, LocalRequestDispatch, OneWayDispatch, RequestDispatch,
+    SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
+};
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W>(
@@ -131,7 +136,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn drive_connection<P, H, OH, R, W>(
     reader: R,
-    mut writer: W,
+    writer: W,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
@@ -148,6 +153,42 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    drive_connection_with_dispatch(
+        reader,
+        writer,
+        protocol,
+        SharedRequestDispatch(handler),
+        SharedOneWayDispatch(one_way_handler),
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_connection_with_dispatch<P, PO, D, OD, R, W>(
+    reader: R,
+    mut writer: W,
+    protocol: PO,
+    handler: D,
+    one_way_handler: OD,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    PO: Deref<Target = P>,
+    D: RequestDispatch<P>,
+    OD: OneWayDispatch<P>,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
@@ -155,7 +196,7 @@ where
         ConnectionInfo::from(&connection),
         Arc::new(protocol.connection_state(&ConnectionInfo::from(&connection))),
     );
-    let connection_metrics = tcp_metrics_context(protocol.as_ref(), &connection);
+    let connection_metrics = tcp_metrics_context(protocol.deref(), &connection);
     let decoder = InstrumentedDecoder::new(
         protocol.decoder(config.max_frame_len),
         &telemetry,
@@ -200,8 +241,8 @@ where
                             &mut writer,
                             read_buf,
                             &mut write_buf,
-                            protocol.as_ref(),
-                            handler.as_ref(),
+                            protocol.deref(),
+                            &handler,
                             request,
                             error_context,
                             &config,
@@ -218,8 +259,8 @@ where
                         run_one_way(
                             reader,
                             read_buf,
-                            protocol.as_ref(),
-                            one_way_handler.as_ref(),
+                            protocol.deref(),
+                            &one_way_handler,
                             request,
                             &config,
                             &telemetry,
@@ -244,6 +285,41 @@ where
 
     telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
     result
+}
+
+/// Drive one worker-local TCP connection without taking another connection permit.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_stream_without_connection_limit<P, H, OH, IO>(
+    mut io: IO,
+    protocol: Rc<P>,
+    handler: Rc<H>,
+    one_way_handler: Rc<OH>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: crate::protocol::LocalTcpHandler<P>,
+    OH: crate::protocol::LocalTcpOneWayHandler<P>,
+    IO: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    drive_connection_with_dispatch(
+        reader,
+        writer,
+        protocol,
+        LocalRequestDispatch(handler),
+        LocalOneWayDispatch(one_way_handler),
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+    )
+    .await
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object.

@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::config::NacelleTcpConfig;
@@ -8,6 +9,7 @@ use crate::connection::{
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
+use crate::protocol::{LocalTcpHandler, LocalTcpOneWayHandler};
 use crate::protocol::{NoOneWayHandler, Protocol, TcpHandler, TcpOneWayHandler};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -33,6 +35,129 @@ pub struct NacelleServer<P, H = (), OH = NoOneWayHandler<P>> {
 }
 
 pub type TcpServer<P, H = (), OH = NoOneWayHandler<P>> = NacelleServer<P, H, OH>;
+
+/// Worker-local TCP server for explicit thread-per-core execution.
+///
+/// Protocol and handler ownership uses [`Rc`] so application handlers may hold
+/// `!Send` worker-local state. Instances must be constructed and used on their
+/// owning worker.
+pub struct LocalTcpServer<P, H, OH = NoOneWayHandler<P>> {
+    protocol: Rc<P>,
+    handler: Rc<H>,
+    one_way_handler: Rc<OH>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    listener: StdArc<str>,
+}
+
+impl<P, H> LocalTcpServer<P, H, NoOneWayHandler<P>>
+where
+    P: Protocol<OneWayRequest = std::convert::Infallible>,
+    H: LocalTcpHandler<P>,
+{
+    /// Construct a worker-local server without one-way messages.
+    pub fn new(protocol: P, handler: H) -> Self {
+        Self {
+            protocol: Rc::new(protocol),
+            handler: Rc::new(handler),
+            one_way_handler: Rc::new(NoOneWayHandler::new()),
+            config: NacelleTcpConfig::default(),
+            telemetry: NacelleTelemetry::default(),
+            runtime_state: NacelleRuntimeState::default(),
+            tcp_limits: NacelleTcpLimits::default(),
+            listener: StdArc::from("direct"),
+        }
+    }
+}
+
+impl<P, H, OH> LocalTcpServer<P, H, OH>
+where
+    P: Protocol,
+    H: LocalTcpHandler<P>,
+    OH: LocalTcpOneWayHandler<P>,
+{
+    /// Replace the worker-local one-way handler.
+    pub fn with_one_way_handler<OH2>(self, one_way_handler: OH2) -> LocalTcpServer<P, H, OH2>
+    where
+        OH2: LocalTcpOneWayHandler<P>,
+    {
+        LocalTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: Rc::new(one_way_handler),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
+    }
+
+    /// Set worker-local TCP framing and buffering configuration.
+    pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set worker-local TCP socket and handler timeouts.
+    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
+        self.tcp_limits = tcp_limits;
+        self
+    }
+
+    /// Set runtime limits/accounting for this worker.
+    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
+        self.runtime_state = runtime_state;
+        self
+    }
+
+    /// Set telemetry for this worker.
+    pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Set the stable listener label recorded in connection metadata.
+    pub fn with_listener_label(mut self, listener: impl Into<StdArc<str>>) -> Self {
+        self.listener = listener.into();
+        self
+    }
+
+    pub(crate) fn protocol(&self) -> Rc<P> {
+        self.protocol.clone()
+    }
+
+    pub(crate) fn handler(&self) -> Rc<H> {
+        self.handler.clone()
+    }
+
+    pub(crate) fn one_way_handler(&self) -> Rc<OH> {
+        self.one_way_handler.clone()
+    }
+
+    pub(crate) fn config(&self) -> NacelleTcpConfig {
+        self.config.clone()
+    }
+
+    pub(crate) fn telemetry(&self) -> NacelleTelemetry {
+        self.telemetry.clone()
+    }
+
+    pub(crate) fn runtime_state(&self) -> NacelleRuntimeState {
+        self.runtime_state.clone()
+    }
+
+    pub(crate) const fn tcp_limits(&self) -> NacelleTcpLimits {
+        self.tcp_limits
+    }
+
+    pub(crate) fn listener_label(&self) -> StdArc<str> {
+        self.listener.clone()
+    }
+}
 
 impl<P, H, OH> Clone for NacelleServer<P, H, OH> {
     fn clone(&self) -> Self {

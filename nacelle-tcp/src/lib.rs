@@ -20,11 +20,11 @@ pub use options::{
     NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions, NacelleTlsDetectionOptions,
 };
 pub use protocol::{
-    DecodedMessage, DecodedRequest, FrameBuffer, NoOneWayHandler, Protocol, TcpCompletion,
-    TcpHandler, TcpHandlerCompletion, TcpOneWayContext, TcpOneWayHandler, TcpRequest,
-    TcpRequestContext, TcpResponder, TcpResponse,
+    DecodedMessage, DecodedRequest, FrameBuffer, LocalTcpHandler, LocalTcpOneWayHandler,
+    NoOneWayHandler, Protocol, TcpCompletion, TcpHandler, TcpHandlerCompletion, TcpOneWayContext,
+    TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder, TcpResponse,
 };
-pub use server::{NacelleServer, NacelleServerBuilder, TcpServer};
+pub use server::{LocalTcpServer, NacelleServer, NacelleServerBuilder, TcpServer};
 pub use telemetry::{
     NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleTelemetry, NacelleTelemetryConfig,
 };
