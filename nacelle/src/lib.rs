@@ -1,7 +1,7 @@
 //! Typed streaming application pipelines across TCP and HTTP transports.
 //!
-//! Use [`core::pipeline`] for static handler composition, [`tcp`] for typed TCP
-//! protocols, [`http`] for HTTP/1, and [`NacelleApp`] to compose listeners with
+//! Use [`core::pipeline`] for static handler composition, `tcp` for typed TCP
+//! protocols, `http` for HTTP/1, and [`NacelleApp`] to compose listeners with
 //! shared limits, telemetry, and shutdown.
 //!
 //! Production deployments should configure [`core::NacelleLimits`] explicitly and
