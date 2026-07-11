@@ -20,10 +20,6 @@ openssl = ["tls", "dep:openssl"]
 openssl-vendored = ["openssl", "openssl/vendored"]
 tls-self-signed = ["rustls", "dep:rcgen"]
 otel = ["dep:opentelemetry"]
-# Deprecated no-op: tokio-util is now an unconditional dependency. Retained so
-# downstream crates enabling this feature continue to build. Remove in a future
-# major release.
-tokio-util = []
 
 [dependencies]
 bytes = { workspace = true }

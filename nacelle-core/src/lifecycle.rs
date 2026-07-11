@@ -76,7 +76,6 @@ impl NacelleShutdown {
         }
     }
 
-    #[cfg(feature = "tokio-util")]
     pub fn from_cancellation_token(token: tokio_util::sync::CancellationToken) -> Self {
         let shutdown = Self::new();
         let relay = shutdown.clone();
@@ -100,7 +99,6 @@ impl NacelleShutdownToken {
         self.receiver.changed().await.is_ok() && self.is_shutdown()
     }
 
-    #[cfg(feature = "tokio-util")]
     pub fn from_cancellation_token(token: tokio_util::sync::CancellationToken) -> Self {
         NacelleShutdown::from_cancellation_token(token).token()
     }
@@ -120,7 +118,6 @@ mod tests {
         assert!(observed);
     }
 
-    #[cfg(feature = "tokio-util")]
     #[tokio::test]
     async fn cancellation_token_triggers_shutdown_token() {
         let cancellation = tokio_util::sync::CancellationToken::new();

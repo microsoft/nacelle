@@ -149,7 +149,6 @@ nacelle = { version = "0.2", default-features = false, features = ["tcp", "opens
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `otel` | OpenTelemetry metrics API integration through `NacelleTelemetry`. |
-| `tokio-util` | Bridge `tokio_util::sync::CancellationToken` into Nacelle shutdown. |
 
 OpenSSL builds need native OpenSSL development files unless you enable
 `openssl-vendored`. Vendored OpenSSL also needs Perl on Windows.
