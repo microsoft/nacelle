@@ -354,7 +354,8 @@ fn contended_memory_allocation_waves(
 fn telemetry_benches(c: &mut Criterion) {
     let disabled = NacelleTelemetry::default();
     let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
-    let enabled = NacelleTelemetry::new().with_sink(sink);
+    let dynamic = NacelleTelemetry::new().with_sink(sink.clone());
+    let concrete = NacelleTelemetry::new().with_observer(sink);
     let elapsed = Duration::from_micros(250);
 
     let mut group = c.benchmark_group("telemetry");
@@ -381,9 +382,14 @@ fn telemetry_benches(c: &mut Criterion) {
             );
         })
     });
-    group.bench_function("connection_opened_in_memory_sink", |b| {
+    group.bench_function("connection_opened_dynamic_sink", |b| {
         b.iter(|| {
-            black_box(&enabled).connection_opened(black_box(NacelleTransport::new("tcp")));
+            black_box(&dynamic).connection_opened(black_box(NacelleTransport::new("tcp")));
+        })
+    });
+    group.bench_function("connection_opened_concrete_observer", |b| {
+        b.iter(|| {
+            black_box(&concrete).connection_opened(black_box(NacelleTransport::new("tcp")));
         })
     });
     group.finish();

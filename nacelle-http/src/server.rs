@@ -29,7 +29,10 @@ use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponde
 use nacelle_core::request::NacelleConnectionMeta;
 #[cfg(feature = "rustls")]
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport};
+use nacelle_core::telemetry::{
+    NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+    NoopObserver,
+};
 #[cfg(feature = "rustls")]
 use nacelle_core::tls::NacelleTlsConfig;
 
@@ -39,7 +42,10 @@ use crate::pipeline::{
     LocalHttpHandler, LocalHttpRequestContext, NoHttpConnectionState,
 };
 
-trait HttpDispatch<State> {
+trait HttpDispatch<State, Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     fn connection_info(&self) -> &ConnectionInfo;
 
     fn call(
@@ -54,7 +60,7 @@ trait HttpDispatch<State> {
         request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
     ) -> nacelle_core::NacelleBody;
 }
 
@@ -72,10 +78,11 @@ impl<H, State> Clone for SharedHttpDispatch<H, State> {
     }
 }
 
-impl<H, State> HttpDispatch<State> for SharedHttpDispatch<H, State>
+impl<H, State, Observer> HttpDispatch<State, Observer> for SharedHttpDispatch<H, State>
 where
     State: Send + Sync + 'static,
     H: HttpHandler<State>,
+    Observer: NacelleTelemetryObserver,
 {
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
@@ -101,7 +108,7 @@ where
         request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
     ) -> nacelle_core::NacelleBody {
         incoming_to_body(
             incoming,
@@ -129,10 +136,11 @@ impl<H, State> Clone for LocalHttpDispatch<H, State> {
 }
 
 #[allow(clippy::future_not_send)]
-impl<H, State> HttpDispatch<State> for LocalHttpDispatch<H, State>
+impl<H, State, Observer> HttpDispatch<State, Observer> for LocalHttpDispatch<H, State>
 where
     State: 'static,
     H: LocalHttpHandler<State>,
+    Observer: NacelleTelemetryObserver,
 {
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
@@ -158,7 +166,7 @@ where
         request_body_bytes: Option<Arc<AtomicUsize>>,
         runtime_state: NacelleRuntimeState,
         http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
     ) -> nacelle_core::NacelleBody {
         incoming_to_local_body(
             incoming,
@@ -171,15 +179,15 @@ where
     }
 }
 
-pub struct HyperServer<H = (), F = NoHttpConnectionState> {
+pub struct HyperServer<H = (), F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Arc<H>,
     connection_state_factory: Arc<F>,
-    runtime: HttpRuntime,
+    runtime: HttpRuntime<Observer>,
 }
 
 #[derive(Clone)]
-struct HttpRuntime {
-    telemetry: NacelleTelemetry,
+struct HttpRuntime<Observer> {
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     http_policy: NacelleHttpPolicy,
@@ -188,14 +196,17 @@ struct HttpRuntime {
     peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
 }
 
-impl Default for HttpRuntime {
+impl Default for HttpRuntime<NoopObserver> {
     fn default() -> Self {
         Self::new(NacelleTelemetry::default(), NacelleRuntimeState::default())
     }
 }
 
-impl HttpRuntime {
-    fn new(telemetry: NacelleTelemetry, runtime_state: NacelleRuntimeState) -> Self {
+impl<Observer> HttpRuntime<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
+    fn new(telemetry: NacelleTelemetry<Observer>, runtime_state: NacelleRuntimeState) -> Self {
         Self {
             telemetry,
             runtime_state,
@@ -209,10 +220,10 @@ impl HttpRuntime {
 }
 
 /// Worker-local HTTP/1 server for explicit thread-per-core execution.
-pub struct LocalHyperServer<H, F = NoHttpConnectionState> {
+pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Rc<H>,
     connection_state_factory: Rc<F>,
-    runtime: HttpRuntime,
+    runtime: HttpRuntime<Observer>,
 }
 
 /// Process-wide HTTP edge state shared by worker-local listeners.
@@ -224,7 +235,7 @@ pub struct LocalHttpSharedState {
     peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
 }
 
-impl<H> LocalHyperServer<H, NoHttpConnectionState> {
+impl<H> LocalHyperServer<H, NoHttpConnectionState, NoopObserver> {
     /// Construct a worker-local HTTP server without connection state.
     pub fn new(handler: H) -> Self {
         Self {
@@ -235,9 +246,9 @@ impl<H> LocalHyperServer<H, NoHttpConnectionState> {
     }
 }
 
-impl<H, F> LocalHyperServer<H, F> {
+impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
     /// Replace the worker-local connection state factory.
-    pub fn with_connection_state_factory<F2>(self, factory: F2) -> LocalHyperServer<H, F2>
+    pub fn with_connection_state_factory<F2>(self, factory: F2) -> LocalHyperServer<H, F2, Observer>
     where
         F2: LocalHttpConnectionStateFactory,
     {
@@ -249,15 +260,16 @@ impl<H, F> LocalHyperServer<H, F> {
     }
 }
 
-impl<H, F> LocalHyperServer<H, F>
+impl<H, F, Observer> LocalHyperServer<H, F, Observer>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State> + 'static,
+    Observer: NacelleTelemetryObserver,
 {
     /// Install final worker telemetry and runtime state atomically.
     pub fn with_runtime_context(
         mut self,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
         runtime_state: NacelleRuntimeState,
         shared_state: LocalHttpSharedState,
     ) -> Self {
@@ -430,7 +442,10 @@ where
     }
 }
 
-impl<H, F> Clone for HyperServer<H, F> {
+impl<H, F, Observer> Clone for HyperServer<H, F, Observer>
+where
+    Observer: Clone,
+{
     fn clone(&self) -> Self {
         Self {
             handler: self.handler.clone(),
@@ -440,7 +455,7 @@ impl<H, F> Clone for HyperServer<H, F> {
     }
 }
 
-impl<H> HyperServer<H, NoHttpConnectionState> {
+impl<H> HyperServer<H, NoHttpConnectionState, NoopObserver> {
     pub fn new(handler: H) -> Self {
         let telemetry = NacelleTelemetry::default();
         let runtime_state = NacelleRuntimeState::default();
@@ -453,8 +468,8 @@ impl<H> HyperServer<H, NoHttpConnectionState> {
     }
 }
 
-impl<H, F> HyperServer<H, F> {
-    pub fn with_connection_state_factory<F2>(self, factory: F2) -> HyperServer<H, F2>
+impl<H, F, Observer> HyperServer<H, F, Observer> {
+    pub fn with_connection_state_factory<F2>(self, factory: F2) -> HyperServer<H, F2, Observer>
     where
         F2: HttpConnectionStateFactory,
     {
@@ -466,15 +481,30 @@ impl<H, F> HyperServer<H, F> {
     }
 }
 
-impl<H, F> HyperServer<H, F>
+impl<H, F, Observer> HyperServer<H, F, Observer>
 where
     F: HttpConnectionStateFactory,
     H: HttpHandler<F::State>,
+    Observer: NacelleTelemetryObserver,
 {
-    pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
+    pub fn with_telemetry<Next>(self, telemetry: NacelleTelemetry<Next>) -> HyperServer<H, F, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(self.runtime.runtime_state.clone());
-        self.runtime.telemetry = telemetry;
-        self
+        HyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: HttpRuntime {
+                telemetry,
+                runtime_state: self.runtime.runtime_state,
+                http_limits: self.runtime.http_limits,
+                http_policy: self.runtime.http_policy,
+                access_log_enabled: self.runtime.access_log_enabled,
+                listener: self.runtime.listener,
+                peer_rate_limits: self.runtime.peer_rate_limits,
+            },
+        }
     }
 
     pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
@@ -488,7 +518,7 @@ where
     #[doc(hidden)]
     pub fn with_runtime_context(
         mut self,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
         runtime_state: NacelleRuntimeState,
     ) -> Self {
         telemetry.register_runtime_state(runtime_state.clone());
@@ -816,14 +846,17 @@ where
     }
 }
 
-impl HttpRuntime {
+impl<Observer> HttpRuntime<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     async fn handle_with_dispatch<State, D>(
         &self,
         request: Request<Incoming>,
         dispatch: &D,
     ) -> Result<Response<HttpBody>, NacelleError>
     where
-        D: HttpDispatch<State>,
+        D: HttpDispatch<State, Observer>,
     {
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
@@ -1072,8 +1105,8 @@ fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     }
 }
 
-async fn run_http_connection<H, F, I>(
-    server: Arc<HyperServer<H, F>>,
+async fn run_http_connection<H, F, Observer, I>(
+    server: Arc<HyperServer<H, F, Observer>>,
     stream: I,
     connection: NacelleConnectionMeta,
     _connection_permit: nacelle_core::limits::TrackedPermit,
@@ -1081,6 +1114,7 @@ async fn run_http_connection<H, F, I>(
 where
     F: HttpConnectionStateFactory,
     H: HttpHandler<F::State>,
+    Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let connection_info = ConnectionInfo::from(&connection);
@@ -1116,8 +1150,8 @@ where
     }
 }
 
-async fn run_local_http_connection<H, F, I>(
-    server: Rc<LocalHyperServer<H, F>>,
+async fn run_local_http_connection<H, F, Observer, I>(
+    server: Rc<LocalHyperServer<H, F, Observer>>,
     stream: I,
     connection: NacelleConnectionMeta,
     _connection_permit: nacelle_core::limits::TrackedPermit,
@@ -1125,6 +1159,7 @@ async fn run_local_http_connection<H, F, I>(
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State>,
+    Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + 'static,
 {
     let connection_info = ConnectionInfo::from(&connection);
@@ -1295,11 +1330,13 @@ fn log_http_connection_result(
     }
 }
 
-async fn drain_http_connection_tasks(
+async fn drain_http_connection_tasks<Observer>(
     mut connections: tokio::task::JoinSet<Result<(), NacelleError>>,
     drain_timeout: Duration,
-    telemetry: NacelleTelemetry,
-) {
+    telemetry: NacelleTelemetry<Observer>,
+) where
+    Observer: NacelleTelemetryObserver,
+{
     telemetry.shutdown_event(
         NacelleTelemetryEventKind::DrainStarted,
         NacelleTransport::new("http"),

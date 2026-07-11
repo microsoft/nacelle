@@ -6,8 +6,9 @@ use std::sync::Mutex;
 
 mod sink;
 pub use sink::{
-    NacelleInMemoryTelemetrySink, NacelleTelemetryEvent, NacelleTelemetryEventKind,
-    NacelleTelemetrySink, NacelleTransport,
+    CompositeObserver, DynamicSinkObserver, NacelleInMemoryTelemetrySink, NacelleTelemetryEvent,
+    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTelemetrySink, NacelleTransport,
+    NoopObserver,
 };
 
 #[cfg(feature = "otel")]
@@ -19,9 +20,9 @@ use attributes::{
 };
 
 #[derive(Clone)]
-pub struct NacelleTelemetry {
+pub struct NacelleTelemetry<Observer = NoopObserver> {
     config: NacelleTelemetryConfig,
-    sink: Option<Arc<dyn NacelleTelemetrySink>>,
+    observer: Observer,
     #[cfg(feature = "otel")]
     metrics: std::sync::Arc<OtelMetrics>,
 }
@@ -144,39 +145,77 @@ impl NacelleMetricsContext {
     }
 }
 
-impl std::fmt::Debug for NacelleTelemetry {
+impl<Observer> std::fmt::Debug for NacelleTelemetry<Observer> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NacelleTelemetry")
             .field("config", &self.config)
-            .field("has_sink", &self.sink.is_some())
+            .field("observer", &std::any::type_name::<Observer>())
             .finish()
     }
 }
 
-impl Default for NacelleTelemetry {
+impl Default for NacelleTelemetry<NoopObserver> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NacelleTelemetry {
+impl NacelleTelemetry<NoopObserver> {
     pub fn new() -> Self {
         Self {
             config: NacelleTelemetryConfig::default(),
-            sink: None,
+            observer: NoopObserver,
             #[cfg(feature = "otel")]
             metrics: std::sync::Arc::new(OtelMetrics::new()),
         }
     }
+}
 
+impl<Observer> NacelleTelemetry<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     pub fn with_config(mut self, config: NacelleTelemetryConfig) -> Self {
         self.config = config;
         self
     }
 
-    pub fn with_sink(mut self, sink: Arc<dyn NacelleTelemetrySink>) -> Self {
-        self.sink = Some(sink);
-        self
+    /// Replace the event observer with one concrete observer.
+    pub fn with_observer<Next>(self, observer: Next) -> NacelleTelemetry<Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        NacelleTelemetry {
+            config: self.config,
+            observer,
+            #[cfg(feature = "otel")]
+            metrics: self.metrics,
+        }
+    }
+
+    /// Compose one additional concrete observer.
+    pub fn with_additional_observer<Next>(
+        self,
+        observer: Next,
+    ) -> NacelleTelemetry<CompositeObserver<Observer, Next>>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        let composite = CompositeObserver::new(self.observer, observer);
+        NacelleTelemetry {
+            config: self.config,
+            observer: composite,
+            #[cfg(feature = "otel")]
+            metrics: self.metrics,
+        }
+    }
+
+    /// Use the explicitly dynamic compatibility adapter.
+    pub fn with_sink(
+        self,
+        sink: Arc<dyn NacelleTelemetrySink>,
+    ) -> NacelleTelemetry<DynamicSinkObserver> {
+        self.with_observer(DynamicSinkObserver::new(sink))
     }
 
     pub fn with_metrics(mut self, enabled: bool) -> Self {
@@ -240,7 +279,7 @@ impl NacelleTelemetry {
     }
 
     pub fn request_events_enabled(&self) -> bool {
-        self.sink.is_some() || self.metrics_enabled()
+        Observer::ENABLED || self.metrics_enabled()
     }
 
     pub fn listener_configured(&self, transport: NacelleTransport, name: &str, addr: &str) {
@@ -660,9 +699,7 @@ impl NacelleTelemetry {
     }
 
     fn record(&self, event: NacelleTelemetryEvent) {
-        if let Some(sink) = &self.sink {
-            sink.record(event);
-        }
+        self.observer.record(event);
     }
 }
 
@@ -903,6 +940,26 @@ mod tests {
         assert_eq!(events[1].reason, Some("host"));
         assert_eq!(events[2].reason, Some("request_body_read"));
         assert_eq!(events[3].transport, None);
+    }
+
+    #[test]
+    fn concrete_and_composite_observers_record_without_dynamic_adapter() {
+        let first = Arc::new(NacelleInMemoryTelemetrySink::new());
+        let second = Arc::new(NacelleInMemoryTelemetrySink::new());
+        let telemetry = NacelleTelemetry::new()
+            .with_observer(first.clone())
+            .with_additional_observer(second.clone());
+
+        telemetry.timeout(NacelleTransport::new("tcp"), "test");
+
+        assert_eq!(first.events().len(), 1);
+        assert_eq!(second.events().len(), 1);
+        assert!(telemetry.request_events_enabled());
+        assert!(
+            !NacelleTelemetry::default()
+                .with_metrics(false)
+                .request_events_enabled()
+        );
     }
 
     #[test]

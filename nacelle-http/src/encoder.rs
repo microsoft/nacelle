@@ -19,18 +19,21 @@ use crate::policy::{NacelleHttpPolicy, apply_security_headers};
 use nacelle_core::error::{BoxError, NacelleError};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTransport};
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
 
 pub(crate) type HttpBody = BoxBody<Bytes, BoxError>;
 
-pub(crate) fn incoming_to_body(
+pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
     body_len_hint: Option<usize>,
     request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry,
-) -> NacelleBody {
+    telemetry: NacelleTelemetry<Observer>,
+) -> NacelleBody
+where
+    Observer: NacelleTelemetryObserver,
+{
     if incoming_body_is_empty(body_len_hint) {
         return NacelleBody::empty();
     }
@@ -47,14 +50,17 @@ pub(crate) fn incoming_to_body(
     body
 }
 
-pub(crate) fn incoming_to_local_body(
+pub(crate) fn incoming_to_local_body<Observer>(
     incoming: Incoming,
     body_len_hint: Option<usize>,
     request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry,
-) -> NacelleBody {
+    telemetry: NacelleTelemetry<Observer>,
+) -> NacelleBody
+where
+    Observer: NacelleTelemetryObserver,
+{
     if incoming_body_is_empty(body_len_hint) {
         return NacelleBody::empty();
     }
@@ -72,15 +78,17 @@ pub(crate) fn incoming_to_local_body(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn pump_incoming_body(
+async fn pump_incoming_body<Observer>(
     mut incoming: Incoming,
     body_len_hint: Option<usize>,
     request_body_bytes: Option<Arc<AtomicUsize>>,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     tx: tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>,
-) {
+) where
+    Observer: NacelleTelemetryObserver,
+{
     if let Some(body_len_hint) = body_len_hint
         && body_len_hint > runtime_state.limits().max_request_body_bytes
     {
@@ -165,12 +173,15 @@ const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {
     matches!(body_len_hint, Some(0))
 }
 
-pub(crate) fn response_to_http(
+pub(crate) fn response_to_http<Observer>(
     response: HttpResponse,
     runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     policy: &NacelleHttpPolicy,
-) -> Result<Response<HttpBody>, NacelleError> {
+) -> Result<Response<HttpBody>, NacelleError>
+where
+    Observer: NacelleTelemetryObserver,
+{
     let mut builder = Response::builder().status(response.status);
     let Some(builder_headers) = builder.headers_mut() else {
         return Err(NacelleError::protocol("failed to build response headers"));
@@ -186,11 +197,14 @@ pub(crate) fn response_to_http(
         .map_err(NacelleError::protocol)
 }
 
-fn nacelle_body_to_http(
+fn nacelle_body_to_http<Observer>(
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
-) -> HttpBody {
+    telemetry: NacelleTelemetry<Observer>,
+) -> HttpBody
+where
+    Observer: NacelleTelemetryObserver,
+{
     StreamBody::new(HttpBodyStream {
         body,
         runtime_state,
@@ -201,14 +215,17 @@ fn nacelle_body_to_http(
     .boxed()
 }
 
-struct HttpBodyStream {
+struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     response_body_bytes: usize,
 }
 
-impl Stream for HttpBodyStream {
+impl<Observer> Stream for HttpBodyStream<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     type Item = Result<Frame<Bytes>, NacelleError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -235,7 +252,10 @@ impl Stream for HttpBodyStream {
     }
 }
 
-impl Drop for HttpBodyStream {
+impl<Observer> Drop for HttpBodyStream<Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     fn drop(&mut self) {
         self.telemetry
             .response_body_bytes(NacelleTransport::new("http"), self.response_body_bytes);
