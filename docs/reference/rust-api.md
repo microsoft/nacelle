@@ -23,6 +23,8 @@ Start with these public entry points:
 - `nacelle::prelude::*` for common application imports.
 - `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`, and
   `nacelle::runtime` for capability-oriented imports.
+- `nacelle::advanced::runtime` for raw executor and transport listener helpers
+  when app/host composition is not sufficient.
 - `NacelleApp`, `NacelleProtocols`, and `NacelleApp::serve(...)` for the
   app-first serving path.
 - `Handler` for the app-core boundary.
@@ -31,5 +33,5 @@ Start with these public entry points:
 - `NacelleMemoryBudget`, `NacelleMemoryAllocation`, and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
   memory budget allocations.
-- `TcpServer`, `NacelleHost`, and transport runtime helpers when a service
+- `TcpServer`, `NacelleHost`, and `nacelle::advanced::runtime` when a service
   needs lower-level listener control.

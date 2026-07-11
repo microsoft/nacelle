@@ -41,46 +41,16 @@ pub use nacelle_http::server as http_server;
 pub mod runtime {
     pub use crate::app::{NacelleApp, NacelleProtocols, serve};
     pub use crate::host::NacelleHost;
-    pub use nacelle_core::runtime::*;
-    #[cfg(feature = "tcp")]
-    pub use nacelle_tcp::runtime::{
-        serve_tcp, serve_tcp_listener_with_options_and_shutdown_deadline,
-        serve_tcp_listener_with_shutdown_deadline,
-        serve_tcp_with_bind_options_and_shutdown_deadline, serve_tcp_with_options,
-        serve_tcp_with_options_and_shutdown, serve_tcp_with_options_and_shutdown_deadline,
-        serve_tcp_with_options_and_shutdown_timeout, serve_tcp_with_shutdown,
-        serve_tcp_with_shutdown_deadline, serve_tcp_with_shutdown_timeout,
-    };
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub use nacelle_tcp::runtime::{
-        serve_tcp_openssl, serve_tcp_openssl_listener_with_options_and_shutdown_deadline,
-        serve_tcp_openssl_listener_with_shutdown_deadline,
-        serve_tcp_openssl_with_bind_options_and_shutdown_deadline, serve_tcp_openssl_with_options,
-        serve_tcp_openssl_with_options_and_shutdown,
-        serve_tcp_openssl_with_options_and_shutdown_deadline,
-        serve_tcp_openssl_with_options_and_shutdown_timeout, serve_tcp_openssl_with_shutdown,
-        serve_tcp_openssl_with_shutdown_deadline, serve_tcp_openssl_with_shutdown_timeout,
-        serve_tcp_optional_openssl,
-        serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline,
-        serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline,
-        serve_tcp_optional_openssl_with_options,
-        serve_tcp_optional_openssl_with_options_and_shutdown,
-        serve_tcp_optional_openssl_with_options_and_shutdown_deadline,
-        serve_tcp_optional_openssl_with_options_and_shutdown_timeout,
-        serve_tcp_optional_openssl_with_shutdown, serve_tcp_optional_openssl_with_shutdown_timeout,
-    };
-    #[cfg(all(feature = "tcp", feature = "rustls"))]
-    pub use nacelle_tcp::runtime::{
-        serve_tcp_tls, serve_tcp_tls_listener_with_shutdown_deadline, serve_tcp_tls_with_shutdown,
-        serve_tcp_tls_with_shutdown_deadline, serve_tcp_tls_with_shutdown_timeout,
-    };
-    #[cfg(all(feature = "tcp", unix))]
-    pub use nacelle_tcp::runtime::{
-        serve_unix, serve_unix_listener_with_shutdown_deadline, serve_unix_with_options,
-        serve_unix_with_options_and_shutdown, serve_unix_with_options_and_shutdown_deadline,
-        serve_unix_with_options_and_shutdown_timeout, serve_unix_with_shutdown,
-        serve_unix_with_shutdown_deadline, serve_unix_with_shutdown_timeout,
-    };
+    pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
+}
+
+/// Low-level executor and transport runtime integration.
+pub mod advanced {
+    pub mod runtime {
+        pub use nacelle_core::runtime::*;
+        #[cfg(feature = "tcp")]
+        pub use nacelle_tcp::runtime::*;
+    }
 }
 pub use app::{NacelleApp, NacelleProtocols, serve};
 pub use host::NacelleHost;

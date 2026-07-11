@@ -5,6 +5,8 @@ fn common_capability_namespaces_are_available() {
     let _ = core::NacelleLimits::default();
     let _ = codec::LengthDelimitedDecoder::new(1024);
     let _ = runtime::NacelleHost::new();
+    let _ = runtime::NacelleShutdown::new();
+    let _ = std::any::type_name::<nacelle::advanced::runtime::JoinHandle<()>>();
 }
 
 #[test]

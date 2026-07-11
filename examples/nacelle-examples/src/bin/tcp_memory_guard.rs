@@ -54,7 +54,7 @@ async fn main() -> Result<(), NacelleError> {
         .build()?;
     let (shutdown, token) = NacelleShutdown::pair();
     let server_task = tokio::spawn(async move {
-        nacelle::runtime::serve_tcp_listener_with_shutdown_deadline(
+        nacelle::advanced::runtime::serve_tcp_listener_with_shutdown_deadline(
             Arc::new(server),
             listener,
             token,
