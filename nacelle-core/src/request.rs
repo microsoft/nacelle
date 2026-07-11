@@ -131,6 +131,19 @@ impl NacelleConnectionMeta {
         }
     }
 
+    pub fn http_socket(peer_addr: Option<SocketAddr>, local_addr: Option<SocketAddr>) -> Self {
+        Self {
+            connection_id: next_connection_id(),
+            transport: NacelleTransport::new("http"),
+            listener: default_listener(),
+            peer_ip: peer_addr.map(|addr| addr.ip()),
+            peer_addr,
+            local_addr,
+            local_path: None,
+            tls: None,
+        }
+    }
+
     pub fn with_tls(mut self, tls: NacelleConnectionTlsMeta) -> Self {
         self.tls = Some(tls);
         self

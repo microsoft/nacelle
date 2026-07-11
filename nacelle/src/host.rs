@@ -535,7 +535,9 @@ impl NacelleHost {
         let telemetry = self.telemetry.clone();
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
-        let server = server.with_runtime_state(self.runtime_state.clone());
+        let server = server
+            .with_runtime_state(self.runtime_state.clone())
+            .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let result = server
@@ -569,7 +571,9 @@ impl NacelleHost {
         let telemetry = self.telemetry.clone();
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
-        let server = server.with_runtime_state(self.runtime_state.clone());
+        let server = server
+            .with_runtime_state(self.runtime_state.clone())
+            .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
             let listener = tokio::net::TcpListener::bind(addr).await?;
