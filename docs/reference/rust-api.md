@@ -28,6 +28,10 @@ Start with these public entry points:
 - `NacelleApp` listener registration and `NacelleApp::run(...)` for the
   app-first serving path across TCP, Unix sockets, HTTP, and TLS.
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
+- `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
+  `run_local_tcp_thread_per_core(...)` for experimental Linux-only worker-local
+  plain TCP execution. This mode requires explicit selection and does not
+  silently fall back to the shared runtime.
 - `Protocol` for TCP wire-format adapters.
 - `NacelleTelemetry` and `NacelleTelemetryConfig` for metrics and telemetry.
 - `NacelleMemoryBudget`, `NacelleMemoryAllocation`, and

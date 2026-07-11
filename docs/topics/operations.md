@@ -23,6 +23,11 @@ services. For production services, record:
 - feature flags
 - allocator settings
 
+Thread-per-core mode is experimental and Linux-only. Select workers explicitly,
+record logical CPU ids and affinity settings, and treat any bind, affinity, or
+worker initialization failure as a whole-runtime startup failure. It currently
+supports plain TCP; HTTP and TLS worker stacks remain under implementation.
+
 ## Shutdown
 
 Use `NacelleApp::with_ctrl_c_shutdown()` for the standard signal path, or pass a

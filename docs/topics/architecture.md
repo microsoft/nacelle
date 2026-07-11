@@ -66,6 +66,13 @@ once per accepted connection, and handlers receive it as
 `Arc<P::ConnectionState>` through the typed request context. No dynamic
 extension map participates in the request path.
 
+The shared multi-thread Tokio runtime remains the default. Experimental
+thread-per-core execution is explicit and currently supports plain TCP on
+Linux. Each selected worker owns a current-thread Tokio runtime, `LocalSet`,
+reuse-port listener, protocol, and `LocalHandler` pipeline. Accepted streams and
+connection tasks remain on the accepting worker. Unsupported platforms fail
+configuration; Nacelle does not silently switch runtime topology.
+
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header
 injection. TCP keeps protocol semantics in the protocol implementation and
