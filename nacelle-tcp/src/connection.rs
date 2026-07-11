@@ -14,7 +14,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo};
 use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::NacelleTelemetry;
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 
 mod body;
 mod framing;
@@ -34,18 +34,19 @@ use request::{
 };
 
 /// Drive one TCP framed connection.
-pub async fn serve_connection<P, H, R, W>(
+pub async fn serve_connection<P, H, R, W, Observer>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
@@ -66,19 +67,20 @@ where
 
 /// Drive one TCP framed connection with caller-supplied connection metadata.
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_connection_with_connection_meta<P, H, R, W>(
+pub async fn serve_connection_with_connection_meta<P, H, R, W, Observer>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
@@ -98,14 +100,14 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<P, H, OH, R, W>(
+pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<P, H, OH, R, W, Observer>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -114,6 +116,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
@@ -134,14 +137,14 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drive_connection<P, H, OH, R, W>(
+async fn drive_connection<P, H, OH, R, W, Observer>(
     reader: R,
     writer: W,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -150,6 +153,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
@@ -169,14 +173,14 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drive_connection_with_dispatch<P, PO, D, OD, R, W>(
+async fn drive_connection_with_dispatch<P, PO, D, OD, R, W, Observer>(
     reader: R,
     mut writer: W,
     protocol: PO,
     handler: D,
     one_way_handler: OD,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -186,6 +190,7 @@ where
     PO: Deref<Target = P>,
     D: RequestDispatch<P>,
     OD: OneWayDispatch<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
@@ -289,13 +294,13 @@ where
 
 /// Drive one worker-local TCP connection without taking another connection permit.
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_local_stream_without_connection_limit<P, H, OH, IO>(
+pub async fn serve_local_stream_without_connection_limit<P, H, OH, IO, Observer>(
     mut io: IO,
     protocol: Rc<P>,
     handler: Rc<H>,
     one_way_handler: Rc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -304,6 +309,7 @@ where
     P: Protocol,
     H: crate::protocol::LocalTcpHandler<P>,
     OH: crate::protocol::LocalTcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + 'static,
 {
     let (reader, writer) = tokio::io::split(&mut io);
@@ -323,17 +329,18 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object.
-pub async fn serve_stream<P, H, IO>(
+pub async fn serve_stream<P, H, IO, Observer>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     serve_stream_with_connection_meta_and_tcp_state(
@@ -351,18 +358,19 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object and caller-supplied metadata.
-pub async fn serve_stream_with_connection_meta<P, H, IO>(
+pub async fn serve_stream_with_connection_meta<P, H, IO, Observer>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     serve_stream_with_connection_meta_and_tcp_state(
@@ -380,13 +388,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<P, H, OH, IO>(
+pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<P, H, OH, IO, Observer>(
     mut io: IO,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -395,6 +403,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let _connection_permit = runtime_state.acquire_connection_tracked()?;
@@ -413,17 +422,18 @@ where
 }
 
 /// Drive one TCP framed connection using a single unsplit I/O object.
-pub async fn serve_stream_without_connection_limit<P, H, IO>(
+pub async fn serve_stream_without_connection_limit<P, H, IO, Observer>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state(
@@ -441,18 +451,19 @@ where
 }
 
 /// Drive one TCP framed connection without taking a connection permit.
-pub async fn serve_stream_without_connection_limit_with_connection_meta<P, H, IO>(
+pub async fn serve_stream_without_connection_limit_with_connection_meta<P, H, IO, Observer>(
     io: IO,
     protocol: Arc<P>,
     handler: H,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
     P: Protocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state(
@@ -475,13 +486,14 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     H,
     OH,
     IO,
+    Observer,
 >(
     mut io: IO,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -490,6 +502,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     serve_stream_inner(
@@ -507,13 +520,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn serve_stream_inner<P, H, OH, IO>(
+async fn serve_stream_inner<P, H, OH, IO, Observer>(
     io: &mut IO,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     connection: NacelleConnectionMeta,
@@ -522,6 +535,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (reader, writer) = tokio::io::split(io);

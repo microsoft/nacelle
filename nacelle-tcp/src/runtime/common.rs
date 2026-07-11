@@ -9,7 +9,8 @@ use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::TrackedPermit;
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
-    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTransport,
+    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    NacelleTransport,
 };
 use std::future::Future;
 use std::sync::Arc;
@@ -60,8 +61,8 @@ pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str 
     }
 }
 
-pub(super) fn record_connection_rejection<P, H, OH>(
-    server: &NacelleServer<P, H, OH>,
+pub(super) fn record_connection_rejection<P, H, OH, Observer>(
+    server: &NacelleServer<P, H, OH, Observer>,
     transport: NacelleTransport,
     tls: &'static str,
     error: &NacelleError,
@@ -69,6 +70,7 @@ pub(super) fn record_connection_rejection<P, H, OH>(
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     let context = NacelleMetricsContext::new(
         transport,
@@ -81,12 +83,14 @@ pub(super) fn record_connection_rejection<P, H, OH>(
         .operation_error(&context, "accept", error);
 }
 
-pub(super) async fn drain_connection_tasks(
+pub(super) async fn drain_connection_tasks<Observer>(
     mut connections: tokio::task::JoinSet<Result<(), NacelleError>>,
     drain_timeout: Duration,
     transport: NacelleTransport,
-    telemetry: NacelleTelemetry,
-) {
+    telemetry: NacelleTelemetry<Observer>,
+) where
+    Observer: NacelleTelemetryObserver,
+{
     telemetry.shutdown_event(NacelleTelemetryEventKind::DrainStarted, transport);
     let drain = async {
         while let Some(result) = connections.join_next().await {
@@ -120,8 +124,8 @@ pub(super) async fn drain_connection_tasks(
 /// handshake where applicable). `tls_label` is used only for rejection
 /// telemetry.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_accept_loop<P, H, OH, Prepare, Serve, Fut>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub(super) async fn run_accept_loop<P, H, OH, Observer, Prepare, Serve, Fut>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     listener: TcpListener,
     tls_label: &'static str,
     mut shutdown: NacelleShutdownToken,
@@ -133,9 +137,14 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
-    Serve:
-        FnMut(Arc<NacelleServer<P, H, OH>>, TcpStream, NacelleConnectionMeta, TrackedPermit) -> Fut,
+    Serve: FnMut(
+        Arc<NacelleServer<P, H, OH, Observer>>,
+        TcpStream,
+        NacelleConnectionMeta,
+        TrackedPermit,
+    ) -> Fut,
     Fut: Future<Output = Result<(), NacelleError>> + Send + 'static,
 {
     let transport = NacelleTransport::new("tcp");

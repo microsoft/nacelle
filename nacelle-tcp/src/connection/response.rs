@@ -5,7 +5,7 @@ use crate::limits::NacelleTcpLimits;
 use crate::protocol::{FrameBuffer, Protocol, TcpCompletion};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
+use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::io::write_all_tracked_with_timeout;
 use super::metrics::{finish_tcp_phase, record_tcp_error, start_tcp_phase};
@@ -16,7 +16,7 @@ pub(super) struct ResponseDeliveryError {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn encode_response_body<P, W>(
+pub(super) async fn encode_response_body<P, W, Observer>(
     protocol: &P,
     completion: TcpCompletion<P::Response, P::ResponseContext>,
     writer: &mut W,
@@ -24,12 +24,13 @@ pub(super) async fn encode_response_body<P, W>(
     write_buf: &mut BytesMut,
     response_buffer_capacity: usize,
     runtime_state: &NacelleRuntimeState,
-    telemetry: &NacelleTelemetry,
+    telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
     W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
 {
     let TcpCompletion {
         response,
@@ -130,7 +131,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn write_error<P, W>(
+pub(super) async fn write_error<P, W, Observer>(
     writer: &mut W,
     protocol: &P,
     context: Option<P::ErrorContext>,
@@ -139,12 +140,13 @@ pub(super) async fn write_error<P, W>(
     tcp_limits: &NacelleTcpLimits,
     write_buf: &mut BytesMut,
     runtime_state: &NacelleRuntimeState,
-    telemetry: &NacelleTelemetry,
+    telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
     W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
 {
     stage_and_write(
         writer,
@@ -170,20 +172,21 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stage_and_write<'a, W, E>(
+fn stage_and_write<'a, W, E, Observer>(
     writer: &'a mut W,
     tcp_limits: &'a NacelleTcpLimits,
     write_buf: &'a mut BytesMut,
     response_buffer_capacity: usize,
     frame_capacity: usize,
     runtime_state: &'a NacelleRuntimeState,
-    telemetry: &'a NacelleTelemetry,
+    telemetry: &'a NacelleTelemetry<Observer>,
     metrics_context: Option<&'a NacelleMetricsContext>,
     encode: E,
 ) -> impl Future<Output = Result<usize, ResponseDeliveryError>> + 'a
 where
     W: AsyncWrite + Unpin + 'a,
     E: FnOnce(&mut FrameBuffer<'_>) -> Result<(), NacelleError>,
+    Observer: NacelleTelemetryObserver,
 {
     write_buf.clear();
     let staging_result = (|| {

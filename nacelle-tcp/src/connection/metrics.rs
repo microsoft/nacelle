@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use crate::protocol::Protocol;
 use nacelle_core::error::NacelleError;
 use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTransport};
+use nacelle_core::telemetry::{
+    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport,
+};
 
 pub(super) fn tcp_metrics_context<P>(
     protocol: &P,
@@ -20,61 +22,87 @@ where
     )
 }
 
-pub(super) fn start_tcp_phase(telemetry: &NacelleTelemetry) -> Option<Instant> {
+pub(super) fn start_tcp_phase<Observer>(telemetry: &NacelleTelemetry<Observer>) -> Option<Instant>
+where
+    Observer: NacelleTelemetryObserver,
+{
     telemetry
         .phase_duration_metrics_enabled()
         .then(Instant::now)
 }
 
-pub(super) fn finish_tcp_phase(
-    telemetry: &NacelleTelemetry,
+pub(super) fn finish_tcp_phase<Observer>(
+    telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase: &'static str,
     started: Option<Instant>,
-) {
+) where
+    Observer: NacelleTelemetryObserver,
+{
     if let (Some(started), Some(metrics_context)) = (started, metrics_context) {
         telemetry.phase_duration(metrics_context, phase, started.elapsed());
     }
 }
 
-pub(super) fn record_tcp_error(
-    telemetry: &NacelleTelemetry,
+pub(super) fn record_tcp_error<Observer>(
+    telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase: &'static str,
     error: &NacelleError,
-) {
+) where
+    Observer: NacelleTelemetryObserver,
+{
     if let Some(metrics_context) = metrics_context {
         telemetry.operation_error(metrics_context, phase, error);
     }
 }
 
-pub(super) fn record_core_request_completed(
-    telemetry: &NacelleTelemetry,
+pub(super) fn record_core_request_completed<Observer>(
+    telemetry: &NacelleTelemetry<Observer>,
     enabled: bool,
+    emit_metrics: bool,
     transport: NacelleTransport,
     request_bytes: usize,
     response_bytes: usize,
     started: Option<Instant>,
-) {
+) where
+    Observer: NacelleTelemetryObserver,
+{
     if enabled {
-        telemetry.request_completed(
-            transport,
-            request_bytes,
-            response_bytes,
-            elapsed_since(started),
-        );
+        if emit_metrics {
+            telemetry.request_completed(
+                transport,
+                request_bytes,
+                response_bytes,
+                elapsed_since(started),
+            );
+        } else {
+            telemetry.request_completed_without_metrics(
+                transport,
+                request_bytes,
+                response_bytes,
+                elapsed_since(started),
+            );
+        }
     }
 }
 
-pub(super) fn record_core_request_failed(
-    telemetry: &NacelleTelemetry,
+pub(super) fn record_core_request_failed<Observer>(
+    telemetry: &NacelleTelemetry<Observer>,
     enabled: bool,
+    emit_metrics: bool,
     transport: NacelleTransport,
     started: Option<Instant>,
     error: &NacelleError,
-) {
+) where
+    Observer: NacelleTelemetryObserver,
+{
     if enabled {
-        telemetry.request_failed(transport, elapsed_since(started), error);
+        if emit_metrics {
+            telemetry.request_failed(transport, elapsed_since(started), error);
+        } else {
+            telemetry.request_failed_without_metrics(transport, elapsed_since(started), error);
+        }
     }
 }
 
@@ -100,17 +128,20 @@ fn elapsed_since(started: Option<Instant>) -> Duration {
     started.map_or(Duration::ZERO, |started| started.elapsed())
 }
 
-pub(super) struct TcpRequestMetricsGuard<'a> {
-    telemetry: &'a NacelleTelemetry,
+pub(super) struct TcpRequestMetricsGuard<'a, Observer: NacelleTelemetryObserver> {
+    telemetry: &'a NacelleTelemetry<Observer>,
     context: Option<NacelleMetricsContext>,
     request_bytes: usize,
     started: Option<Instant>,
     completed: bool,
 }
 
-impl<'a> TcpRequestMetricsGuard<'a> {
+impl<'a, Observer> TcpRequestMetricsGuard<'a, Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     pub(super) fn new(
-        telemetry: &'a NacelleTelemetry,
+        telemetry: &'a NacelleTelemetry<Observer>,
         context: Option<NacelleMetricsContext>,
         request_bytes: usize,
         started: Option<Instant>,
@@ -141,7 +172,10 @@ impl<'a> TcpRequestMetricsGuard<'a> {
     }
 }
 
-impl Drop for TcpRequestMetricsGuard<'_> {
+impl<Observer> Drop for TcpRequestMetricsGuard<'_, Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     fn drop(&mut self) {
         if !self.completed
             && let Some(context) = &self.context

@@ -5,7 +5,9 @@ use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 #[cfg(feature = "rustls")]
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use nacelle_core::telemetry::{NacelleTelemetryEventKind, NacelleTransport};
+use nacelle_core::telemetry::{
+    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+};
 #[cfg(feature = "openssl")]
 use nacelle_core::tls::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
@@ -22,8 +24,8 @@ use crate::server::LocalTcpServer;
 ///
 /// This function must run inside a Tokio [`tokio::task::LocalSet`]. Each
 /// accepted stream is spawned locally and remains on the accepting worker.
-pub async fn serve_local_tcp_listener<P, H, OH>(
-    server: Rc<LocalTcpServer<P, H, OH>>,
+pub async fn serve_local_tcp_listener<P, H, OH, Observer>(
+    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -33,6 +35,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -99,8 +102,8 @@ where
 
 /// Serve one worker-local Rustls TCP listener until shared shutdown.
 #[cfg(feature = "rustls")]
-pub async fn serve_local_tcp_tls_listener<P, H, OH>(
-    server: Rc<LocalTcpServer<P, H, OH>>,
+pub async fn serve_local_tcp_tls_listener<P, H, OH, Observer>(
+    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleTlsConfig,
@@ -111,6 +114,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -196,8 +200,8 @@ where
 
 /// Serve one worker-local required-OpenSSL TCP listener until shared shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_tcp_openssl_listener<P, H, OH>(
-    server: Rc<LocalTcpServer<P, H, OH>>,
+pub async fn serve_local_tcp_openssl_listener<P, H, OH, Observer>(
+    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -208,6 +212,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     OH: LocalTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -316,13 +321,14 @@ fn log_local_connection_result(
     }
 }
 
-async fn drain_local_connections(
+async fn drain_local_connections<Observer>(
     mut connections: tokio::task::JoinSet<Result<(), NacelleError>>,
     drain_timeout: std::time::Duration,
-    telemetry: nacelle_core::telemetry::NacelleTelemetry,
+    telemetry: nacelle_core::telemetry::NacelleTelemetry<Observer>,
     transport: NacelleTransport,
-) {
-    telemetry.shutdown_event(NacelleTelemetryEventKind::DrainStarted, transport);
+) where
+    Observer: NacelleTelemetryObserver,
+{
     let drain = async {
         while let Some(result) = connections.join_next().await {
             log_local_connection_result(Some(result));

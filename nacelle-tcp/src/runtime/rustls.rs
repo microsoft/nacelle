@@ -7,13 +7,13 @@ use crate::server::NacelleServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use nacelle_core::telemetry::NacelleTransport;
+use nacelle_core::telemetry::{NacelleTelemetryObserver, NacelleTransport};
 use nacelle_core::tls::NacelleTlsConfig;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
 
-pub async fn serve_tcp_tls<P, H, OH>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub async fn serve_tcp_tls<P, H, OH, Observer>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
 ) -> Result<(), NacelleError>
@@ -21,13 +21,14 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_tls_with_shutdown(server, addr, tls_config, token).await
 }
 
-pub async fn serve_tcp_tls_with_shutdown<P, H, OH>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub async fn serve_tcp_tls_with_shutdown<P, H, OH, Observer>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -36,13 +37,14 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     serve_tcp_tls_with_shutdown_timeout(server, addr, tls_config, shutdown, Duration::from_secs(30))
         .await
 }
 
-pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, OH>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, OH, Observer>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -52,6 +54,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     serve_tcp_tls_with_shutdown_deadline(
         server,
@@ -64,8 +67,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, OH>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, OH, Observer>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -75,6 +78,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &Default::default())?;
     serve_tcp_tls_listener_with_shutdown_deadline(
@@ -88,8 +92,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, OH>(
-    server: Arc<NacelleServer<P, H, OH>>,
+pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, OH, Observer>(
+    server: Arc<NacelleServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -99,6 +103,7 @@ where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     run_accept_loop(

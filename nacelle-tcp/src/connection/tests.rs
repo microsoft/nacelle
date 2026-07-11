@@ -10,7 +10,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::NacelleTelemetry;
+use nacelle_core::telemetry::{NacelleInMemoryTelemetrySink, NacelleTelemetry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{
@@ -721,4 +721,59 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
         .expect("server should finish")
         .expect("server task should join");
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn tcp_server_with_arc_in_memory_observer_serves_and_records_request_events() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let sink = Arc::new(NacelleInMemoryTelemetrySink::new());
+    let telemetry = NacelleTelemetry::default().with_observer(sink.clone());
+
+    let server = TcpServer::<MixedProtocol>::builder()
+        .protocol(MixedProtocol)
+        .handler(handler_fn(
+            |context: TcpRequestContext<MixedProtocol>| async move {
+                let seen = context.connection().state.load(Ordering::SeqCst);
+                context.respond(TcpResponse::bytes(seen.to_string())).await
+            },
+        ))
+        .one_way_handler(handler_fn(
+            |mut context: TcpOneWayContext<MixedProtocol>| async move {
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    let _ = chunk?;
+                }
+                Ok(context.complete())
+            },
+        ))
+        .telemetry(telemetry)
+        .build()
+        .expect("typed mixed server should build with concrete observer");
+
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[2, 0])
+        .await
+        .expect("request should write");
+    let mut response = [0_u8; 1];
+    tokio::time::timeout(Duration::from_millis(250), client.read_exact(&mut response))
+        .await
+        .expect("response should arrive")
+        .expect("response should read");
+    assert_eq!(&response, b"0");
+
+    client.shutdown().await.expect("client should close");
+    let result = tokio::time::timeout(Duration::from_millis(250), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_ok());
+
+    let events = sink.events();
+    assert!(events.iter().any(|event| {
+        event.kind == nacelle_core::telemetry::NacelleTelemetryEventKind::ConnectionOpened
+    }));
+    assert!(events.iter().any(|event| {
+        event.kind == nacelle_core::telemetry::NacelleTelemetryEventKind::RequestCompleted
+    }));
 }

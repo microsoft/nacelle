@@ -282,6 +282,11 @@ where
         Observer::ENABLED || self.metrics_enabled()
     }
 
+    /// Whether a concrete event observer is active independently of metrics.
+    pub const fn observer_enabled(&self) -> bool {
+        Observer::ENABLED
+    }
+
     pub fn listener_configured(&self, transport: NacelleTransport, name: &str, addr: &str) {
         tracing::info!(
             target: "nacelle",
@@ -480,6 +485,30 @@ where
         response_bytes: usize,
         elapsed: Duration,
     ) {
+        self.request_completed_inner(transport, request_bytes, response_bytes, elapsed, true);
+    }
+
+    #[doc(hidden)]
+    pub fn request_completed_without_metrics(
+        &self,
+        transport: NacelleTransport,
+        request_bytes: usize,
+        response_bytes: usize,
+        elapsed: Duration,
+    ) {
+        self.request_completed_inner(transport, request_bytes, response_bytes, elapsed, false);
+    }
+
+    fn request_completed_inner(
+        &self,
+        transport: NacelleTransport,
+        request_bytes: usize,
+        response_bytes: usize,
+        elapsed: Duration,
+        emit_metrics: bool,
+    ) {
+        #[cfg(not(feature = "otel"))]
+        let _ = emit_metrics;
         tracing::debug!(
             target: "nacelle",
             transport = transport.as_str(),
@@ -501,15 +530,15 @@ where
                 transport.as_str(),
             )];
             let request_metrics = self.config.request_metrics;
-            if self.config.metrics && request_metrics.completed {
+            if emit_metrics && self.config.metrics && request_metrics.completed {
                 self.metrics.request_count.add(1, &attributes);
             }
-            if self.config.metrics && request_metrics.duration_ms {
+            if emit_metrics && self.config.metrics && request_metrics.duration_ms {
                 self.metrics
                     .request_duration_ms
                     .record(elapsed.as_secs_f64() * 1_000.0, &attributes);
             }
-            if self.config.metrics && request_metrics.byte_counts {
+            if emit_metrics && self.config.metrics && request_metrics.byte_counts {
                 self.metrics
                     .request_bytes
                     .add(request_bytes as u64, &attributes);
@@ -526,6 +555,28 @@ where
         elapsed: Duration,
         error: &crate::error::NacelleError,
     ) {
+        self.request_failed_inner(transport, elapsed, error, true);
+    }
+
+    #[doc(hidden)]
+    pub fn request_failed_without_metrics(
+        &self,
+        transport: NacelleTransport,
+        elapsed: Duration,
+        error: &crate::error::NacelleError,
+    ) {
+        self.request_failed_inner(transport, elapsed, error, false);
+    }
+
+    fn request_failed_inner(
+        &self,
+        transport: NacelleTransport,
+        elapsed: Duration,
+        error: &crate::error::NacelleError,
+        emit_metrics: bool,
+    ) {
+        #[cfg(not(feature = "otel"))]
+        let _ = emit_metrics;
         tracing::warn!(
             target: "nacelle",
             transport = transport.as_str(),
@@ -545,10 +596,10 @@ where
                 "transport",
                 transport.as_str(),
             )];
-            if self.config.metrics {
+            if emit_metrics && self.config.metrics {
                 self.metrics.request_error_count.add(1, &attributes);
             }
-            if self.config.metrics && self.config.request_metrics.duration_ms {
+            if emit_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
                 self.metrics
                     .request_duration_ms
                     .record(elapsed.as_secs_f64() * 1_000.0, &attributes);

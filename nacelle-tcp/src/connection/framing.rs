@@ -4,7 +4,7 @@ use nacelle_codec::{MessageDecoder, MessageReadError};
 use crate::config::NacelleTcpConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
+use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::metrics::{finish_tcp_phase, start_tcp_phase};
 
@@ -18,16 +18,19 @@ pub(super) fn allocate_connection_buffers(
     runtime_state.allocate_memory(bytes)
 }
 
-pub(super) struct InstrumentedDecoder<'a, D> {
+pub(super) struct InstrumentedDecoder<'a, D, Observer: NacelleTelemetryObserver> {
     decoder: D,
-    telemetry: &'a NacelleTelemetry,
+    telemetry: &'a NacelleTelemetry<Observer>,
     metrics_context: &'a NacelleMetricsContext,
 }
 
-impl<'a, D> InstrumentedDecoder<'a, D> {
+impl<'a, D, Observer> InstrumentedDecoder<'a, D, Observer>
+where
+    Observer: NacelleTelemetryObserver,
+{
     pub(super) const fn new(
         decoder: D,
-        telemetry: &'a NacelleTelemetry,
+        telemetry: &'a NacelleTelemetry<Observer>,
         metrics_context: &'a NacelleMetricsContext,
     ) -> Self {
         Self {
@@ -38,9 +41,10 @@ impl<'a, D> InstrumentedDecoder<'a, D> {
     }
 }
 
-impl<D> MessageDecoder for InstrumentedDecoder<'_, D>
+impl<D, Observer> MessageDecoder for InstrumentedDecoder<'_, D, Observer>
 where
     D: MessageDecoder<Error = NacelleError>,
+    Observer: NacelleTelemetryObserver,
 {
     type Message = D::Message;
     type Error = NacelleError;

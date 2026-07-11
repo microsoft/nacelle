@@ -14,7 +14,7 @@ use crate::protocol::{NoOneWayHandler, Protocol, TcpHandler, TcpOneWayHandler};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::NacelleTelemetry;
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 use std::sync::Arc as StdArc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -23,36 +23,37 @@ mod listeners;
 pub struct Missing;
 pub struct Present;
 
-pub struct NacelleServer<P, H = (), OH = NoOneWayHandler<P>> {
+pub struct NacelleServer<P, H = (), OH = NoOneWayHandler<P>, Observer = NoopObserver> {
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
 }
 
-pub type TcpServer<P, H = (), OH = NoOneWayHandler<P>> = NacelleServer<P, H, OH>;
+pub type TcpServer<P, H = (), OH = NoOneWayHandler<P>, Observer = NoopObserver> =
+    NacelleServer<P, H, OH, Observer>;
 
 /// Worker-local TCP server for explicit thread-per-core execution.
 ///
 /// Protocol and handler ownership uses [`Rc`] so application handlers may hold
 /// `!Send` worker-local state. Instances must be constructed and used on their
 /// owning worker.
-pub struct LocalTcpServer<P, H, OH = NoOneWayHandler<P>> {
+pub struct LocalTcpServer<P, H, OH = NoOneWayHandler<P>, Observer = NoopObserver> {
     protocol: Rc<P>,
     handler: Rc<H>,
     one_way_handler: Rc<OH>,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
 }
 
-impl<P, H> LocalTcpServer<P, H, NoOneWayHandler<P>>
+impl<P, H> LocalTcpServer<P, H, NoOneWayHandler<P>, NoopObserver>
 where
     P: Protocol<OneWayRequest = std::convert::Infallible>,
     H: LocalTcpHandler<P>,
@@ -72,14 +73,18 @@ where
     }
 }
 
-impl<P, H, OH> LocalTcpServer<P, H, OH>
+impl<P, H, OH, Observer> LocalTcpServer<P, H, OH, Observer>
 where
     P: Protocol,
     H: LocalTcpHandler<P>,
     OH: LocalTcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     /// Replace the worker-local one-way handler.
-    pub fn with_one_way_handler<OH2>(self, one_way_handler: OH2) -> LocalTcpServer<P, H, OH2>
+    pub fn with_one_way_handler<OH2>(
+        self,
+        one_way_handler: OH2,
+    ) -> LocalTcpServer<P, H, OH2, Observer>
     where
         OH2: LocalTcpOneWayHandler<P>,
     {
@@ -114,16 +119,30 @@ where
     }
 
     /// Set telemetry for this worker.
-    pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> LocalTcpServer<P, H, OH, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(self.runtime_state.clone());
-        self.telemetry = telemetry;
-        self
+        LocalTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: self.one_way_handler,
+            config: self.config,
+            telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
     }
 
     #[doc(hidden)]
     pub fn with_runtime_context(
         mut self,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
         runtime_state: NacelleRuntimeState,
     ) -> Self {
         telemetry.register_runtime_state(runtime_state.clone());
@@ -154,7 +173,7 @@ where
         self.config.clone()
     }
 
-    pub(crate) fn telemetry(&self) -> NacelleTelemetry {
+    pub(crate) fn telemetry(&self) -> NacelleTelemetry<Observer> {
         self.telemetry.clone()
     }
 
@@ -171,7 +190,10 @@ where
     }
 }
 
-impl<P, H, OH> Clone for NacelleServer<P, H, OH> {
+impl<P, H, OH, Observer> Clone for NacelleServer<P, H, OH, Observer>
+where
+    Observer: Clone,
+{
     fn clone(&self) -> Self {
         Self {
             protocol: self.protocol.clone(),
@@ -186,8 +208,9 @@ impl<P, H, OH> Clone for NacelleServer<P, H, OH> {
     }
 }
 
-impl<P> NacelleServer<P, ()> {
-    pub fn builder() -> NacelleServerBuilder<Missing, Missing, P, (), NoOneWayHandler<P>> {
+impl<P> NacelleServer<P, (), NoOneWayHandler<P>, NoopObserver> {
+    pub fn builder()
+    -> NacelleServerBuilder<Missing, Missing, P, (), NoOneWayHandler<P>, NoopObserver> {
         NacelleServerBuilder {
             protocol: None,
             handler: None,
@@ -203,11 +226,12 @@ impl<P> NacelleServer<P, ()> {
     }
 }
 
-impl<P, H, OH> NacelleServer<P, H, OH>
+impl<P, H, OH, Observer> NacelleServer<P, H, OH, Observer>
 where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
         &self.config
@@ -217,7 +241,7 @@ where
         &self.runtime_state
     }
 
-    pub fn telemetry(&self) -> &NacelleTelemetry {
+    pub fn telemetry(&self) -> &NacelleTelemetry<Observer> {
         &self.telemetry
     }
 
@@ -249,16 +273,30 @@ where
         self
     }
 
-    pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> NacelleServer<P, H, OH, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
         telemetry.register_runtime_state(self.runtime_state.clone());
-        self.telemetry = telemetry;
-        self
+        NacelleServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: self.one_way_handler,
+            config: self.config,
+            telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
     }
 
     #[doc(hidden)]
     pub fn with_runtime_context(
         mut self,
-        telemetry: NacelleTelemetry,
+        telemetry: NacelleTelemetry<Observer>,
         runtime_state: NacelleRuntimeState,
     ) -> Self {
         telemetry.register_runtime_state(runtime_state.clone());
@@ -378,12 +416,12 @@ where
     }
 }
 
-pub struct NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH> {
+pub struct NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH, Observer = NoopObserver> {
     protocol: Option<Arc<P>>,
     handler: Option<H>,
     one_way_handler: OH,
     config: NacelleTcpConfig,
-    telemetry: NacelleTelemetry,
+    telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
@@ -391,17 +429,33 @@ pub struct NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH> {
     _handler: PhantomData<HandlerState>,
 }
 
-impl<ProtocolState, HandlerState, P, H, OH>
-    NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH>
+impl<ProtocolState, HandlerState, P, H, OH, Observer>
+    NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH, Observer>
 {
     pub fn tcp_config(mut self, config: NacelleTcpConfig) -> Self {
         self.config = config;
         self
     }
 
-    pub fn telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
-        self.telemetry = telemetry;
-        self
+    pub fn telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        NacelleServerBuilder {
+            protocol: self.protocol,
+            handler: self.handler,
+            one_way_handler: self.one_way_handler,
+            config: self.config,
+            telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            _protocol: PhantomData,
+            _handler: PhantomData,
+        }
     }
 
     pub fn runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
@@ -420,11 +474,13 @@ impl<ProtocolState, HandlerState, P, H, OH>
     }
 }
 
-impl<HandlerState, P, H, OH> NacelleServerBuilder<Missing, HandlerState, P, H, OH> {
+impl<HandlerState, P, H, OH, Observer>
+    NacelleServerBuilder<Missing, HandlerState, P, H, OH, Observer>
+{
     pub fn protocol<P2>(
         self,
         protocol: P2,
-    ) -> NacelleServerBuilder<Present, HandlerState, P2, H, OH> {
+    ) -> NacelleServerBuilder<Present, HandlerState, P2, H, OH, Observer> {
         NacelleServerBuilder {
             protocol: Some(Arc::new(protocol)),
             handler: self.handler,
@@ -440,11 +496,13 @@ impl<HandlerState, P, H, OH> NacelleServerBuilder<Missing, HandlerState, P, H, O
     }
 }
 
-impl<ProtocolState, P, H, OH> NacelleServerBuilder<ProtocolState, Missing, P, H, OH> {
+impl<ProtocolState, P, H, OH, Observer>
+    NacelleServerBuilder<ProtocolState, Missing, P, H, OH, Observer>
+{
     pub fn handler<H2>(
         self,
         handler: H2,
-    ) -> NacelleServerBuilder<ProtocolState, Present, P, H2, OH> {
+    ) -> NacelleServerBuilder<ProtocolState, Present, P, H2, OH, Observer> {
         NacelleServerBuilder {
             protocol: self.protocol,
             handler: Some(handler),
@@ -460,14 +518,14 @@ impl<ProtocolState, P, H, OH> NacelleServerBuilder<ProtocolState, Missing, P, H,
     }
 }
 
-impl<ProtocolState, HandlerState, P, H, OH>
-    NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH>
+impl<ProtocolState, HandlerState, P, H, OH, Observer>
+    NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH, Observer>
 {
     /// Install the concrete one-way handler for this protocol.
     pub fn one_way_handler<OH2>(
         self,
         one_way_handler: OH2,
-    ) -> NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH2> {
+    ) -> NacelleServerBuilder<ProtocolState, HandlerState, P, H, OH2, Observer> {
         NacelleServerBuilder {
             protocol: self.protocol,
             handler: self.handler,
@@ -483,13 +541,14 @@ impl<ProtocolState, HandlerState, P, H, OH>
     }
 }
 
-impl<P, H, OH> NacelleServerBuilder<Present, Present, P, H, OH>
+impl<P, H, OH, Observer> NacelleServerBuilder<Present, Present, P, H, OH, Observer>
 where
     P: Protocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
 {
-    pub fn build(self) -> Result<NacelleServer<P, H, OH>, NacelleError> {
+    pub fn build(self) -> Result<NacelleServer<P, H, OH, Observer>, NacelleError> {
         let protocol = self.protocol.ok_or(NacelleError::MissingProtocol)?;
         let handler = self.handler.expect("handler state guarantees a handler");
 

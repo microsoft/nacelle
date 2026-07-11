@@ -15,7 +15,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, NoResponse, RequestContext, RequiredResponder};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry};
+use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::body::{buffered_request_body, pump_request_body, read_buffered_request_body};
 use super::metrics::{
@@ -104,7 +104,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_request<P, D, R, W>(
+pub(super) async fn run_request<P, D, R, W, Observer>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
@@ -114,7 +114,7 @@ pub(super) async fn run_request<P, D, R, W>(
     decoded: DecodedRequest<P::Request>,
     error_context: P::ErrorContext,
     config: &NacelleTcpConfig,
-    telemetry: &NacelleTelemetry,
+    telemetry: &NacelleTelemetry<Observer>,
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
     connection: &NacelleConnectionMeta,
@@ -124,12 +124,13 @@ pub(super) async fn run_request<P, D, R, W>(
 where
     P: Protocol,
     D: RequestDispatch<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
     let request = decoded.request;
     let detailed_request_metrics = telemetry.request_metrics_enabled();
-    let core_request_events = telemetry.request_events_enabled() && !detailed_request_metrics;
+    let core_request_events = telemetry.observer_enabled();
     let core_request_duration_metrics =
         core_request_events && telemetry.request_duration_metrics_enabled();
     let request_started = (core_request_duration_metrics
@@ -148,11 +149,12 @@ where
         record_core_request_failed(
             telemetry,
             core_request_events,
+            !detailed_request_metrics,
             connection.transport,
             request_started,
             &error,
         );
-        if let Err(delivery_error) = write_error::<P, W>(
+        if let Err(delivery_error) = write_error::<P, W, Observer>(
             writer,
             protocol,
             Some(error_context),
@@ -315,7 +317,7 @@ where
     match outcome {
         Ok(completion) => {
             let encode_started = start_tcp_phase(telemetry);
-            let encode_result = encode_response_body::<P, W>(
+            let encode_result = encode_response_body::<P, W, Observer>(
                 protocol,
                 completion.into_inner(),
                 writer,
@@ -349,6 +351,7 @@ where
             record_core_request_completed(
                 telemetry,
                 core_request_events,
+                !detailed_request_metrics,
                 connection.transport,
                 request_bytes,
                 response_bytes,
@@ -361,11 +364,12 @@ where
             record_core_request_failed(
                 telemetry,
                 core_request_events,
+                !detailed_request_metrics,
                 connection.transport,
                 request_started,
                 &error,
             );
-            let response_bytes = match write_error::<P, W>(
+            let response_bytes = match write_error::<P, W, Observer>(
                 writer,
                 protocol,
                 Some(error_context),
@@ -388,6 +392,7 @@ where
             record_core_request_completed(
                 telemetry,
                 core_request_events,
+                !detailed_request_metrics,
                 connection.transport,
                 request_bytes,
                 response_bytes,
@@ -402,14 +407,14 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_one_way<P, D, R>(
+pub(super) async fn run_one_way<P, D, R, Observer>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     protocol: &P,
     handler: &D,
     decoded: DecodedRequest<P::OneWayRequest>,
     config: &NacelleTcpConfig,
-    telemetry: &NacelleTelemetry,
+    telemetry: &NacelleTelemetry<Observer>,
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
     connection: &NacelleConnectionMeta,
@@ -419,6 +424,7 @@ pub(super) async fn run_one_way<P, D, R>(
 where
     P: Protocol,
     D: OneWayDispatch<P>,
+    Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
 {
     let request = decoded.request;
@@ -498,6 +504,7 @@ where
             record_core_request_completed(
                 telemetry,
                 telemetry.request_events_enabled(),
+                metrics_context.is_none(),
                 connection.transport,
                 request_bytes,
                 0,
@@ -510,6 +517,7 @@ where
             record_core_request_failed(
                 telemetry,
                 telemetry.request_events_enabled(),
+                metrics_context.is_none(),
                 connection.transport,
                 request_started,
                 &error,
@@ -550,19 +558,20 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_handler_with_metrics<P, D>(
+async fn execute_handler_with_metrics<P, D, Observer>(
     handler: &D,
     request: P::Request,
     body: NacelleBody,
     response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
     connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
-    telemetry: &NacelleTelemetry,
+    telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
+    Observer: NacelleTelemetryObserver,
 {
     let handler_started = metrics_context.and_then(|_| start_tcp_phase(telemetry));
     let result = execute_handler(
