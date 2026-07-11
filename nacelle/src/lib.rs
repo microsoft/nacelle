@@ -1,8 +1,8 @@
 //! Typed streaming application pipelines across TCP and HTTP transports.
 //!
 //! Use [`core::pipeline`] for static handler composition, [`tcp`] for typed TCP
-//! protocols, [`http`] for HTTP/1, and [`NacelleHost`] when one process
-//! owns several listeners with shared limits.
+//! protocols, [`http`] for HTTP/1, and [`NacelleApp`] to compose listeners with
+//! shared limits, telemetry, and shutdown.
 //!
 //! Production deployments should configure [`NacelleLimits`] explicitly and
 //! attach [`NacelleTelemetry`] to expose low-cardinality lifecycle, request,
@@ -30,7 +30,7 @@ pub mod host;
 #[cfg(feature = "http")]
 pub use nacelle_http::server as http_server;
 pub mod runtime {
-    pub use crate::app::{NacelleApp, NacelleProtocols, serve};
+    pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }
@@ -43,12 +43,11 @@ pub mod advanced {
         pub use nacelle_tcp::runtime::*;
     }
 }
-pub use app::{NacelleApp, NacelleProtocols, serve};
-pub use host::NacelleHost;
+pub use app::NacelleApp;
 #[cfg(any(feature = "tls", feature = "openssl"))]
 pub use nacelle_core::tls;
 pub mod prelude {
-    pub use crate::{NacelleApp, NacelleBody, NacelleError, NacelleHost, NacelleProtocols, serve};
+    pub use crate::{NacelleApp, NacelleBody, NacelleError};
 }
 
 #[cfg(feature = "tls-self-signed")]

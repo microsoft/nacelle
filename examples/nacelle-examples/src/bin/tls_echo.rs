@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::tcp::{TcpRequestContext, TcpResponse};
-use nacelle::{NacelleError, NacelleTlsConfig, TcpServer};
+use nacelle::{NacelleApp, NacelleError, NacelleTlsConfig, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -34,5 +34,9 @@ async fn main() -> Result<(), NacelleError> {
         .build()?;
 
     println!("nacelle TLS echo server listening on {addr}");
-    server.serve_tcp_tls(addr, generated.tls_config).await
+    NacelleApp::new()
+        .with_ctrl_c_shutdown()
+        .tcp_tls("tls-echo", addr, server, generated.tls_config)
+        .run()
+        .await
 }

@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use http::StatusCode;
+use nacelle::NacelleApp;
 use nacelle::core::NacelleError;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
@@ -25,5 +26,9 @@ async fn main() -> Result<(), NacelleError> {
     ));
 
     println!("nacelle HTTP echo server listening on {addr}");
-    server.serve(addr).await
+    NacelleApp::new()
+        .with_ctrl_c_shutdown()
+        .http("http-echo", addr, server)
+        .run()
+        .await
 }

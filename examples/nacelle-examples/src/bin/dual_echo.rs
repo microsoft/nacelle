@@ -5,7 +5,7 @@ use http::StatusCode;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
 use nacelle::tcp::{TcpRequestContext, TcpResponse};
-use nacelle::{NacelleError, NacelleHost, NacelleTelemetry, TcpServer};
+use nacelle::{NacelleApp, NacelleError, NacelleTelemetry, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[derive(Debug)]
@@ -75,16 +75,17 @@ async fn main() -> Result<(), NacelleError> {
 
     let tcp_server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
-        .telemetry(telemetry.clone())
         .handler(tcp_handler)
         .build()?;
-    let http_server = HyperServer::new(http_handler).with_telemetry(telemetry.clone());
+    let http_server = HyperServer::new(http_handler);
 
     println!("nacelle TCP echo listening on {tcp_addr}");
     println!("nacelle HTTP echo listening on {http_addr}");
 
-    let mut host = NacelleHost::new().with_telemetry(telemetry);
-    host.enable_tcp("tcp-echo", tcp_addr, tcp_server)
-        .enable_http("http-echo", http_addr, http_server);
-    host.wait().await
+    NacelleApp::new()
+        .with_telemetry(telemetry)
+        .tcp("tcp-echo", tcp_addr, tcp_server)
+        .http("http-echo", http_addr, http_server)
+        .run()
+        .await
 }

@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use http::StatusCode;
+use nacelle::NacelleApp;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::core::{NacelleError, NacelleTlsConfig};
 use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
@@ -29,5 +30,9 @@ async fn main() -> Result<(), NacelleError> {
         },
     ));
 
-    server.serve_tls(addr, generated.tls_config).await
+    NacelleApp::new()
+        .with_ctrl_c_shutdown()
+        .http_tls("https-echo", addr, server, generated.tls_config)
+        .run()
+        .await
 }

@@ -119,6 +119,18 @@ where
         self
     }
 
+    #[doc(hidden)]
+    pub fn with_runtime_context(
+        mut self,
+        telemetry: NacelleTelemetry,
+        runtime_state: NacelleRuntimeState,
+    ) -> Self {
+        telemetry.register_runtime_state(runtime_state.clone());
+        self.telemetry = telemetry;
+        self.runtime_state = runtime_state;
+        self
+    }
+
     pub fn with_http_limits(mut self, http_limits: NacelleHttpLimits) -> Self {
         self.http_limits = http_limits;
         self

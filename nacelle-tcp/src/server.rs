@@ -118,6 +118,18 @@ where
         self
     }
 
+    #[doc(hidden)]
+    pub fn with_runtime_context(
+        mut self,
+        telemetry: NacelleTelemetry,
+        runtime_state: NacelleRuntimeState,
+    ) -> Self {
+        telemetry.register_runtime_state(runtime_state.clone());
+        self.telemetry = telemetry;
+        self.runtime_state = runtime_state;
+        self
+    }
+
     pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
     where
         R: AsyncRead + Unpin + Send + 'static,

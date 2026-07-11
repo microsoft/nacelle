@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::prelude::*;
-use nacelle::tcp::{TcpRequestContext, TcpResponse};
+use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -12,8 +12,7 @@ async fn main() -> Result<(), NacelleError> {
         .parse()
         .map_err(NacelleError::protocol)?;
 
-    let protocols = NacelleProtocols::new().tcp("echo", addr, LengthDelimitedProtocol);
-    let app = NacelleApp::new(handler_fn(
+    let handler = handler_fn(
         |mut context: TcpRequestContext<LengthDelimitedProtocol>| async move {
             let opcode = context.request().head.opcode;
             let mut echoed = BytesMut::new();
@@ -28,9 +27,16 @@ async fn main() -> Result<(), NacelleError> {
             }
             context.respond(TcpResponse::bytes(echoed.freeze())).await
         },
-    ))
-    .with_ctrl_c_shutdown();
+    );
+    let server = TcpServer::<LengthDelimitedProtocol>::builder()
+        .protocol(LengthDelimitedProtocol)
+        .handler(handler)
+        .build()?;
 
     println!("nacelle echo server listening on {addr}");
-    app.serve(protocols).await
+    NacelleApp::new()
+        .with_ctrl_c_shutdown()
+        .tcp("echo", addr, server)
+        .run()
+        .await
 }

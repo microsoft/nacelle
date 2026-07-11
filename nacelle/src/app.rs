@@ -1,10 +1,9 @@
+#[cfg(any(feature = "tcp", feature = "http"))]
+use std::net::SocketAddr;
 #[cfg(feature = "tcp")]
-use std::marker::PhantomData;
-#[cfg(feature = "tcp")]
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(all(feature = "tcp", unix))]
 use std::path::Path;
-use std::sync::Arc;
 
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::NacelleShutdown;
@@ -15,437 +14,363 @@ use crate::host::NacelleHost;
 
 #[cfg(all(feature = "tcp", feature = "openssl"))]
 use nacelle_core::tls::NacelleOpenSslConfig;
+#[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
+use nacelle_core::tls::NacelleTlsConfig;
 #[cfg(all(feature = "tcp", feature = "openssl"))]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
-use nacelle_tcp::{
-    NacelleTcpBindOptions, NacelleTcpConfig, NacelleTcpLimits, NacelleTcpOptions, Protocol,
-    TcpHandler, TcpServer,
-};
+use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 
-pub struct NacelleApp<H> {
-    handler: Arc<H>,
-    #[cfg(feature = "tcp")]
-    tcp_config: NacelleTcpConfig,
+type ListenerInstaller = Box<dyn FnOnce(&mut NacelleHost) + Send + 'static>;
+
+/// Canonical application composition root.
+///
+/// Listener registrations may erase their concrete startup closure type, but
+/// each transport retains its concrete protocol, handler, and responder types
+/// after installation. No listener registry participates in request dispatch.
+pub struct NacelleApp {
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
-    #[cfg(feature = "tcp")]
-    tcp_limits: NacelleTcpLimits,
     shutdown: NacelleShutdown,
     ctrl_c_shutdown: bool,
     drain_timeout: std::time::Duration,
+    listeners: Vec<ListenerInstaller>,
 }
 
-impl<H> NacelleApp<H> {
-    /// Create an app from the handler used by every configured transport.
-    pub fn new(handler: H) -> Self {
+impl Default for NacelleApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NacelleApp {
+    /// Create an application with no registered listeners.
+    pub fn new() -> Self {
         Self {
-            handler: Arc::new(handler),
-            #[cfg(feature = "tcp")]
-            tcp_config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
-            #[cfg(feature = "tcp")]
-            tcp_limits: NacelleTcpLimits::default(),
             shutdown: NacelleShutdown::new(),
             ctrl_c_shutdown: false,
             drain_timeout: std::time::Duration::from_secs(30),
+            listeners: Vec::new(),
         }
     }
 
-    #[cfg(feature = "tcp")]
-    pub fn with_tcp_config(mut self, tcp_config: NacelleTcpConfig) -> Self {
-        self.tcp_config = tcp_config;
-        self
-    }
-
+    /// Set process-wide telemetry used by every registered listener.
     pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
         self.telemetry = telemetry;
         self
     }
 
+    /// Set process-wide limits used by every registered listener.
     pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
         self.runtime_state = NacelleRuntimeState::new(limits);
         self
     }
 
-    #[cfg(feature = "tcp")]
-    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
-        self.tcp_limits = tcp_limits;
-        self
-    }
-
+    /// Set the process-wide runtime state used by every registered listener.
     pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
         self.runtime_state = runtime_state;
         self
     }
 
+    /// Set the shared application shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
         self
     }
 
     /// Request graceful shutdown when the process receives Ctrl-C.
-    ///
-    /// This is a convenience for binaries that want the common local/production
-    /// signal path without manually wiring a [`NacelleShutdown`] handle.
     pub fn with_ctrl_c_shutdown(mut self) -> Self {
         self.ctrl_c_shutdown = true;
         self
     }
 
+    /// Enable or disable Ctrl-C shutdown handling.
     pub fn with_ctrl_c_shutdown_enabled(mut self, enabled: bool) -> Self {
         self.ctrl_c_shutdown = enabled;
         self
     }
 
+    /// Set the shared graceful-shutdown drain timeout.
     pub fn with_shutdown_drain_timeout(mut self, drain_timeout: std::time::Duration) -> Self {
         self.drain_timeout = drain_timeout;
         self
     }
 
-    pub fn handler(&self) -> &H {
-        self.handler.as_ref()
-    }
-
-    /// Install the configured protocols and run the app until shutdown.
-    pub async fn serve(self, protocols: NacelleProtocols<H>) -> Result<(), NacelleError> {
-        serve(protocols, self).await
-    }
-}
-
-type ProtocolInstaller<H> =
-    Box<dyn FnOnce(&mut NacelleHost, &NacelleApp<H>) -> Result<(), NacelleError> + Send>;
-
-pub struct NacelleProtocols<H> {
-    installers: Vec<ProtocolInstaller<H>>,
-}
-
-impl<H> Default for NacelleProtocols<H> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<H> NacelleProtocols<H> {
-    pub fn new() -> Self {
-        Self {
-            installers: Vec::new(),
-        }
-    }
-}
-
-#[cfg(feature = "tcp")]
-impl<H> NacelleProtocols<H> {
-    pub fn tcp<P>(self, name: impl Into<String>, addr: SocketAddr, protocol: P) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
-    {
-        self.tcp_with_options(name, addr, protocol, NacelleTcpOptions::default())
-    }
-
-    pub fn tcp_with_options<P>(
+    #[cfg(feature = "tcp")]
+    /// Register a typed TCP listener.
+    pub fn tcp<P, H, OH>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
-        tcp_options: NacelleTcpOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
-        self.tcp_with_bind_options(
-            name,
-            addr,
-            protocol,
-            NacelleTcpBindOptions::from(tcp_options),
-        )
+        self.tcp_with_bind_options(name, addr, NacelleTcpBindOptions::default(), server)
     }
 
-    pub fn tcp_with_bind_options<P>(
+    #[cfg(feature = "tcp")]
+    /// Register a typed TCP listener with socket options.
+    pub fn tcp_with_options<P, H, OH>(
+        self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        options: NacelleTcpOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
+    {
+        self.tcp_with_bind_options(name, addr, NacelleTcpBindOptions::from(options), server)
+    }
+
+    #[cfg(feature = "tcp")]
+    /// Register a typed TCP listener with bind options.
+    pub fn tcp_with_bind_options<P, H, OH>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
         bind_options: NacelleTcpBindOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
-        self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<P, H>(protocol, app)?;
+        self.listeners.push(Box::new(move |host| {
             host.enable_tcp_with_bind_options(name, addr, bind_options, server);
-            Ok(())
         }));
         self
     }
 
-    pub fn tcp_dual_stack<P>(self, name: impl Into<String>, port: u16, protocol: P) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
-    {
-        self.tcp_dual_stack_with_options(name, port, protocol, NacelleTcpOptions::default())
-    }
-
-    pub fn tcp_dual_stack_with_options<P>(
+    #[cfg(feature = "tcp")]
+    /// Register IPv4 and IPv6 TCP listeners for one typed server.
+    pub fn tcp_dual_stack<P, H, OH>(
         self,
         name: impl Into<String>,
         port: u16,
-        protocol: P,
-        tcp_options: NacelleTcpOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
+    {
+        self.tcp_dual_stack_with_options(name, port, NacelleTcpOptions::default(), server)
+    }
+
+    #[cfg(feature = "tcp")]
+    /// Register IPv4 and IPv6 TCP listeners with socket options.
+    pub fn tcp_dual_stack_with_options<P, H, OH>(
+        self,
+        name: impl Into<String>,
+        port: u16,
+        options: NacelleTcpOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-        let ipv6_bind_options =
-            NacelleTcpBindOptions::from(tcp_options.clone()).with_ipv6_only(true);
-
-        self.tcp_with_options(
-            format!("{name}-ipv4"),
-            ipv4_addr,
-            protocol.clone(),
-            tcp_options,
-        )
-        .tcp_with_bind_options(
-            format!("{name}-ipv6"),
-            ipv6_addr,
-            protocol,
-            ipv6_bind_options,
-        )
+        let ipv6_options = NacelleTcpBindOptions::from(options.clone()).with_ipv6_only(true);
+        self.tcp_with_options(format!("{name}-ipv4"), ipv4_addr, options, server.clone())
+            .tcp_with_bind_options(format!("{name}-ipv6"), ipv6_addr, ipv6_options, server)
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn unix_socket<P>(
+    /// Register a typed Unix-domain socket listener.
+    pub fn unix_socket<P, H, OH>(
         self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        protocol: P,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
-        self.unix_socket_with_options(name, path, protocol, NacelleUnixSocketOptions::default())
+        self.unix_socket_with_options(name, path, NacelleUnixSocketOptions::default(), server)
     }
 
     #[cfg(all(feature = "tcp", unix))]
-    pub fn unix_socket_with_options<P>(
+    /// Register a typed Unix-domain socket listener with socket options.
+    pub fn unix_socket_with_options<P, H, OH>(
         mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        protocol: P,
-        unix_options: NacelleUnixSocketOptions,
+        options: NacelleUnixSocketOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
-        self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<P, H>(protocol, app)?;
-            host.enable_unix_socket_with_options(name, path, unix_options, server);
-            Ok(())
+        self.listeners.push(Box::new(move |host| {
+            host.enable_unix_socket_with_options(name, path, options, server);
+        }));
+        self
+    }
+
+    #[cfg(all(feature = "tcp", feature = "rustls"))]
+    /// Register a typed Rustls TCP listener.
+    pub fn tcp_tls<P, H, OH>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
+        tls_config: NacelleTlsConfig,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_tcp_tls(name, addr, server, tls_config);
         }));
         self
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl<P>(
+    /// Register a typed OpenSSL TCP listener.
+    pub fn tcp_openssl<P, H, OH>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
-    {
-        self.tcp_openssl_with_options(
-            name,
-            addr,
-            protocol,
-            tls_config,
-            NacelleTcpOptions::default(),
-        )
-    }
-
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_with_options<P>(
-        self,
-        name: impl Into<String>,
-        addr: SocketAddr,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
-        tcp_options: NacelleTcpOptions,
-    ) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.tcp_openssl_with_bind_options(
             name,
             addr,
-            protocol,
+            NacelleTcpBindOptions::default(),
+            server,
             tls_config,
-            NacelleTcpBindOptions::from(tcp_options),
         )
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_with_bind_options<P>(
+    /// Register a typed OpenSSL TCP listener with bind options.
+    pub fn tcp_openssl_with_bind_options<P, H, OH>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
+        tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
-        self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<P, H>(protocol, app)?;
+        self.listeners.push(Box::new(move |host| {
             host.enable_tcp_openssl_with_bind_options(name, addr, server, tls_config, bind_options);
-            Ok(())
         }));
         self
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_dual_stack<P>(
+    /// Register IPv4 and IPv6 OpenSSL TCP listeners.
+    pub fn tcp_openssl_dual_stack<P, H, OH>(
         self,
         name: impl Into<String>,
         port: u16,
-        protocol: P,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
-    {
-        self.tcp_openssl_dual_stack_with_options(
-            name,
-            port,
-            protocol,
-            tls_config,
-            NacelleTcpOptions::default(),
-        )
-    }
-
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_openssl_dual_stack_with_options<P>(
-        self,
-        name: impl Into<String>,
-        port: u16,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
-        tcp_options: NacelleTcpOptions,
-    ) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-        let ipv6_bind_options =
-            NacelleTcpBindOptions::from(tcp_options.clone()).with_ipv6_only(true);
-
-        self.tcp_openssl_with_options(
+        self.tcp_openssl(
             format!("{name}-ipv4"),
             ipv4_addr,
-            protocol.clone(),
+            server.clone(),
             tls_config.clone(),
-            tcp_options,
         )
         .tcp_openssl_with_bind_options(
             format!("{name}-ipv6"),
             ipv6_addr,
-            protocol,
+            NacelleTcpBindOptions::default().with_ipv6_only(true),
+            server,
             tls_config,
-            ipv6_bind_options,
         )
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl<P>(
+    /// Register a listener that accepts typed plain or OpenSSL TCP connections.
+    pub fn tcp_optional_openssl<P, H, OH>(
         self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         self.tcp_optional_openssl_with_options(
             name,
             addr,
-            protocol,
-            tls_config,
-            NacelleTcpOptions::default(),
+            NacelleTcpBindOptions::default(),
             NacelleTlsDetectionOptions::default(),
-        )
-    }
-
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl_with_options<P>(
-        self,
-        name: impl Into<String>,
-        addr: SocketAddr,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
-        tcp_options: NacelleTcpOptions,
-        detection_options: NacelleTlsDetectionOptions,
-    ) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
-    {
-        self.tcp_optional_openssl_with_bind_options(
-            name,
-            addr,
-            protocol,
+            server,
             tls_config,
-            NacelleTcpBindOptions::from(tcp_options),
-            detection_options,
         )
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Register a plain-or-OpenSSL TCP listener with explicit edge options.
     #[allow(clippy::too_many_arguments)]
-    pub fn tcp_optional_openssl_with_bind_options<P>(
+    pub fn tcp_optional_openssl_with_options<P, H, OH>(
         mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
+        tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible>,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
-        self.installers.push(Box::new(move |host, app| {
-            let server = tcp_server::<P, H>(protocol, app)?;
+        self.listeners.push(Box::new(move |host| {
             host.enable_tcp_optional_openssl_with_bind_options(
                 name,
                 addr,
@@ -454,93 +379,109 @@ impl<H> NacelleProtocols<H> {
                 bind_options,
                 detection_options,
             );
-            Ok(())
         }));
         self
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub fn tcp_optional_openssl_dual_stack<P>(
+    /// Register IPv4 and IPv6 plain-or-OpenSSL TCP listeners.
+    pub fn tcp_optional_openssl_dual_stack<P, H, OH>(
         self,
         name: impl Into<String>,
         port: u16,
-        protocol: P,
+        server: nacelle_tcp::TcpServer<P, H, OH>,
         tls_config: NacelleOpenSslConfig,
-    ) -> Self
-    where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
-    {
-        self.tcp_optional_openssl_dual_stack_with_options(
-            name,
-            port,
-            protocol,
-            tls_config,
-            NacelleTcpOptions::default(),
-            NacelleTlsDetectionOptions::default(),
-        )
-    }
-
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    #[allow(clippy::too_many_arguments)]
-    pub fn tcp_optional_openssl_dual_stack_with_options<P>(
-        self,
-        name: impl Into<String>,
-        port: u16,
-        protocol: P,
-        tls_config: NacelleOpenSslConfig,
-        tcp_options: NacelleTcpOptions,
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        P: Protocol<OneWayRequest = std::convert::Infallible> + Clone,
-        H: TcpHandler<P>,
+        P: nacelle_tcp::Protocol,
+        H: nacelle_tcp::TcpHandler<P>,
+        OH: nacelle_tcp::TcpOneWayHandler<P>,
     {
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-        let ipv6_bind_options =
-            NacelleTcpBindOptions::from(tcp_options.clone()).with_ipv6_only(true);
-
         self.tcp_optional_openssl_with_options(
             format!("{name}-ipv4"),
             ipv4_addr,
-            protocol.clone(),
-            tls_config.clone(),
-            tcp_options,
+            NacelleTcpBindOptions::default(),
             detection_options.clone(),
+            server.clone(),
+            tls_config.clone(),
         )
-        .tcp_optional_openssl_with_bind_options(
+        .tcp_optional_openssl_with_options(
             format!("{name}-ipv6"),
             ipv6_addr,
-            protocol,
-            tls_config,
-            ipv6_bind_options,
+            NacelleTcpBindOptions::default().with_ipv6_only(true),
             detection_options,
+            server,
+            tls_config,
         )
     }
-}
 
-pub async fn serve<H>(
-    protocols: NacelleProtocols<H>,
-    app: NacelleApp<H>,
-) -> Result<(), NacelleError> {
-    let ctrl_c_task = app
-        .ctrl_c_shutdown
-        .then(|| spawn_ctrl_c_shutdown(app.shutdown.clone()));
-    let mut host = NacelleHost::new()
-        .with_telemetry(app.telemetry.clone())
-        .with_runtime_state(app.runtime_state.clone())
-        .with_shutdown(app.shutdown.clone())
-        .with_shutdown_drain_timeout(app.drain_timeout);
-    for installer in protocols.installers {
-        installer(&mut host, &app)?;
+    #[cfg(feature = "http")]
+    /// Register a typed HTTP/1 listener.
+    pub fn http<H, F>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_http::HyperServer<H, F>,
+    ) -> Self
+    where
+        F: nacelle_http::HttpConnectionStateFactory,
+        H: nacelle_http::HttpHandler<F::State>,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_http(name, addr, server);
+        }));
+        self
     }
-    let result = host.wait().await;
-    if let Some(task) = ctrl_c_task {
-        task.abort();
+
+    #[cfg(all(feature = "http", feature = "rustls"))]
+    /// Register a typed Rustls HTTP/1 listener.
+    pub fn http_tls<H, F>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_http::HyperServer<H, F>,
+        tls_config: NacelleTlsConfig,
+    ) -> Self
+    where
+        F: nacelle_http::HttpConnectionStateFactory,
+        H: nacelle_http::HttpHandler<F::State>,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_http_tls(name, addr, server, tls_config);
+        }));
+        self
     }
-    result
+
+    /// Install all listeners and run until shutdown or listener failure.
+    pub async fn run(self) -> Result<(), NacelleError> {
+        let ctrl_c_task = self
+            .ctrl_c_shutdown
+            .then(|| spawn_ctrl_c_shutdown(self.shutdown.clone()));
+        let mut host = NacelleHost::new()
+            .with_telemetry(self.telemetry)
+            .with_runtime_state(self.runtime_state)
+            .with_shutdown(self.shutdown)
+            .with_shutdown_drain_timeout(self.drain_timeout);
+        for install in self.listeners {
+            install(&mut host);
+        }
+        let result = host.wait().await;
+        if let Some(task) = ctrl_c_task {
+            task.abort();
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn listener_count(&self) -> usize {
+        self.listeners.len()
+    }
 }
 
 fn spawn_ctrl_c_shutdown(shutdown: NacelleShutdown) -> tokio::task::JoinHandle<()> {
@@ -550,101 +491,42 @@ fn spawn_ctrl_c_shutdown(shutdown: NacelleShutdown) -> tokio::task::JoinHandle<(
     })
 }
 
-#[cfg(feature = "tcp")]
-struct SharedTcpHandler<P, H> {
-    handler: Arc<H>,
-    _protocol: PhantomData<fn() -> P>,
-}
-
-#[cfg(feature = "tcp")]
-impl<P, H> nacelle_core::pipeline::Handler<nacelle_tcp::TcpRequestContext<P>>
-    for SharedTcpHandler<P, H>
-where
-    P: Protocol<OneWayRequest = std::convert::Infallible>,
-    H: TcpHandler<P>,
-{
-    type Completion = nacelle_tcp::TcpHandlerCompletion<P>;
-    type Error = NacelleError;
-
-    async fn call(
-        &self,
-        context: nacelle_tcp::TcpRequestContext<P>,
-    ) -> Result<Self::Completion, Self::Error> {
-        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context).await
-    }
-}
-
-#[cfg(feature = "tcp")]
-fn tcp_server<P, H>(
-    protocol: P,
-    app: &NacelleApp<H>,
-) -> Result<TcpServer<P, SharedTcpHandler<P, H>>, NacelleError>
-where
-    P: Protocol<OneWayRequest = std::convert::Infallible>,
-    H: TcpHandler<P>,
-{
-    let builder = TcpServer::<P>::builder()
-        .protocol(protocol)
-        .tcp_config(app.tcp_config.clone())
-        .telemetry(app.telemetry.clone())
-        .runtime_state(app.runtime_state.clone());
-    let builder = builder.tcp_limits(app.tcp_limits);
-    builder
-        .handler(SharedTcpHandler {
-            handler: app.handler.clone(),
-            _protocol: PhantomData,
-        })
-        .build()
-}
-
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tcp")]
+    use std::convert::Infallible;
+
+    #[cfg(feature = "tcp")]
+    use bytes::{Bytes, BytesMut};
+    #[cfg(any(feature = "tcp", feature = "http"))]
+    use nacelle_core::pipeline::handler_fn;
+    #[cfg(feature = "tcp")]
+    use nacelle_tcp::{
+        DecodedMessage, FrameBuffer, MessageDecoder, Protocol, TcpRequestContext, TcpResponse,
+        TcpServer,
+    };
+
     use super::*;
 
     #[test]
-    fn protocols_start_empty() {
-        let protocols = NacelleProtocols::<()>::new();
+    fn app_starts_without_listeners() {
+        assert_eq!(NacelleApp::new().listener_count(), 0);
+    }
 
-        assert_eq!(protocols.installers.len(), 0);
+    #[test]
+    fn app_can_enable_ctrl_c_shutdown() {
+        let app = NacelleApp::new().with_ctrl_c_shutdown();
+
+        assert!(app.ctrl_c_shutdown);
     }
 
     #[cfg(feature = "tcp")]
-    mod tcp_tests {
-        use std::convert::Infallible;
+    #[test]
+    fn app_registers_concrete_tcp_listener() {
+        struct Decoder;
 
-        use bytes::{Bytes, BytesMut};
-        use nacelle_core::pipeline::{ConnectionInfo, Handler as PipelineHandler};
-        use nacelle_tcp::{
-            DecodedMessage, FrameBuffer, MessageDecoder, TcpHandlerCompletion, TcpRequestContext,
-            TcpResponse,
-        };
-
-        use super::*;
-
-        #[derive(Debug)]
-        struct TestRequest;
-
-        #[derive(Clone)]
-        struct TestProtocol;
-
-        struct TestHandler;
-
-        impl PipelineHandler<TcpRequestContext<TestProtocol>> for TestHandler {
-            type Completion = TcpHandlerCompletion<TestProtocol>;
-            type Error = NacelleError;
-
-            async fn call(
-                &self,
-                context: TcpRequestContext<TestProtocol>,
-            ) -> Result<Self::Completion, Self::Error> {
-                context.respond(TcpResponse::empty()).await
-            }
-        }
-
-        struct TestDecoder;
-
-        impl MessageDecoder for TestDecoder {
-            type Message = DecodedMessage<TestRequest, Infallible>;
+        impl MessageDecoder for Decoder {
+            type Message = DecodedMessage<(), Infallible>;
             type Error = NacelleError;
 
             fn decode(
@@ -655,20 +537,23 @@ mod tests {
             }
         }
 
+        #[derive(Clone)]
+        struct TestProtocol;
+
         impl Protocol for TestProtocol {
-            type Request = TestRequest;
+            type Request = ();
             type OneWayRequest = Infallible;
             type Response = TcpResponse;
             type ConnectionState = ();
-            type Decoder = TestDecoder;
+            type Decoder = Decoder;
             type ResponseContext = ();
             type ErrorContext = ();
 
             fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
-                TestDecoder
+                Decoder
             }
 
-            fn connection_state(&self, _: &ConnectionInfo) {}
+            fn connection_state(&self, _connection: &nacelle_core::pipeline::ConnectionInfo) {}
 
             fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
                 body_len
@@ -678,9 +563,9 @@ mod tests {
                 match *request {}
             }
 
-            fn response_context(&self, _req: &TestRequest) -> Self::ResponseContext {}
+            fn response_context(&self, _request: &Self::Request) -> Self::ResponseContext {}
 
-            fn error_context(&self, _req: &TestRequest) -> Self::ErrorContext {}
+            fn error_context(&self, _request: &Self::Request) -> Self::ErrorContext {}
 
             fn apply_response(
                 &self,
@@ -703,8 +588,7 @@ mod tests {
                 chunk: Bytes,
                 dst: &mut FrameBuffer<'_>,
             ) -> Result<(), NacelleError> {
-                dst.extend_from_slice(&chunk)?;
-                Ok(())
+                dst.extend_from_slice(&chunk)
             }
 
             fn encode_response_terminal_chunk(
@@ -734,22 +618,37 @@ mod tests {
             }
         }
 
-        #[test]
-        fn tcp_dual_stack_registers_ipv4_and_ipv6_installers() {
-            let protocols = NacelleProtocols::<TestHandler>::new().tcp_dual_stack(
-                "gateway",
-                27017,
-                TestProtocol,
-            );
+        let handler = handler_fn(|context: TcpRequestContext<TestProtocol>| async move {
+            context.respond(TcpResponse::empty()).await
+        });
+        let server = TcpServer::<TestProtocol>::builder()
+            .protocol(TestProtocol)
+            .handler(handler)
+            .build()
+            .expect("typed TCP server should build");
+        let app = NacelleApp::new().tcp(
+            "tcp-test",
+            "127.0.0.1:0".parse().expect("valid socket address"),
+            server,
+        );
 
-            assert_eq!(protocols.installers.len(), 2);
-        }
+        assert_eq!(app.listener_count(), 1);
+    }
 
-        #[test]
-        fn app_can_enable_ctrl_c_shutdown() {
-            let app = NacelleApp::new(TestHandler).with_ctrl_c_shutdown();
+    #[cfg(feature = "http")]
+    #[test]
+    fn app_registers_concrete_http_listener() {
+        let handler = handler_fn(
+            |_context: nacelle_http::HttpRequestContext<()>| async move {
+                Err(NacelleError::ResourceLimit("test_http_handler"))
+            },
+        );
+        let app = NacelleApp::new().http(
+            "http-test",
+            "127.0.0.1:0".parse().expect("valid socket address"),
+            nacelle_http::HyperServer::new(handler),
+        );
 
-            assert!(app.ctrl_c_shutdown);
-        }
+        assert_eq!(app.listener_count(), 1);
     }
 }

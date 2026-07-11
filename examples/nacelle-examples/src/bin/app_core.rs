@@ -4,7 +4,9 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use nacelle::core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle::prelude::*;
-use nacelle::tcp::{FrameBuffer, Protocol, TcpHandlerCompletion, TcpRequestContext, TcpResponse};
+use nacelle::tcp::{
+    FrameBuffer, Protocol, TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer,
+};
 use nacelle_reference_protocol::{
     FrameErrorContext, FrameRequest, FrameResponseContext, LengthDelimitedProtocol,
     LengthDelimitedRequestDecoder,
@@ -151,15 +153,22 @@ async fn main() -> Result<(), NacelleError> {
         }
     });
 
-    let protocols = NacelleProtocols::new()
-        .tcp("appx-v1", v1_addr, AppXProtocol::new("appx-v1"))
-        .tcp("appx-v2", v2_addr, AppXProtocol::new("appx-v2"));
+    let v1_server = TcpServer::<AppXProtocol>::builder()
+        .protocol(AppXProtocol::new("appx-v1"))
+        .handler(handler.clone())
+        .build()?;
+    let v2_server = TcpServer::<AppXProtocol>::builder()
+        .protocol(AppXProtocol::new("appx-v2"))
+        .handler(handler)
+        .build()?;
 
     println!("AppX v1 listening on {v1_addr}");
     println!("AppX v2 listening on {v2_addr}");
 
-    NacelleApp::new(handler)
+    NacelleApp::new()
         .with_ctrl_c_shutdown()
-        .serve(protocols)
+        .tcp("appx-v1", v1_addr, v1_server)
+        .tcp("appx-v2", v2_addr, v2_server)
+        .run()
         .await
 }

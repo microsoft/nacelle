@@ -14,8 +14,7 @@ fn prelude_contains_common_application_concepts() {
     use nacelle::prelude::*;
 
     let _ = NacelleBody::empty();
-    let _: NacelleProtocols<()> = NacelleProtocols::new();
-    let _ = NacelleHost::new();
+    let _ = NacelleApp::new();
 }
 
 #[cfg(feature = "tcp")]
