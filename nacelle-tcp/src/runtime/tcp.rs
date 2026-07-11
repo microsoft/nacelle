@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
 use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
-use crate::server::NacelleServer;
+use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::telemetry::NacelleTelemetryObserver;
@@ -13,7 +13,7 @@ use super::common::{bind_tcp_listener, run_accept_loop};
 
 /// Listen on `addr` and serve each accepted TCP connection in its own task.
 pub async fn serve_tcp<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
 ) -> Result<(), NacelleError>
 where
@@ -28,7 +28,7 @@ where
 
 /// Listen on `addr` until shutdown is requested.
 pub async fn serve_tcp_with_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -44,7 +44,7 @@ where
 /// Listen on `addr` until shutdown is requested, then drain or abort active
 /// connection tasks after `drain_timeout`.
 pub async fn serve_tcp_with_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -66,7 +66,7 @@ where
 
 /// Listen on `addr` with explicit TCP socket options.
 pub async fn serve_tcp_with_options<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
 ) -> Result<(), NacelleError>
@@ -82,7 +82,7 @@ where
 
 /// Listen on `addr` with explicit TCP socket options until shutdown is requested.
 pub async fn serve_tcp_with_options_and_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -106,7 +106,7 @@ where
 /// Listen on `addr` with explicit TCP socket options, then drain or abort active
 /// connection tasks after `drain_timeout`.
 pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -130,7 +130,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     bind_options: NacelleTcpBindOptions,
     shutdown: NacelleShutdownToken,
@@ -155,7 +155,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -179,7 +179,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -205,7 +205,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_listener_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -228,7 +228,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,

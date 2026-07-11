@@ -32,7 +32,7 @@ impl NacelleError {
     pub fn hint(&self) -> Option<&'static str> {
         match self {
             Self::MissingProtocol => {
-                Some("call NacelleServer::builder().protocol(...) before build")
+                Some("call TcpServer::<YourProtocol>::builder().protocol(...) before build")
             }
             Self::InvalidFrame(_) => {
                 Some("verify the protocol decoder and the peer's frame format")

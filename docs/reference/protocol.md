@@ -67,7 +67,7 @@ Protocols classify decoded messages as `DecodedMessage::Request` or
 `DecodedMessage::OneWay`. Required requests use `TcpRequestContext<P>` and must
 respond. One-way messages use `TcpOneWayContext<P>` with `NoResponse`, so no
 `respond` method exists. Servers supporting one-way messages install a separate
-concrete handler with `TcpServer::builder().one_way_handler(...)`. Request-only
+concrete handler with `TcpServer::<YourProtocol>::builder().one_way_handler(...)`. Request-only
 protocols use `Infallible` as their one-way request type.
 
 The TCP runtime encodes and writes each streaming response chunk before polling

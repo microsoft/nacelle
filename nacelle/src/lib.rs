@@ -86,8 +86,7 @@ pub use nacelle_http::{HyperServer, NacelleHttpLimits, NacelleHttpPolicy};
 pub use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp::{
-    DecodedRequest, MessageDecoder, NacelleServer, NacelleServerBuilder, NacelleTcpBindOptions,
-    NacelleTcpConfig, NacelleTcpKeepalive, NacelleTcpLimits, NacelleTcpOptions,
-    NacelleTlsDetectionOptions, Protocol, TcpRequestBodyMode, TcpServer, serve_connection,
-    serve_stream,
+    DecodedRequest, MessageDecoder, NacelleTcpBindOptions, NacelleTcpConfig, NacelleTcpKeepalive,
+    NacelleTcpLimits, NacelleTcpOptions, NacelleTlsDetectionOptions, Protocol, TcpRequestBodyMode,
+    TcpServer, TcpServerBuilder, serve_connection, serve_stream,
 };

@@ -6,7 +6,7 @@ use openssl::ssl::{NameType, Ssl, SslRef};
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
 use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
-use crate::server::NacelleServer;
+use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionTlsMeta;
@@ -16,7 +16,7 @@ use nacelle_core::tls::NacelleOpenSslConfig;
 use super::common::{bind_tcp_listener, run_accept_loop};
 
 pub async fn serve_tcp_openssl<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
@@ -31,7 +31,7 @@ where
 }
 
 pub async fn serve_tcp_openssl_with_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -53,7 +53,7 @@ where
 }
 
 pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -76,7 +76,7 @@ where
 }
 
 pub async fn serve_tcp_openssl_with_options<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -92,7 +92,7 @@ where
 }
 
 pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -116,7 +116,7 @@ where
 }
 
 pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -142,7 +142,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_openssl_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -167,7 +167,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -193,7 +193,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -220,7 +220,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -245,7 +245,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,

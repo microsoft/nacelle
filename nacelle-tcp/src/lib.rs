@@ -24,7 +24,7 @@ pub use protocol::{
     NoOneWayHandler, Protocol, TcpCompletion, TcpHandler, TcpHandlerCompletion, TcpOneWayContext,
     TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder, TcpResponse,
 };
-pub use server::{LocalTcpServer, NacelleServer, NacelleServerBuilder, TcpServer};
+pub use server::{LocalTcpServer, TcpServer, TcpServerBuilder};
 pub use telemetry::{
     NacelleMetricsContext, NacelleRequestMetricsConfig, NacelleTelemetry, NacelleTelemetryConfig,
 };

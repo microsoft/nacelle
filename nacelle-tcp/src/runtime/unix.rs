@@ -6,7 +6,7 @@ use tokio::net::UnixListener;
 
 use crate::options::NacelleUnixSocketOptions;
 use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
-use crate::server::NacelleServer;
+use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
@@ -24,7 +24,7 @@ use super::common::{
 /// The socket path is passed directly to Tokio. Existing socket files are not
 /// removed automatically.
 pub async fn serve_unix<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
@@ -39,7 +39,7 @@ where
 
 /// Listen on a Unix domain socket until shutdown is requested.
 pub async fn serve_unix_with_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -55,7 +55,7 @@ where
 /// Listen on a Unix domain socket until shutdown is requested, then drain or
 /// abort active connection tasks after `drain_timeout`.
 pub async fn serve_unix_with_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -77,7 +77,7 @@ where
 
 /// Listen on a Unix domain socket with explicit socket-file lifecycle options.
 pub async fn serve_unix_with_options<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
@@ -94,7 +94,7 @@ where
 /// Listen on a Unix domain socket with explicit lifecycle options until
 /// shutdown is requested.
 pub async fn serve_unix_with_options_and_shutdown<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -118,7 +118,7 @@ where
 /// Listen on a Unix domain socket with explicit lifecycle options, then drain
 /// or abort active connection tasks after `drain_timeout`.
 pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -142,7 +142,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_unix_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -165,7 +165,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -193,7 +193,7 @@ where
 
 #[doc(hidden)]
 pub async fn serve_unix_listener_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,

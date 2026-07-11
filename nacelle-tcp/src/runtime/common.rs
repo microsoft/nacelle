@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::options::NacelleTcpBindOptions;
 use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
-use crate::server::NacelleServer;
+use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::TrackedPermit;
@@ -62,7 +62,7 @@ pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str 
 }
 
 pub(super) fn record_connection_rejection<P, H, OH, Observer>(
-    server: &NacelleServer<P, H, OH, Observer>,
+    server: &TcpServer<P, H, OH, Observer>,
     transport: NacelleTransport,
     tls: &'static str,
     error: &NacelleError,
@@ -125,7 +125,7 @@ pub(super) async fn drain_connection_tasks<Observer>(
 /// telemetry.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_accept_loop<P, H, OH, Observer, Prepare, Serve, Fut>(
-    server: Arc<NacelleServer<P, H, OH, Observer>>,
+    server: Arc<TcpServer<P, H, OH, Observer>>,
     listener: TcpListener,
     tls_label: &'static str,
     mut shutdown: NacelleShutdownToken,
@@ -140,7 +140,7 @@ where
     Observer: NacelleTelemetryObserver,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
     Serve: FnMut(
-        Arc<NacelleServer<P, H, OH, Observer>>,
+        Arc<TcpServer<P, H, OH, Observer>>,
         TcpStream,
         NacelleConnectionMeta,
         TrackedPermit,
