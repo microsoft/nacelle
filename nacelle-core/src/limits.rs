@@ -139,6 +139,47 @@ struct MemoryWaiter {
     granted: Arc<AtomicBool>,
 }
 
+struct MemoryWaiterRegistration {
+    state: NacelleRuntimeState,
+    id: usize,
+    bytes: usize,
+    granted: Arc<AtomicBool>,
+    active: bool,
+}
+
+impl MemoryWaiterRegistration {
+    fn take_grant(&mut self) -> Option<NacelleMemoryAllocation> {
+        if !self.granted.load(Ordering::Acquire) {
+            return None;
+        }
+        self.active = false;
+        Some(NacelleMemoryAllocation {
+            state: Some(self.state.clone()),
+            bytes: self.bytes,
+        })
+    }
+
+    fn cancel(&mut self) -> Option<NacelleMemoryAllocation> {
+        let granted = self.state.cancel_memory_waiter(self.id, &self.granted);
+        self.active = false;
+        granted.then(|| NacelleMemoryAllocation {
+            state: Some(self.state.clone()),
+            bytes: self.bytes,
+        })
+    }
+}
+
+impl Drop for MemoryWaiterRegistration {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if self.state.cancel_memory_waiter(self.id, &self.granted) {
+            self.state.release_memory(self.bytes);
+        }
+    }
+}
+
 impl SharedMemoryBudget {
     fn new(max_bytes: usize) -> Self {
         Self {
@@ -400,8 +441,19 @@ impl NacelleRuntimeState {
             id
         };
 
-        self.wait_for_memory_allocation(id, bytes, notify, granted, timeout, shutdown)
-            .await
+        self.wait_for_memory_allocation(
+            MemoryWaiterRegistration {
+                state: self.clone(),
+                id,
+                bytes,
+                granted,
+                active: true,
+            },
+            notify,
+            timeout,
+            shutdown,
+        )
+        .await
     }
 
     fn release_memory(&self, bytes: usize) {
@@ -515,10 +567,8 @@ impl NacelleRuntimeState {
 
     async fn wait_for_memory_allocation(
         &self,
-        id: usize,
-        bytes: usize,
+        mut registration: MemoryWaiterRegistration,
         notify: Arc<tokio::sync::Notify>,
-        granted: Arc<AtomicBool>,
         timeout: Option<Duration>,
         shutdown: Option<NacelleShutdownToken>,
     ) -> Result<NacelleMemoryAllocation, NacelleError> {
@@ -546,19 +596,19 @@ impl NacelleRuntimeState {
         loop {
             tokio::select! {
                 _ = notify.notified() => {
-                    if granted.load(Ordering::Acquire) {
-                        return Ok(NacelleMemoryAllocation { state: Some(self.clone()), bytes });
+                    if let Some(allocation) = registration.take_grant() {
+                        return Ok(allocation);
                     }
                 }
                 _ = wait_optional_timer(&mut timer) => {
-                    if self.cancel_memory_waiter(id, &granted) {
-                        return Ok(NacelleMemoryAllocation { state: Some(self.clone()), bytes });
+                    if let Some(allocation) = registration.cancel() {
+                        return Ok(allocation);
                     }
                     return Err(NacelleError::Timeout("memory_allocation"));
                 }
                 _ = wait_optional_shutdown(&mut shutdown) => {
-                    if self.cancel_memory_waiter(id, &granted) {
-                        return Ok(NacelleMemoryAllocation { state: Some(self.clone()), bytes });
+                    if let Some(allocation) = registration.cancel() {
+                        return Ok(allocation);
                     }
                     return Err(NacelleError::ConnectionClosed);
                 }
@@ -1020,6 +1070,39 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 10);
         drop(recovered);
         assert_eq!(state.memory_used_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_memory_waiter_releases_queue_and_racing_grant() {
+        for release_before_cancel in [false, true] {
+            let state =
+                NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
+            let held = state.allocate_memory(10).expect("held allocation");
+            let waiter_state = state.clone();
+            let waiter = tokio::spawn(async move { waiter_state.allocate_memory_wait(10).await });
+
+            while state.inner.memory.memory_waiters.load(Ordering::Acquire) != 1 {
+                tokio::task::yield_now().await;
+            }
+
+            if release_before_cancel {
+                drop(held);
+                waiter.abort();
+                let _ = waiter.await;
+            } else {
+                waiter.abort();
+                waiter.await.expect_err("waiter should be cancelled");
+                drop(held);
+            }
+
+            assert_eq!(state.inner.memory.memory_waiters.load(Ordering::Acquire), 0);
+            assert_eq!(state.memory_used_bytes(), 0);
+            let recovered = state
+                .allocate_memory(10)
+                .expect("cancelled waiter should leave the budget reusable");
+            drop(recovered);
+            assert_eq!(state.memory_used_bytes(), 0);
+        }
     }
 
     #[tokio::test]
