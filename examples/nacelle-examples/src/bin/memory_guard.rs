@@ -31,7 +31,7 @@ async fn main() -> Result<(), NacelleError> {
     let server = HyperServer::new(handler_fn(
         |mut context: HttpRequestContext<()>| async move {
             let mut bytes = 0_usize;
-            while let Some(chunk) = context.request_mut().body.next_chunk().await {
+            while let Some(chunk) = context.request_mut().next_body_chunk().await {
                 bytes += chunk?.len();
             }
             context

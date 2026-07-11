@@ -1320,7 +1320,7 @@ mod tests {
 
             async fn call(
                 &self,
-                context: LocalHttpRequestContext<LocalConnectionState>,
+                mut context: LocalHttpRequestContext<LocalConnectionState>,
             ) -> Result<Self::Completion, Self::Error> {
                 *self.total_requests.borrow_mut() += 1;
                 let connection_request = {
@@ -1328,10 +1328,14 @@ mod tests {
                     *requests += 1;
                     *requests
                 };
+                let mut body_bytes = 0;
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    body_bytes += chunk?.len();
+                }
                 context
                     .respond(HttpResponse::bytes(
                         nacelle_http::StatusCode::OK,
-                        connection_request.to_string(),
+                        format!("{connection_request}:{body_bytes}"),
                     ))
                     .await
             }
@@ -1356,8 +1360,8 @@ mod tests {
             use std::io::{Read, Write};
             stream
                 .write_all(
-                    b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n\
-                      GET /two HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                                        b"POST /one HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nabc\
+                                            POST /two HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndefg",
                 )
                 .expect("requests should write");
             let mut response = Vec::new();
@@ -1366,8 +1370,8 @@ mod tests {
                 .expect("responses should read");
             let response = String::from_utf8(response).expect("response should be utf8");
             assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 2);
-            assert!(response.contains("\r\n1\r\n"));
-            assert!(response.contains("\r\n2\r\n"));
+            assert!(response.contains("\r\n3\r\n1:3"));
+            assert!(response.contains("\r\n3\r\n2:4"));
             client_shutdown.shutdown();
         });
 

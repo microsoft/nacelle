@@ -17,7 +17,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::encoder::{HttpBody, incoming_to_body, incoming_to_local_body, response_to_http};
+use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
 pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
@@ -52,16 +52,6 @@ where
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>>;
-
-    fn incoming_body(
-        &self,
-        incoming: Incoming,
-        body_len_hint: Option<usize>,
-        request_body_bytes: Option<Arc<AtomicUsize>>,
-        runtime_state: NacelleRuntimeState,
-        http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry<Observer>,
-    ) -> nacelle_core::NacelleBody;
 }
 
 struct SharedHttpDispatch<H, State> {
@@ -99,25 +89,6 @@ where
             self.connection.clone(),
         );
         nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
-    }
-
-    fn incoming_body(
-        &self,
-        incoming: Incoming,
-        body_len_hint: Option<usize>,
-        request_body_bytes: Option<Arc<AtomicUsize>>,
-        runtime_state: NacelleRuntimeState,
-        http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry<Observer>,
-    ) -> nacelle_core::NacelleBody {
-        incoming_to_body(
-            incoming,
-            body_len_hint,
-            request_body_bytes,
-            runtime_state,
-            http_limits,
-            telemetry,
-        )
     }
 }
 
@@ -157,25 +128,6 @@ where
             self.connection.clone(),
         );
         nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
-    }
-
-    fn incoming_body(
-        &self,
-        incoming: Incoming,
-        body_len_hint: Option<usize>,
-        request_body_bytes: Option<Arc<AtomicUsize>>,
-        runtime_state: NacelleRuntimeState,
-        http_limits: NacelleHttpLimits,
-        telemetry: NacelleTelemetry<Observer>,
-    ) -> nacelle_core::NacelleBody {
-        incoming_to_local_body(
-            incoming,
-            body_len_hint,
-            request_body_bytes,
-            runtime_state,
-            http_limits,
-            telemetry,
-        )
     }
 }
 
@@ -982,35 +934,42 @@ where
             .size_hint()
             .upper()
             .and_then(|bytes| usize::try_from(bytes).ok());
-        let request_body_bytes = (body_len_hint != Some(0)).then(|| Arc::new(AtomicUsize::new(0)));
-        let request = HttpRequest {
-            method: parts.method,
-            uri: parts.uri,
-            headers: parts.headers,
-            peer_ip: effective_peer_ip,
-            body: dispatch.incoming_body(
-                body,
-                body_len_hint,
-                request_body_bytes.clone(),
-                self.runtime_state.clone(),
-                self.http_limits,
-                self.telemetry.clone(),
-            ),
-        };
+        let request_body_bytes = AtomicUsize::new(0);
+        let (body, body_pump) = incoming_to_body(
+            body,
+            body_len_hint,
+            &request_body_bytes,
+            self.runtime_state.clone(),
+            self.http_limits,
+            self.telemetry.clone(),
+        );
+        let request = HttpRequest::new(
+            parts.method,
+            parts.uri,
+            parts.headers,
+            effective_peer_ip,
+            body,
+        );
         let handler_future = dispatch.call(request);
+        let handler_with_body = async {
+            tokio::pin!(handler_future);
+            tokio::pin!(body_pump);
+            tokio::select! {
+                result = &mut handler_future => result,
+                () = &mut body_pump => handler_future.await,
+            }
+        };
         let handler_result = if let Some(timeout) = self.runtime_state.limits().handler_timeout {
-            tokio::time::timeout(timeout, handler_future)
+            tokio::time::timeout(timeout, handler_with_body)
                 .await
                 .map_err(|_| NacelleError::Timeout("handler"))?
         } else {
-            handler_future.await
+            handler_with_body.await
         };
 
         match handler_result {
             Ok(completion) => {
-                let request_bytes = request_body_bytes
-                    .as_ref()
-                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed));
+                let request_bytes = request_body_bytes.load(Ordering::Relaxed);
                 let response = response_to_http(
                     completion.into_inner().response,
                     self.runtime_state.clone(),
@@ -1042,9 +1001,7 @@ where
                     elapsed_since(request_started),
                     &error,
                 );
-                let request_bytes = request_body_bytes
-                    .as_ref()
-                    .map_or(0, |bytes| bytes.load(Ordering::Relaxed));
+                let request_bytes = request_body_bytes.load(Ordering::Relaxed);
                 let response = response_to_http(
                     HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
                     self.runtime_state.clone(),
@@ -1647,7 +1604,7 @@ mod tests {
             |mut context: HttpRequestContext<()>| async move {
                 assert_eq!(context.request().uri.path(), "/echo");
                 let (tx, body) = NacelleBody::channel(2);
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
                     tx.send(chunk)
                         .await
                         .expect("response receiver should be open");
@@ -1837,7 +1794,7 @@ mod tests {
         );
         let server = HyperServer::new(handler_fn(
             move |mut context: HttpRequestContext<()>| async move {
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
                     let _ = chunk?;
                 }
                 context
@@ -1878,6 +1835,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_early_response_cancels_body_pump_and_releases_resources() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
+            nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(1024),
+        );
+        let handler_state = runtime_state.clone();
+        let server = HyperServer::new(handler_fn(move |context: HttpRequestContext<()>| {
+            let handler_state = handler_state.clone();
+            async move {
+                while handler_state.memory_used_bytes() != 11 {
+                    tokio::task::yield_now().await;
+                }
+                context
+                    .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                    .await
+            }
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\n\
+                  Host: localhost\r\n\
+                  Content-Length: 11\r\n\
+                  Connection: close\r\n\
+                  \r\n",
+            )
+            .await
+            .expect("headers should write");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("early response should complete before timeout")
+        .expect("response should read");
+
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        wait_for_memory(&runtime_state, 0).await;
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        assert_eq!(runtime_state.active_requests(), 0);
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
+            nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(11),
+        );
+        let held = runtime_state
+            .allocate_memory(11)
+            .expect("test should fill the memory budget");
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            tokio::task::yield_now().await;
+            context
+                .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                .await
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\n\
+                  Host: localhost\r\n\
+                  Content-Length: 11\r\n\
+                  Connection: close\r\n\
+                  \r\n",
+            )
+            .await
+            .expect("headers should write");
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            client.read_to_end(&mut response),
+        )
+        .await
+        .expect("early response should complete before timeout")
+        .expect("response should read");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+
+        drop(held);
+        wait_for_memory(&runtime_state, 0).await;
+        let recovered = runtime_state
+            .allocate_memory(11)
+            .expect("cancelled body waiter should leave the budget reusable");
+        drop(recovered);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+        server_task.abort();
+    }
+
+    #[tokio::test]
     async fn http_trickle_request_body_times_out() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1887,7 +1952,7 @@ mod tests {
             .with_request_body_read_timeout(std::time::Duration::from_millis(20));
         let server = HyperServer::new(handler_fn(
             |mut context: HttpRequestContext<()>| async move {
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
                     let _ = chunk?;
                 }
                 context

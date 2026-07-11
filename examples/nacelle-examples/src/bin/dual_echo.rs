@@ -62,7 +62,7 @@ async fn main() -> Result<(), NacelleError> {
             async move {
                 let mut echoed = BytesMut::new();
                 echoed.extend_from_slice(app.response_prefix);
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
                     echoed.extend_from_slice(&chunk?);
                 }
 

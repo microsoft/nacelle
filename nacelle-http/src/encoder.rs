@@ -2,7 +2,6 @@
 //! `NacelleBody`, plus response serialization with memory accounting.
 
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
@@ -17,7 +16,7 @@ use crate::pipeline::HttpResponse;
 use crate::policy::{NacelleHttpPolicy, apply_security_headers};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::NacelleBody;
+use nacelle_core::request::{NacelleBody, TrackedBodySender};
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
 
 pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
@@ -25,66 +24,46 @@ pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
 pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: Option<Arc<AtomicUsize>>,
+    request_body_bytes: &AtomicUsize,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-) -> NacelleBody
+) -> (NacelleBody, impl Future<Output = ()>)
 where
     Observer: NacelleTelemetryObserver,
 {
-    if incoming_body_is_empty(body_len_hint) {
-        return NacelleBody::empty();
-    }
-    let (tx, body) = NacelleBody::channel(8);
-    tokio::spawn(pump_incoming_body(
-        incoming,
-        body_len_hint,
-        request_body_bytes,
-        runtime_state,
-        http_limits,
-        telemetry,
-        tx,
-    ));
-    body
-}
-
-pub(crate) fn incoming_to_local_body<Observer>(
-    incoming: Incoming,
-    body_len_hint: Option<usize>,
-    request_body_bytes: Option<Arc<AtomicUsize>>,
-    runtime_state: NacelleRuntimeState,
-    http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry<Observer>,
-) -> NacelleBody
-where
-    Observer: NacelleTelemetryObserver,
-{
-    if incoming_body_is_empty(body_len_hint) {
-        return NacelleBody::empty();
-    }
-    let (tx, body) = NacelleBody::channel(8);
-    tokio::task::spawn_local(pump_incoming_body(
-        incoming,
-        body_len_hint,
-        request_body_bytes,
-        runtime_state,
-        http_limits,
-        telemetry,
-        tx,
-    ));
-    body
+    let (tx, body) = if incoming_body_is_empty(body_len_hint) {
+        (None, NacelleBody::empty())
+    } else {
+        let (tx, body) = NacelleBody::tracked_channel(8, body_len_hint.unwrap_or_default());
+        (Some(tx), body)
+    };
+    let pump = async move {
+        if let Some(tx) = tx {
+            pump_incoming_body(
+                incoming,
+                body_len_hint,
+                request_body_bytes,
+                runtime_state,
+                http_limits,
+                telemetry,
+                tx,
+            )
+            .await;
+        }
+    };
+    (body, pump)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn pump_incoming_body<Observer>(
     mut incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: Option<Arc<AtomicUsize>>,
+    request_body_bytes: &AtomicUsize,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-    tx: tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>,
+    mut tx: TrackedBodySender,
 ) where
     Observer: NacelleTelemetryObserver,
 {
@@ -96,19 +75,22 @@ async fn pump_incoming_body<Observer>(
             .await;
         return;
     }
-    let _body_allocation = match body_len_hint {
-        Some(bytes) => match runtime_state
+    if let Some(bytes) = body_len_hint {
+        match runtime_state
             .allocate_memory_with_timeout(bytes, runtime_state.limits().memory_allocation_timeout)
             .await
         {
-            Ok(allocation) => Some(allocation),
+            Ok(allocation) => {
+                if tx.send_memory_allocation(allocation).await.is_err() {
+                    return;
+                }
+            }
             Err(error) => {
                 let _ = tx.send(Err(error)).await;
                 return;
             }
-        },
-        None => None,
-    };
+        }
+    }
     let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
         Ok(permit) => permit,
         Err(error) => {
@@ -152,9 +134,7 @@ async fn pump_incoming_body<Observer>(
                         break;
                     }
                     body_bytes = next;
-                    if let Some(request_body_bytes) = &request_body_bytes {
-                        request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
-                    }
+                    request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
                     if tx.send(Ok(data.clone())).await.is_err() {
                         break;
                     }

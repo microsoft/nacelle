@@ -21,8 +21,35 @@ pub struct HttpRequest {
     pub headers: HeaderMap,
     /// Effective peer IP after trusted proxy processing.
     pub peer_ip: Option<IpAddr>,
-    /// Bounded streaming request body.
-    pub body: NacelleBody,
+    body: NacelleBody,
+}
+
+impl HttpRequest {
+    pub(crate) fn new(
+        method: Method,
+        uri: Uri,
+        headers: HeaderMap,
+        peer_ip: Option<IpAddr>,
+        body: NacelleBody,
+    ) -> Self {
+        Self {
+            method,
+            uri,
+            headers,
+            peer_ip,
+            body,
+        }
+    }
+
+    /// Read the next bounded request-body chunk.
+    pub async fn next_body_chunk(&mut self) -> Option<Result<Bytes, NacelleError>> {
+        self.body.next_chunk().await
+    }
+
+    /// Return the exact remaining size when known, or zero for streaming bodies.
+    pub fn remaining_body_bytes(&self) -> usize {
+        self.body.remaining_bytes()
+    }
 }
 
 /// Typed application-facing HTTP response.
