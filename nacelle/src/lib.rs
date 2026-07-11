@@ -35,6 +35,8 @@ pub mod runtime {
     pub use crate::host::NacelleHost;
     #[cfg(all(feature = "http", feature = "rustls"))]
     pub use crate::thread_per_core::run_local_http_tls_thread_per_core;
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    pub use crate::thread_per_core::run_local_tcp_openssl_thread_per_core;
     #[cfg(all(feature = "tcp", feature = "rustls"))]
     pub use crate::thread_per_core::run_local_tcp_tls_thread_per_core;
     #[cfg(feature = "http")]
