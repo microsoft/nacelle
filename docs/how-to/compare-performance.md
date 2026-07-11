@@ -68,8 +68,8 @@ allocator, and features `bench,tcp`. WSL2 did not expose a CPU governor:
 - disabled connection telemetry: approximately `0.58-0.62 ns`
 - disabled request-completed telemetry: approximately `1.89-1.91 ns`
 - disabled timeout telemetry: approximately `0.78-0.79 ns`
-- concrete in-memory observation: approximately `84-86 ns`, dominated by its
-	mutex and event-vector write
+- concrete in-memory observation: approximately `60-89 ns` across repeated
+	local runs, dominated by its mutex and event-vector write
 
 Generated-code inspection used monomorphized release modules with ThinLTO
 disabled for readability:
@@ -93,6 +93,23 @@ without symbol-level attribution.
 `perf`/flamegraph profiling was unavailable for the WSL2 kernel used for these
 checks. Run profile-level validation on the target Linux kernel before making
 throughput, latency, or production-readiness claims.
+
+Matched 30-second saturation profiles were also collected from source
+checkpoint `7eb400f` with 8 server threads, 256 connections, pipeline depth 8,
+256-byte requests, 64-byte responses, byte metrics enabled, and the default
+OpenTelemetry console observer:
+
+| Profile | Requests | Effective RPS | p50 | p95 | p99 | Max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Plain TCP | 23,521,395 | 783,584 | 2.45 ms | 4.32 ms | 5.75 ms | 24.19 ms |
+| Low-memory TCP | 23,389,425 | 779,230 | 2.48 ms | 4.52 ms | 6.34 ms | 28.30 ms |
+| Self-signed Rustls TCP | 18,868,139 | 628,688 | 3.04 ms | 5.36 ms | 7.36 ms | 37.08 ms |
+
+All three clients completed without reported failures. The low-memory server
+reported 20 MiB of accounted connection memory while 256 connections were
+active and returned to zero after they closed. These are saturation results;
+use pipeline depth 1 for established-connection RTT measurements. They are not
+a substitute for a matched pre-migration baseline or target-hardware load test.
 
 Suggested RPS comparison:
 

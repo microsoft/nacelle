@@ -66,4 +66,4 @@ that input has been consumed.
 
 ## Stability
 
-The `0.2` API is experimental.
+The `0.3` API is experimental.

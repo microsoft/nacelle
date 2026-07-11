@@ -18,7 +18,7 @@ Experimental:
 - transport-specific metadata
 - transport listener option structs
 - optional OpenSSL TLS detection on shared TCP listeners
-- telemetry sink details
+- telemetry observer event details
 - stress tooling config
 - feature combinations involving `otel` and `error-hints`
 
