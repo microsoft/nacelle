@@ -866,6 +866,8 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use bytes::{Bytes, BytesMut};
     #[cfg(all(target_os = "linux", feature = "tcp"))]
+    use nacelle_codec::MessageDecoder;
+    #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_core::pipeline::LocalHandler;
     #[cfg(all(target_os = "linux", feature = "http"))]
     use nacelle_core::pipeline::LocalHandler as LocalPipelineHandler;
@@ -876,7 +878,7 @@ mod tests {
     };
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_tcp::{
-        DecodedMessage, DecodedRequest, FrameBuffer, LocalTcpServer, MessageDecoder, Protocol,
+        DecodedMessage, DecodedRequest, FrameBuffer, LocalTcpServer, Protocol,
         TcpHandlerCompletion, TcpRequestContext, TcpResponse,
     };
 

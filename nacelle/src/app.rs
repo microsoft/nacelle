@@ -531,14 +531,15 @@ mod tests {
 
     #[cfg(feature = "tcp")]
     use bytes::{Bytes, BytesMut};
+    #[cfg(feature = "tcp")]
+    use nacelle_codec::MessageDecoder;
     #[cfg(any(feature = "tcp", feature = "http"))]
     use nacelle_core::pipeline::handler_fn;
     #[cfg(feature = "tcp")]
     use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetryEventKind};
     #[cfg(feature = "tcp")]
     use nacelle_tcp::{
-        DecodedMessage, FrameBuffer, MessageDecoder, Protocol, TcpRequestContext, TcpResponse,
-        TcpServer,
+        DecodedMessage, FrameBuffer, Protocol, TcpRequestContext, TcpResponse, TcpServer,
     };
 
     use super::*;

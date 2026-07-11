@@ -354,13 +354,12 @@ mod tests {
     use std::rc::Rc;
 
     use bytes::BytesMut;
+    use nacelle_codec::MessageDecoder;
     use nacelle_core::pipeline::local_handler_fn;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
-    use crate::{
-        DecodedMessage, DecodedRequest, FrameBuffer, MessageDecoder, TcpRequestContext, TcpResponse,
-    };
+    use crate::{DecodedMessage, DecodedRequest, FrameBuffer, TcpRequestContext, TcpResponse};
 
     struct Decoder;
 
