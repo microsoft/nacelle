@@ -1,25 +1,25 @@
 # Nacelle
 
-Nacelle is an experimental Tokio-based Rust library for building streaming
-services with one handler shape across TCP, Unix sockets, HTTP/1, and TLS-enabled
-listeners.
+Nacelle is an experimental Tokio-based Rust library for building typed streaming
+services across TCP, Unix sockets, HTTP/1, and TLS-enabled listeners.
 
 ```rust
-async fn handle(request: NacelleRequest) -> Result<NacelleResponse, NacelleError>
+context.respond(transport_response).await
 ```
 
-Handlers receive a streaming `NacelleBody`, so services can process request and
-response chunks without forcing full buffering.
+Each transport owns its request, response, and completion types. Handlers receive
+a typed context with a streaming `NacelleBody`, connection metadata, and concrete
+connection state, so services can process chunks without forcing full buffering.
 
 ## Status
 
 Nacelle is currently `0.2.x`. It is ready for experiments and prototype
 integrations, but the public API is still allowed to change before `1.0`.
 
-The core request/response model, handler adapter, runtime limits, host/app
-builders, and telemetry sink are the most stable parts of the API. Transport
-metadata, listener options, stress-tool configuration, optional OpenSSL TLS
-detection, and some `tower`/`otel` feature combinations are still moving.
+The typed pipeline contracts, runtime limits, host/app builders, and telemetry
+sink are the most stable parts of the API. Transport metadata, listener options,
+stress-tool configuration, optional OpenSSL TLS detection, and OpenTelemetry
+integration are still moving.
 
 Authentication and compression are not implemented in Nacelle. Keep those in
 your application, protocol layer, or edge proxy.
@@ -40,17 +40,20 @@ this repository, not part of Nacelle's library API. Minimal TCP service using
 that fixture:
 
 ```rust
-use nacelle::prelude::*;
+use nacelle::core::pipeline::handler_fn;
+use nacelle::tcp::{TcpRequestContext, TcpResponse};
+use nacelle::{NacelleApp, NacelleError, NacelleProtocols, NacelleTelemetry};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {
-    let handler = handler_fn(|mut request: NacelleRequest| async move {
-        while let Some(chunk) = request.body.next_chunk().await {
+    let handler = handler_fn(
+        |mut context: TcpRequestContext<LengthDelimitedProtocol>| async move {
+        while let Some(chunk) = context.request_mut().body.next_chunk().await {
             let _ = chunk?;
         }
 
-        Ok(NacelleResponse::tcp_bytes("ok"))
+        context.respond(TcpResponse::bytes("ok")).await
     });
 
     let addr = "127.0.0.1:8080".parse().map_err(NacelleError::protocol)?;
@@ -91,13 +94,14 @@ cargo run -p nacelle-examples --no-default-features --features http,tls-self-sig
 # TCP echo with an ephemeral self-signed certificate
 cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0.0.1:8443
 
-# TCP and HTTP listeners sharing one handler and host
+# TCP and HTTP listeners sharing app state and one host
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
 
 ## What Nacelle Provides
 
-- One app-facing handler model for multiple transports.
+- Transport-owned typed request, response, and completion contracts.
+- Static handler and middleware dispatch without boxed hot-path futures.
 - App-core serving with swappable protocol adapters.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
@@ -143,15 +147,14 @@ nacelle = { version = "0.2", default-features = false, features = ["tcp", "opens
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `otel` | OpenTelemetry metrics API integration through `NacelleTelemetry`. |
 | `tokio-util` | Bridge `tokio_util::sync::CancellationToken` into Nacelle shutdown. |
-| `tower` | Adapt `tower::Service<NacelleRequest>` into a Nacelle handler. |
 
 OpenSSL builds need native OpenSSL development files unless you enable
 `openssl-vendored`. Vendored OpenSSL also needs Perl on Windows.
 
 ## Workspace Layout
 
-- `nacelle-core` contains shared request, response, body, resource limits,
-    lifecycle, core telemetry, and TLS primitives.
+- `nacelle-core` contains shared typed pipeline, body, resource limit,
+    lifecycle, telemetry, and TLS primitives.
 - `nacelle-tcp` contains the TCP transport, protocol runtime, and TCP limits.
 - `nacelle-http` contains the Hyper HTTP/1 transport, HTTP limits, and HTTP edge
     policy.

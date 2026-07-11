@@ -9,21 +9,25 @@ In this workspace, the umbrella crate is `nacelle`. The unpublished reference
 protocol package is an example consumer of its TCP and codec APIs:
 
 ```rust
-use nacelle::prelude::*;
+use nacelle::core::pipeline::handler_fn;
+use nacelle::tcp::{TcpRequestContext, TcpResponse};
+use nacelle::{NacelleApp, NacelleError, NacelleProtocols, NacelleTelemetry};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 ```
 
 ## Build a handler
 
-Handlers receive a `NacelleRequest` and return a `NacelleResponse`.
+TCP handlers receive a protocol-specific `TcpRequestContext` and must complete
+it through its typed responder.
 
 ```rust
-let handler = handler_fn(|mut request: NacelleRequest| async move {
-    while let Some(chunk) = request.body.next_chunk().await {
+let handler = handler_fn(
+    |mut context: TcpRequestContext<LengthDelimitedProtocol>| async move {
+    while let Some(chunk) = context.request_mut().body.next_chunk().await {
         let _ = chunk?;
     }
 
-    Ok(NacelleResponse::tcp_bytes("ok"))
+    context.respond(TcpResponse::bytes("ok")).await
 });
 ```
 
