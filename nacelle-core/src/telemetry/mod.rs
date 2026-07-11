@@ -1034,7 +1034,10 @@ mod tests {
         assert!(telemetry.config().request_metrics.duration_ms);
         assert!(!telemetry.config().request_metrics.byte_counts);
         assert!(telemetry.config().phase_duration_metrics);
-        assert!(telemetry.request_duration_metrics_enabled());
+        assert_eq!(
+            telemetry.request_duration_metrics_enabled(),
+            cfg!(feature = "otel")
+        );
     }
 
     #[test]
