@@ -27,11 +27,16 @@ pub use nacelle_tcp::{connection, protocol, server};
 
 pub mod app;
 pub mod host;
+pub mod thread_per_core;
 #[cfg(feature = "http")]
 pub use nacelle_http::server as http_server;
 pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
+    pub use crate::thread_per_core::{
+        RuntimeMode, ThreadPerCoreConfig, Worker, WorkerContext, WorkerSet,
+        bind_reuse_port_listener, run_thread_per_core,
+    };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }
 

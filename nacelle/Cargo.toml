@@ -29,8 +29,10 @@ fuzzing = []
 
 [dependencies]
 bytes = { workspace = true }
+core_affinity = { workspace = true }
 nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
 nacelle-http = { workspace = true, optional = true }
 nacelle-tcp = { workspace = true, optional = true }
+socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }

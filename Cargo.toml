@@ -33,6 +33,7 @@ nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
 bytes = "1.12.0"
 criterion = "0.8.2"
 crossbeam-epoch = "0.9.20"
+core_affinity = "0.8.3"
 futures-core = "0.3.32"
 http = "1.4.2"
 http-body-util = "0.1.3"
