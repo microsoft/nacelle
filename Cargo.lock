@@ -816,6 +816,7 @@ dependencies = [
  "criterion",
  "http",
  "nacelle",
+ "nacelle-pipeline-prototype",
  "nacelle-reference-protocol",
  "tokio",
 ]

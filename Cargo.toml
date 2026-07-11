@@ -27,6 +27,7 @@ nacelle-codec = { path = "nacelle-codec", version = "0.2.1" }
 nacelle-core = { path = "nacelle-core", version = "0.2.1" }
 nacelle-tcp = { path = "nacelle-tcp", version = "0.2.1" }
 nacelle-http = { path = "nacelle-http", version = "0.2.1" }
+nacelle-pipeline-prototype = { path = "examples/nacelle-pipeline-prototype" }
 nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.2.1" }
 nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
 

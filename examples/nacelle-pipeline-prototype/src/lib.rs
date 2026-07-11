@@ -23,6 +23,58 @@ pub trait Respond {
     ) -> impl Future<Output = Result<Self::Completion, Self::Error>>;
 }
 
+/// Concrete shared-runtime handler created from a closure.
+#[derive(Debug, Clone, Copy)]
+pub struct HandlerFn<Function>(Function);
+
+impl<Context, Function, HandlerFuture, Completion, Error> Handler<Context> for HandlerFn<Function>
+where
+    Function: Fn(Context) -> HandlerFuture + Sync,
+    HandlerFuture: Future<Output = Result<Completion, Error>> + Send,
+{
+    type Completion = Completion;
+    type Error = Error;
+
+    fn call(
+        &self,
+        context: Context,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send {
+        (self.0)(context)
+    }
+}
+
+/// Create a concrete shared-runtime handler from a closure.
+pub const fn handler_fn<Function>(function: Function) -> HandlerFn<Function> {
+    HandlerFn(function)
+}
+
+/// Concrete worker-local handler created from a closure.
+#[derive(Debug, Clone, Copy)]
+pub struct LocalHandlerFn<Function>(Function);
+
+#[allow(clippy::future_not_send)]
+impl<Context, Function, HandlerFuture, Completion, Error> LocalHandler<Context>
+    for LocalHandlerFn<Function>
+where
+    Function: Fn(Context) -> HandlerFuture,
+    HandlerFuture: Future<Output = Result<Completion, Error>>,
+{
+    type Completion = Completion;
+    type Error = Error;
+
+    fn call(
+        &self,
+        context: Context,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
+        (self.0)(context)
+    }
+}
+
+/// Create a concrete worker-local handler from a closure.
+pub const fn local_handler_fn<Function>(function: Function) -> LocalHandlerFn<Function> {
+    LocalHandlerFn(function)
+}
+
 /// A typed request with exclusive ownership of its completion capability.
 #[derive(Debug)]
 pub struct RequestContext<Request, Responder, State> {
@@ -367,6 +419,45 @@ mod tests {
             .to_bytes();
 
         assert_eq!(body, Bytes::from_static(b"local"));
+    }
+
+    #[tokio::test]
+    async fn closure_adapters_preserve_shared_and_local_future_bounds() {
+        let shared = handler_fn(
+            |context: RequestContext<(), HttpResponder, ()>| async move {
+                context
+                    .respond(HttpResponse {
+                        status: StatusCode::NO_CONTENT,
+                        body: Bytes::new(),
+                    })
+                    .await
+            },
+        );
+        let local = local_handler_fn(
+            |context: RequestContext<(), HttpResponder, Rc<str>>| async move {
+                let body = Bytes::copy_from_slice(context.state().as_bytes());
+                context
+                    .respond(HttpResponse {
+                        status: StatusCode::OK,
+                        body,
+                    })
+                    .await
+            },
+        );
+
+        let shared_response = shared
+            .call(RequestContext::new((), HttpResponder, ()))
+            .await
+            .expect("valid shared response");
+        let local_response = LocalHandler::call(
+            &local,
+            RequestContext::new((), HttpResponder, Rc::<str>::from("local")),
+        )
+        .await
+        .expect("valid local response");
+
+        assert_eq!(shared_response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(local_response.status(), StatusCode::OK);
     }
 
     #[test]

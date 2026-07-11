@@ -34,3 +34,34 @@ an additional macro, none of which improves this initial contract.
 Revisit the choice only if the production transport integration exposes a
 borrowing pattern RPITIT cannot express or compiler/code-size measurements show
 a material problem.
+
+## Local handler-boundary baseline
+
+This is a confidence check, not a release performance claim.
+
+Command:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features bench -- handler_boundary_32_bytes
+```
+
+Environment recorded on 2026-07-10:
+
+- Linux `6.6.87.2-microsoft-standard-WSL2`
+- Rust `1.95.0`, LLVM `22.1.2`
+- Intel Xeon Platinum 8370C, 8 cores / 16 logical CPUs exposed to WSL
+- Criterion defaults, release benchmark profile, 32-byte body, plain TCP types
+
+Observed intervals:
+
+| Boundary | Time |
+| --- | ---: |
+| Current detached `NacelleResponse` construction | 44.9-45.4 ns |
+| Typed direct TCP completion and frame encoding | 49.6-51.5 ns |
+| Typed direct completion through one static middleware layer | 50.4-51.8 ns |
+
+The rows are intentionally not presented as equivalent work. The current row
+constructs a detached response but does not encode it. The typed rows also write
+the request id, body length, and body into a reused-capacity `BytesMut`. Use this
+group to detect regressions while the production integration evolves; use the
+stress harness for end-to-end throughput and tail-latency claims.
