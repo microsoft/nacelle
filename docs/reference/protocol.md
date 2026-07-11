@@ -49,23 +49,24 @@ for routing, reject it, or ignore it. If the handler rejects an opcode after
 draining the body and returns an error, the server encodes that error as a
 response frame.
 
-Handlers also receive connection metadata through `NacelleRequest::connection`.
-TCP listeners populate a stable connection id, peer/local socket addresses, and
-TLS metadata when a TLS backend is active. OpenSSL metadata includes negotiated
-protocol, cipher name, and cipher bit counts when available. Unix socket
-listeners populate the `unix_socket` transport label and `local_path`.
-Servers can attach typed per-connection state with
-`connection_extension_factory(...)`; handlers retrieve it with
-`request.connection.extension::<T>()`. Apps built with `serve(protocols, app)`
-can attach the same state through
-`NacelleApp::with_connection_extension_factory(...)`.
+Handlers receive `TcpRequestContext<P>`. Its request contains the associated
+protocol head under `request().head` and the bounded body under
+`request_mut().body`. Its connection context contains a stable connection id,
+peer/local addresses, listener label, TLS metadata, and
+`Arc<P::ConnectionState>`. The runtime constructs that state once with
+`Protocol::connection_state` and shares it across requests on the connection.
 
 ## Responses
 
-Handlers return a `NacelleResponse` with a streaming `NacelleBody`. The TCP
-transport encodes that response body into one or more response frames.
-By default, TCP responses inherit `request_id` and `opcode` from the request
-context. Applications can override either field with `TcpResponseMeta`.
+Handlers call `context.respond(P::Response)` and return the resulting typed
+completion. A protocol can accept its own response type; the reference protocol
+uses `TcpResponse`, whose body may be empty, one chunk, or streaming. Returning
+an HTTP response from a TCP handler does not compile.
+
+The TCP runtime encodes and writes each streaming response chunk before polling
+the next one, so socket backpressure bounds response production. It stages only
+one bounded frame at a time, accounts staging growth against the runtime memory
+budget, and writes an explicit end frame after a streaming body reaches EOF.
 
 The protocol guarantees:
 
@@ -80,8 +81,11 @@ prototype does not yet provide concurrent per-connection response interleaving.
 ## Error Handling
 
 Malformed frame heads, oversized frames, and EOF before a complete frame cause
-the connection to fail. Handler errors are encoded as error frames when enough
-request context is available. Unknown opcode handling is application policy.
+the connection to fail. Streaming request read failure cancels the handler
+future. Handler errors and timeouts are encoded as error frames when enough
+request context is available, then the connection closes so unread body bytes
+cannot be interpreted as another frame. Unknown opcode handling is application
+policy.
 
 ## Limits
 
@@ -92,11 +96,11 @@ Runtime budgets, timeouts, and active counters are configured through
 `NacelleLimits` / `NacelleRuntimeState`.
 
 TCP protocols can apply phase-aware request body limits by overriding
-`RequestMetadata::max_body_bytes(connection, default_limit)`. The TCP runtime
-calls this after decoding the request head and before buffering or streaming the
-body. Implementations can inspect `NacelleRequest::connection` extensions, such
-as authentication/session state, and return a tighter pre-authentication body
-cap while keeping `default_limit` for authenticated requests.
+`Protocol::max_request_body_bytes(request, connection, default_limit)`. The TCP
+runtime calls this after decoding the request head and before buffering or
+streaming the body. Implementations can use concrete protocol configuration to
+select the limit, while application handlers read per-connection state through
+their typed request context without type erasure.
 
 TCP request handling is sequential per connection. Pipelined frames can sit
 in the socket/read buffer, but Nacelle does not run multiple handlers

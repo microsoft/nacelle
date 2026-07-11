@@ -19,9 +19,10 @@ becoming part of the published library API.
 
 ## App Core And Protocol Adapters
 
-Nacelle is organized so application behavior lives behind the `Handler`
-boundary. A handler receives a transport-neutral `NacelleRequest` and returns a
-`NacelleResponse`.
+Nacelle is organized so application behavior lives behind statically dispatched
+handler boundaries. TCP handlers receive `TcpRequestContext<P>` and complete
+requests with the response type associated with `P`. HTTP still uses its own
+request/response adapter while its typed migration is in progress.
 
 TCP `Protocol` implementations are adapters: they decode a wire format into
 request metadata and encode responses back into frames. Swapping protocols
@@ -49,17 +50,20 @@ listener
 ```
 
 TCP and Unix socket listeners use the `nacelle-tcp` `Protocol` trait and its
-associated `Request` type to
-decode request heads and encode response frames. HTTP uses `nacelle-http` with
-Hyper HTTP/1 and maps requests into the same `NacelleRequest` /
-`NacelleResponse` shape.
+associated request, response, and connection-state types to decode request
+heads and encode bounded response frames. HTTP uses `nacelle-http` with Hyper
+HTTP/1 and retains its current adapter until Phase 4.
 
-`NacelleRequest::connection` carries transport, a stable connection id, peer
-address, local address, local Unix socket path, effective peer IP, TLS metadata,
-and an optional typed extension. Raw protocol servers can populate that
-extension with `connection_extension_factory(...)` for auth/session state
-derived at accept or handshake time. Apps using `serve(protocols, app)` can set
-the same extension factory on `NacelleApp`.
+Connection metadata carries the transport, a stable connection id, listener
+label, peer and local addresses, local Unix socket path, effective peer IP, and
+TLS metadata. The typed TCP pipeline presents this immutable metadata to
+handlers as `ConnectionInfo` through `RequestContext`.
+
+The pipeline model for connection-local application state is
+`ConnectionContext<State>`. TCP protocols construct `Protocol::ConnectionState`
+once per accepted connection, and handlers receive it as
+`Arc<P::ConnectionState>` through the typed request context. No dynamic
+extension map participates in the request path.
 
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header
@@ -85,7 +89,7 @@ bounded defaults.
 
 TCP large request bodies reserve their declared length while streaming. HTTP
 request bodies reserve `Content-Length` when Hyper exposes a bounded size hint.
-TCP protocols can override `RequestMetadata::max_body_bytes(...)` to choose a
+TCP protocols can override `Protocol::max_request_body_bytes(...)` to choose a
 phase-aware body limit immediately after head decoding and before body buffering
 or streaming begins.
 
