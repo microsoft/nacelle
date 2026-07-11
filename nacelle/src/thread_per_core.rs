@@ -8,6 +8,10 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleShutdown, NacelleShutdownToken};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 
+#[cfg(feature = "http")]
+use nacelle_http::{
+    LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpSharedState, LocalHyperServer,
+};
 #[cfg(feature = "tcp")]
 use nacelle_tcp::options::NacelleTcpOptions;
 #[cfg(feature = "tcp")]
@@ -409,6 +413,61 @@ pub struct LocalTcpRuntimeConfig {
     drain_timeout: std::time::Duration,
 }
 
+/// Configuration for one Linux worker-local plain HTTP runtime.
+#[cfg(feature = "http")]
+#[derive(Debug, Clone)]
+pub struct LocalHttpRuntimeConfig {
+    runtime: ThreadPerCoreConfig,
+    shutdown: NacelleShutdown,
+    limits: ThreadPerCoreLimits,
+    telemetry: nacelle_core::telemetry::NacelleTelemetry,
+    addr: SocketAddr,
+    drain_timeout: std::time::Duration,
+}
+
+#[cfg(feature = "http")]
+impl LocalHttpRuntimeConfig {
+    /// Construct local HTTP runtime configuration with global accounting.
+    pub fn new(
+        runtime: ThreadPerCoreConfig,
+        addr: SocketAddr,
+        runtime_state: NacelleRuntimeState,
+    ) -> Self {
+        Self {
+            runtime,
+            shutdown: NacelleShutdown::new(),
+            limits: ThreadPerCoreLimits::global(runtime_state),
+            telemetry: nacelle_core::telemetry::NacelleTelemetry::default(),
+            addr,
+            drain_timeout: std::time::Duration::from_secs(30),
+        }
+    }
+
+    /// Use a caller-owned shutdown source.
+    pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    /// Select global or partitioned worker resource accounting.
+    pub fn with_limits(mut self, limits: ThreadPerCoreLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Set telemetry shared by all workers.
+    pub fn with_telemetry(mut self, telemetry: nacelle_core::telemetry::NacelleTelemetry) -> Self {
+        self.telemetry = telemetry;
+        self
+    }
+
+    /// Set the local connection drain deadline.
+    pub fn with_drain_timeout(mut self, drain_timeout: std::time::Duration) -> Self {
+        self.drain_timeout = drain_timeout;
+        self
+    }
+}
+
 #[cfg(feature = "tcp")]
 impl LocalTcpRuntimeConfig {
     /// Construct local TCP runtime configuration with global accounting.
@@ -508,6 +567,48 @@ where
     })
 }
 
+/// Run one worker-local HTTP/1 listener stack per configured worker.
+#[cfg(feature = "http")]
+pub fn run_local_http_thread_per_core<H, F, Factory>(
+    config: LocalHttpRuntimeConfig,
+    server_factory: Factory,
+) -> Result<(), NacelleError>
+where
+    F: LocalHttpConnectionStateFactory,
+    H: LocalHttpHandler<F::State> + 'static,
+    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F>, NacelleError> + Clone + Send + 'static,
+{
+    if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
+        return Err(NacelleError::ResourceLimit(
+            "thread_per_core_ephemeral_port",
+        ));
+    }
+    let runtime = config.runtime;
+    let shutdown = config.shutdown;
+    let limits = config.limits;
+    let telemetry = config.telemetry;
+    let addr = config.addr;
+    let drain_timeout = config.drain_timeout;
+    let shared_state = LocalHttpSharedState::default();
+    run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
+        let listener = bind_reuse_port_listener(addr)?;
+        let server = server_factory(context.worker)?.with_runtime_context(
+            telemetry.clone(),
+            limits.state_for(context.worker)?,
+            shared_state.clone(),
+        );
+        Ok(async move {
+            server
+                .serve_listener(
+                    listener,
+                    context.shutdown,
+                    nacelle_core::lifecycle::NacelleDrainDeadline::new(drain_timeout),
+                )
+                .await
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -519,6 +620,13 @@ mod tests {
     use bytes::{Bytes, BytesMut};
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_core::pipeline::LocalHandler;
+    #[cfg(all(target_os = "linux", feature = "http"))]
+    use nacelle_core::pipeline::LocalHandler as LocalPipelineHandler;
+    #[cfg(all(target_os = "linux", feature = "http"))]
+    use nacelle_http::{
+        HttpHandlerCompletion, HttpResponse, LocalHttpConnectionStateFactory,
+        LocalHttpRequestContext, LocalHyperServer,
+    };
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_tcp::{
         DecodedMessage, DecodedRequest, FrameBuffer, LocalTcpServer, MessageDecoder, Protocol,
@@ -878,5 +986,104 @@ mod tests {
         );
         client.join().expect("client thread should join");
         result.expect("worker-local TCP runtime should shut down cleanly");
+    }
+
+    #[cfg(all(target_os = "linux", feature = "http"))]
+    #[test]
+    fn local_http_worker_reuses_non_send_state_across_keep_alive_requests() {
+        struct LocalConnectionState {
+            requests: Rc<RefCell<usize>>,
+        }
+
+        struct LocalStateFactory;
+
+        impl LocalHttpConnectionStateFactory for LocalStateFactory {
+            type State = LocalConnectionState;
+
+            fn create(&self, _connection: &nacelle_core::pipeline::ConnectionInfo) -> Self::State {
+                LocalConnectionState {
+                    requests: Rc::new(RefCell::new(0)),
+                }
+            }
+        }
+
+        struct LocalHttpHandlerState {
+            total_requests: Rc<RefCell<usize>>,
+        }
+
+        impl LocalPipelineHandler<LocalHttpRequestContext<LocalConnectionState>> for LocalHttpHandlerState {
+            type Completion = HttpHandlerCompletion;
+            type Error = NacelleError;
+
+            async fn call(
+                &self,
+                context: LocalHttpRequestContext<LocalConnectionState>,
+            ) -> Result<Self::Completion, Self::Error> {
+                *self.total_requests.borrow_mut() += 1;
+                let connection_request = {
+                    let mut requests = context.connection().state.requests.borrow_mut();
+                    *requests += 1;
+                    *requests
+                };
+                context
+                    .respond(HttpResponse::bytes(
+                        nacelle_http::StatusCode::OK,
+                        connection_request.to_string(),
+                    ))
+                    .await
+            }
+        }
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe should bind");
+        let addr = probe.local_addr().expect("probe address");
+        drop(probe);
+        let workers = WorkerSet::first(1).expect("one worker should be available");
+        let shutdown = NacelleShutdown::new();
+        let client_shutdown = shutdown.clone();
+        let client = thread::spawn(move || {
+            let mut stream = loop {
+                match std::net::TcpStream::connect(addr) {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("client connect failed: {error}"),
+                }
+            };
+            use std::io::{Read, Write};
+            stream
+                .write_all(
+                    b"GET /one HTTP/1.1\r\nHost: localhost\r\n\r\n\
+                      GET /two HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )
+                .expect("requests should write");
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .expect("responses should read");
+            let response = String::from_utf8(response).expect("response should be utf8");
+            assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 2);
+            assert!(response.contains("\r\n1\r\n"));
+            assert!(response.contains("\r\n2\r\n"));
+            client_shutdown.shutdown();
+        });
+
+        let result = run_local_http_thread_per_core(
+            LocalHttpRuntimeConfig::new(
+                ThreadPerCoreConfig::new(workers),
+                addr,
+                NacelleRuntimeState::default(),
+            )
+            .with_shutdown(shutdown)
+            .with_drain_timeout(std::time::Duration::from_secs(1)),
+            |_worker| {
+                Ok(LocalHyperServer::new(LocalHttpHandlerState {
+                    total_requests: Rc::new(RefCell::new(0)),
+                })
+                .with_connection_state_factory(LocalStateFactory))
+            },
+        );
+        client.join().expect("client thread should join");
+        result.expect("worker-local HTTP runtime should shut down cleanly");
     }
 }

@@ -24,7 +24,7 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTransport};
 pub(crate) type HttpBody = BoxBody<Bytes, BoxError>;
 
 pub(crate) fn incoming_to_body(
-    mut incoming: Incoming,
+    incoming: Incoming,
     body_len_hint: Option<usize>,
     request_body_bytes: Arc<AtomicUsize>,
     runtime_state: NacelleRuntimeState,
@@ -32,88 +32,125 @@ pub(crate) fn incoming_to_body(
     telemetry: NacelleTelemetry,
 ) -> NacelleBody {
     let (tx, body) = NacelleBody::channel(8);
-    tokio::spawn(async move {
-        if let Some(body_len_hint) = body_len_hint
-            && body_len_hint > runtime_state.limits().max_request_body_bytes
+    tokio::spawn(pump_incoming_body(
+        incoming,
+        body_len_hint,
+        request_body_bytes,
+        runtime_state,
+        http_limits,
+        telemetry,
+        tx,
+    ));
+    body
+}
+
+pub(crate) fn incoming_to_local_body(
+    incoming: Incoming,
+    body_len_hint: Option<usize>,
+    request_body_bytes: Arc<AtomicUsize>,
+    runtime_state: NacelleRuntimeState,
+    http_limits: NacelleHttpLimits,
+    telemetry: NacelleTelemetry,
+) -> NacelleBody {
+    let (tx, body) = NacelleBody::channel(8);
+    tokio::task::spawn_local(pump_incoming_body(
+        incoming,
+        body_len_hint,
+        request_body_bytes,
+        runtime_state,
+        http_limits,
+        telemetry,
+        tx,
+    ));
+    body
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pump_incoming_body(
+    mut incoming: Incoming,
+    body_len_hint: Option<usize>,
+    request_body_bytes: Arc<AtomicUsize>,
+    runtime_state: NacelleRuntimeState,
+    http_limits: NacelleHttpLimits,
+    telemetry: NacelleTelemetry,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>,
+) {
+    if let Some(body_len_hint) = body_len_hint
+        && body_len_hint > runtime_state.limits().max_request_body_bytes
+    {
+        let _ = tx
+            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+            .await;
+        return;
+    }
+    let _body_allocation = match body_len_hint {
+        Some(bytes) => match runtime_state
+            .allocate_memory_with_timeout(bytes, runtime_state.limits().memory_allocation_timeout)
+            .await
         {
-            let _ = tx
-                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                .await;
-            return;
-        }
-        let _body_allocation = match body_len_hint {
-            Some(bytes) => match runtime_state
-                .allocate_memory_with_timeout(
-                    bytes,
-                    runtime_state.limits().memory_allocation_timeout,
-                )
-                .await
-            {
-                Ok(allocation) => Some(allocation),
-                Err(error) => {
-                    let _ = tx.send(Err(error)).await;
-                    return;
-                }
-            },
-            None => None,
-        };
-        let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
-            Ok(permit) => permit,
+            Ok(allocation) => Some(allocation),
             Err(error) => {
                 let _ = tx.send(Err(error)).await;
                 return;
             }
+        },
+        None => None,
+    };
+    let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
+        Ok(permit) => permit,
+        Err(error) => {
+            let _ = tx.send(Err(error)).await;
+            return;
+        }
+    };
+    let mut body_bytes = 0_usize;
+    loop {
+        let frame = {
+            let next = incoming.frame();
+            if let Some(timeout) = http_limits.request_body_read_timeout {
+                match tokio::time::timeout(timeout, next).await {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        telemetry.timeout(NacelleTransport::new("http"), "http_body_read");
+                        let _ = tx.send(Err(NacelleError::Timeout("http_body_read"))).await;
+                        break;
+                    }
+                }
+            } else {
+                next.await
+            }
         };
-        let mut body_bytes = 0_usize;
-        loop {
-            let frame = {
-                let next = incoming.frame();
-                if let Some(timeout) = http_limits.request_body_read_timeout {
-                    match tokio::time::timeout(timeout, next).await {
-                        Ok(frame) => frame,
-                        Err(_) => {
-                            telemetry.timeout(NacelleTransport::new("http"), "http_body_read");
-                            let _ = tx.send(Err(NacelleError::Timeout("http_body_read"))).await;
-                            break;
-                        }
+        let Some(frame) = frame else {
+            break;
+        };
+        match frame {
+            Ok(frame) => {
+                if let Some(data) = frame.data_ref() {
+                    let Some(next) = body_bytes.checked_add(data.len()) else {
+                        let _ = tx
+                            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+                            .await;
+                        break;
+                    };
+                    if next > runtime_state.limits().max_request_body_bytes {
+                        let _ = tx
+                            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+                            .await;
+                        break;
                     }
-                } else {
-                    next.await
-                }
-            };
-            let Some(frame) = frame else {
-                break;
-            };
-            match frame {
-                Ok(frame) => {
-                    if let Some(data) = frame.data_ref() {
-                        let Some(next) = body_bytes.checked_add(data.len()) else {
-                            let _ = tx
-                                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                                .await;
-                            break;
-                        };
-                        if next > runtime_state.limits().max_request_body_bytes {
-                            let _ = tx
-                                .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
-                                .await;
-                            break;
-                        }
-                        body_bytes = next;
-                        request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
-                        if tx.send(Ok(data.clone())).await.is_err() {
-                            break;
-                        }
+                    body_bytes = next;
+                    request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
+                    if tx.send(Ok(data.clone())).await.is_err() {
+                        break;
                     }
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(NacelleError::protocol(error))).await;
-                    break;
                 }
             }
+            Err(error) => {
+                let _ = tx.send(Err(NacelleError::protocol(error))).await;
+                break;
+            }
         }
-    });
-    body
+    }
 }
 
 pub(crate) fn response_to_http(

@@ -33,6 +33,8 @@ pub use nacelle_http::server as http_server;
 pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
+    #[cfg(feature = "http")]
+    pub use crate::thread_per_core::{LocalHttpRuntimeConfig, run_local_http_thread_per_core};
     #[cfg(feature = "tcp")]
     pub use crate::thread_per_core::{LocalTcpRuntimeConfig, run_local_tcp_thread_per_core};
     pub use crate::thread_per_core::{

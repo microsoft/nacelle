@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,7 +17,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
+use crate::encoder::{HttpBody, incoming_to_body, incoming_to_local_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
 pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
@@ -32,13 +34,151 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryEventKind, Nacel
 use nacelle_core::tls::NacelleTlsConfig;
 
 use crate::pipeline::{
-    HttpConnectionStateFactory, HttpHandler, HttpRequest, HttpRequestContext, HttpResponder,
-    HttpResponse, NoHttpConnectionState,
+    HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
+    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpConnectionStateFactory,
+    LocalHttpHandler, LocalHttpRequestContext, NoHttpConnectionState,
 };
+
+trait HttpDispatch<State> {
+    fn connection_info(&self) -> &ConnectionInfo;
+
+    fn call(
+        &self,
+        request: HttpRequest,
+    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>>;
+
+    fn incoming_body(
+        &self,
+        incoming: Incoming,
+        body_len_hint: Option<usize>,
+        request_body_bytes: Arc<AtomicUsize>,
+        runtime_state: NacelleRuntimeState,
+        http_limits: NacelleHttpLimits,
+        telemetry: NacelleTelemetry,
+    ) -> nacelle_core::NacelleBody;
+}
+
+struct SharedHttpDispatch<H, State> {
+    handler: Arc<H>,
+    connection: ConnectionContext<Arc<State>>,
+}
+
+impl<H, State> Clone for SharedHttpDispatch<H, State> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+            connection: self.connection.clone(),
+        }
+    }
+}
+
+impl<H, State> HttpDispatch<State> for SharedHttpDispatch<H, State>
+where
+    State: Send + Sync + 'static,
+    H: HttpHandler<State>,
+{
+    fn connection_info(&self) -> &ConnectionInfo {
+        &self.connection.info
+    }
+
+    fn call(
+        &self,
+        request: HttpRequest,
+    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
+        let context = HttpRequestContext::new(
+            request,
+            RequiredResponder::new(HttpResponder),
+            (),
+            self.connection.clone(),
+        );
+        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
+    }
+
+    fn incoming_body(
+        &self,
+        incoming: Incoming,
+        body_len_hint: Option<usize>,
+        request_body_bytes: Arc<AtomicUsize>,
+        runtime_state: NacelleRuntimeState,
+        http_limits: NacelleHttpLimits,
+        telemetry: NacelleTelemetry,
+    ) -> nacelle_core::NacelleBody {
+        incoming_to_body(
+            incoming,
+            body_len_hint,
+            request_body_bytes,
+            runtime_state,
+            http_limits,
+            telemetry,
+        )
+    }
+}
+
+struct LocalHttpDispatch<H, State> {
+    handler: Rc<H>,
+    connection: ConnectionContext<Rc<State>>,
+}
+
+impl<H, State> Clone for LocalHttpDispatch<H, State> {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+            connection: self.connection.clone(),
+        }
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<H, State> HttpDispatch<State> for LocalHttpDispatch<H, State>
+where
+    State: 'static,
+    H: LocalHttpHandler<State>,
+{
+    fn connection_info(&self) -> &ConnectionInfo {
+        &self.connection.info
+    }
+
+    fn call(
+        &self,
+        request: HttpRequest,
+    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
+        let context = LocalHttpRequestContext::new(
+            request,
+            RequiredResponder::new(HttpResponder),
+            (),
+            self.connection.clone(),
+        );
+        nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
+    }
+
+    fn incoming_body(
+        &self,
+        incoming: Incoming,
+        body_len_hint: Option<usize>,
+        request_body_bytes: Arc<AtomicUsize>,
+        runtime_state: NacelleRuntimeState,
+        http_limits: NacelleHttpLimits,
+        telemetry: NacelleTelemetry,
+    ) -> nacelle_core::NacelleBody {
+        incoming_to_local_body(
+            incoming,
+            body_len_hint,
+            request_body_bytes,
+            runtime_state,
+            http_limits,
+            telemetry,
+        )
+    }
+}
 
 pub struct HyperServer<H = (), F = NoHttpConnectionState> {
     handler: Arc<H>,
     connection_state_factory: Arc<F>,
+    runtime: HttpRuntime,
+}
+
+#[derive(Clone)]
+struct HttpRuntime {
     telemetry: NacelleTelemetry,
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
@@ -48,18 +188,174 @@ pub struct HyperServer<H = (), F = NoHttpConnectionState> {
     peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
 }
 
+impl Default for HttpRuntime {
+    fn default() -> Self {
+        Self::new(NacelleTelemetry::default(), NacelleRuntimeState::default())
+    }
+}
+
+impl HttpRuntime {
+    fn new(telemetry: NacelleTelemetry, runtime_state: NacelleRuntimeState) -> Self {
+        Self {
+            telemetry,
+            runtime_state,
+            http_limits: NacelleHttpLimits::default(),
+            http_policy: NacelleHttpPolicy::default(),
+            access_log_enabled: false,
+            listener: Arc::from("direct"),
+            peer_rate_limits: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+/// Worker-local HTTP/1 server for explicit thread-per-core execution.
+pub struct LocalHyperServer<H, F = NoHttpConnectionState> {
+    handler: Rc<H>,
+    connection_state_factory: Rc<F>,
+    runtime: HttpRuntime,
+}
+
+/// Process-wide HTTP edge state shared by worker-local listeners.
+///
+/// Clones share per-peer request-rate windows so thread-per-core execution
+/// preserves the same process-wide policy semantics as one shared listener.
+#[derive(Clone, Default)]
+pub struct LocalHttpSharedState {
+    peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
+}
+
+impl<H> LocalHyperServer<H, NoHttpConnectionState> {
+    /// Construct a worker-local HTTP server without connection state.
+    pub fn new(handler: H) -> Self {
+        Self {
+            handler: Rc::new(handler),
+            connection_state_factory: Rc::new(NoHttpConnectionState),
+            runtime: HttpRuntime::default(),
+        }
+    }
+}
+
+impl<H, F> LocalHyperServer<H, F> {
+    /// Replace the worker-local connection state factory.
+    pub fn with_connection_state_factory<F2>(self, factory: F2) -> LocalHyperServer<H, F2>
+    where
+        F2: LocalHttpConnectionStateFactory,
+    {
+        LocalHyperServer {
+            handler: self.handler,
+            connection_state_factory: Rc::new(factory),
+            runtime: self.runtime,
+        }
+    }
+}
+
+impl<H, F> LocalHyperServer<H, F>
+where
+    F: LocalHttpConnectionStateFactory,
+    H: LocalHttpHandler<F::State> + 'static,
+{
+    /// Install final worker telemetry and runtime state atomically.
+    pub fn with_runtime_context(
+        mut self,
+        telemetry: NacelleTelemetry,
+        runtime_state: NacelleRuntimeState,
+        shared_state: LocalHttpSharedState,
+    ) -> Self {
+        telemetry.register_runtime_state(runtime_state.clone());
+        self.runtime.telemetry = telemetry;
+        self.runtime.runtime_state = runtime_state;
+        self.runtime.peer_rate_limits = shared_state.peer_rate_limits;
+        self
+    }
+
+    /// Set worker-local HTTP edge limits.
+    pub fn with_http_limits(mut self, limits: NacelleHttpLimits) -> Self {
+        self.runtime.http_limits = limits;
+        self
+    }
+
+    /// Set worker-local HTTP edge policy.
+    pub fn with_http_policy(mut self, policy: NacelleHttpPolicy) -> Self {
+        self.runtime.http_policy = policy;
+        self
+    }
+
+    /// Enable or disable HTTP access logging.
+    pub fn with_access_log(mut self, enabled: bool) -> Self {
+        self.runtime.access_log_enabled = enabled;
+        self
+    }
+
+    /// Set the stable listener label recorded in connection metadata.
+    pub fn with_listener_label(mut self, listener: impl Into<Arc<str>>) -> Self {
+        self.runtime.listener = listener.into();
+        self
+    }
+
+    /// Serve one worker-local HTTP listener until shared shutdown.
+    pub async fn serve_listener(
+        self,
+        listener: tokio::net::TcpListener,
+        mut shutdown: NacelleShutdownToken,
+        drain_deadline: NacelleDrainDeadline,
+    ) -> Result<(), NacelleError> {
+        let server = Rc::new(self);
+        let local_addr = listener.local_addr().ok();
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
+                    continue;
+                }
+                accepted = listener.accept() => {
+                    let (stream, peer_addr) = accepted?;
+                    let connection_permit = match server
+                        .runtime
+                        .runtime_state
+                        .acquire_connection_for_peer(peer_addr.ip())
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            server.runtime.telemetry.connection_rejected(
+                                NacelleTransport::new("http"),
+                                connection_rejection_reason(&error),
+                            );
+                            continue;
+                        }
+                    };
+                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let server = server.clone();
+                    connections.spawn_local(async move {
+                        run_local_http_connection(server, stream, connection, connection_permit).await
+                    });
+                }
+            }
+        }
+        server.runtime.telemetry.shutdown_event(
+            NacelleTelemetryEventKind::ListenerStoppedAccepting,
+            NacelleTransport::new("http"),
+        );
+        drain_http_connection_tasks(
+            connections,
+            drain_deadline.get(),
+            server.runtime.telemetry.clone(),
+        )
+        .await;
+        Ok(())
+    }
+}
+
 impl<H, F> Clone for HyperServer<H, F> {
     fn clone(&self) -> Self {
         Self {
             handler: self.handler.clone(),
             connection_state_factory: self.connection_state_factory.clone(),
-            telemetry: self.telemetry.clone(),
-            runtime_state: self.runtime_state.clone(),
-            http_limits: self.http_limits,
-            http_policy: self.http_policy.clone(),
-            access_log_enabled: self.access_log_enabled,
-            listener: self.listener.clone(),
-            peer_rate_limits: self.peer_rate_limits.clone(),
+            runtime: self.runtime.clone(),
         }
     }
 }
@@ -72,13 +368,7 @@ impl<H> HyperServer<H, NoHttpConnectionState> {
         Self {
             handler: Arc::new(handler),
             connection_state_factory: Arc::new(NoHttpConnectionState),
-            telemetry,
-            runtime_state,
-            http_limits: NacelleHttpLimits::default(),
-            http_policy: NacelleHttpPolicy::default(),
-            access_log_enabled: false,
-            listener: Arc::from("direct"),
-            peer_rate_limits: Arc::new(Mutex::new(HashMap::new())),
+            runtime: HttpRuntime::new(telemetry, runtime_state),
         }
     }
 }
@@ -91,13 +381,7 @@ impl<H, F> HyperServer<H, F> {
         HyperServer {
             handler: self.handler,
             connection_state_factory: Arc::new(factory),
-            telemetry: self.telemetry,
-            runtime_state: self.runtime_state,
-            http_limits: self.http_limits,
-            http_policy: self.http_policy,
-            access_log_enabled: self.access_log_enabled,
-            listener: self.listener,
-            peer_rate_limits: self.peer_rate_limits,
+            runtime: self.runtime,
         }
     }
 }
@@ -108,14 +392,16 @@ where
     H: HttpHandler<F::State>,
 {
     pub fn with_telemetry(mut self, telemetry: NacelleTelemetry) -> Self {
-        telemetry.register_runtime_state(self.runtime_state.clone());
-        self.telemetry = telemetry;
+        telemetry.register_runtime_state(self.runtime.runtime_state.clone());
+        self.runtime.telemetry = telemetry;
         self
     }
 
     pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime_state = runtime_state;
+        self.runtime
+            .telemetry
+            .register_runtime_state(runtime_state.clone());
+        self.runtime.runtime_state = runtime_state;
         self
     }
 
@@ -126,32 +412,32 @@ where
         runtime_state: NacelleRuntimeState,
     ) -> Self {
         telemetry.register_runtime_state(runtime_state.clone());
-        self.telemetry = telemetry;
-        self.runtime_state = runtime_state;
+        self.runtime.telemetry = telemetry;
+        self.runtime.runtime_state = runtime_state;
         self
     }
 
     pub fn with_http_limits(mut self, http_limits: NacelleHttpLimits) -> Self {
-        self.http_limits = http_limits;
+        self.runtime.http_limits = http_limits;
         self
     }
 
     pub fn http_limits(&self) -> &NacelleHttpLimits {
-        &self.http_limits
+        &self.runtime.http_limits
     }
 
     pub fn with_http_policy(mut self, http_policy: NacelleHttpPolicy) -> Self {
-        self.http_policy = http_policy;
+        self.runtime.http_policy = http_policy;
         self
     }
 
     pub fn with_access_log(mut self, enabled: bool) -> Self {
-        self.access_log_enabled = enabled;
+        self.runtime.access_log_enabled = enabled;
         self
     }
 
     pub fn with_listener_label(mut self, listener: impl Into<Arc<str>>) -> Self {
-        self.listener = listener.into();
+        self.runtime.listener = listener.into();
         self
     }
 
@@ -244,23 +530,23 @@ where
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
                     let connection_permit = match server
-                        .runtime_state
+                        .runtime.runtime_state
                         .acquire_connection_for_peer(peer_addr.ip())
                     {
                         Ok(permit) => permit,
                         Err(error) => {
                             server
-                                .telemetry
+                                .runtime.telemetry
                                 .connection_rejected(NacelleTransport::new("http"), connection_rejection_reason(&error));
                             continue;
                         }
                     };
-                    server.telemetry.connection_opened(NacelleTransport::new("http"));
+                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(
                         Some(peer_addr),
                         local_addr,
                     )
-                    .with_listener(server.listener.clone());
+                    .with_listener(server.runtime.listener.clone());
                     connections.spawn(run_http_connection(
                         server,
                         stream,
@@ -270,12 +556,16 @@ where
                 }
             }
         }
-        server.telemetry.shutdown_event(
+        server.runtime.telemetry.shutdown_event(
             NacelleTelemetryEventKind::ListenerStoppedAccepting,
             NacelleTransport::new("http"),
         );
-        drain_http_connection_tasks(connections, drain_deadline.get(), server.telemetry.clone())
-            .await;
+        drain_http_connection_tasks(
+            connections,
+            drain_deadline.get(),
+            server.runtime.telemetry.clone(),
+        )
+        .await;
         Ok(())
     }
 
@@ -370,23 +660,23 @@ where
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
                     let connection_permit = match server
-                        .runtime_state
+                        .runtime.runtime_state
                         .acquire_connection_for_peer(peer_addr.ip())
                     {
                         Ok(permit) => permit,
                         Err(error) => {
                             server
-                                .telemetry
+                                .runtime.telemetry
                                 .connection_rejected(NacelleTransport::new("http"), connection_rejection_reason(&error));
                             continue;
                         }
                     };
-                    server.telemetry.connection_opened(NacelleTransport::new("http"));
+                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(
                         Some(peer_addr),
                         local_addr,
                     )
-                    .with_listener(server.listener.clone());
+                    .with_listener(server.runtime.listener.clone());
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     connections.spawn(async move {
                         let tls_stream = match tokio::time::timeout(
@@ -399,7 +689,7 @@ where
                             Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                             Err(_) => {
                                 server
-                                    .telemetry
+                                    .runtime.telemetry
                                     .timeout(NacelleTransport::new("http"), "tls_handshake");
                                 return Err(NacelleError::Timeout("tls_handshake"));
                             }
@@ -416,12 +706,16 @@ where
                 }
             }
         }
-        server.telemetry.shutdown_event(
+        server.runtime.telemetry.shutdown_event(
             NacelleTelemetryEventKind::ListenerStoppedAccepting,
             NacelleTransport::new("http"),
         );
-        drain_http_connection_tasks(connections, drain_deadline.get(), server.telemetry.clone())
-            .await;
+        drain_http_connection_tasks(
+            connections,
+            drain_deadline.get(),
+            server.runtime.telemetry.clone(),
+        )
+        .await;
         Ok(())
     }
 
@@ -430,10 +724,32 @@ where
         request: Request<Incoming>,
         connection: &ConnectionContext<Arc<F::State>>,
     ) -> Result<Response<HttpBody>, NacelleError> {
+        self.runtime
+            .handle_with_dispatch(
+                request,
+                &SharedHttpDispatch {
+                    handler: self.handler.clone(),
+                    connection: connection.clone(),
+                },
+            )
+            .await
+    }
+}
+
+impl HttpRuntime {
+    async fn handle_with_dispatch<State, D>(
+        &self,
+        request: Request<Incoming>,
+        dispatch: &D,
+    ) -> Result<Response<HttpBody>, NacelleError>
+    where
+        D: HttpDispatch<State>,
+    {
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
         let uri = request.uri().clone();
-        let effective_peer_ip = self.effective_peer_ip(connection.info.peer_ip, &request);
+        let effective_peer_ip =
+            self.effective_peer_ip(dispatch.connection_info().peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
             self.telemetry
                 .request_rejected(NacelleTransport::new("http"), rejection.reason);
@@ -510,7 +826,7 @@ where
             uri: parts.uri,
             headers: parts.headers,
             peer_ip: effective_peer_ip,
-            body: incoming_to_body(
+            body: dispatch.incoming_body(
                 body,
                 body_len_hint,
                 request_body_bytes.clone(),
@@ -519,14 +835,7 @@ where
                 self.telemetry.clone(),
             ),
         };
-        let context = HttpRequestContext::new(
-            request,
-            RequiredResponder::new(HttpResponder),
-            (),
-            connection.clone(),
-        );
-
-        let handler_future = self.handler.call(context);
+        let handler_future = dispatch.call(request);
         let handler_result = if let Some(timeout) = self.runtime_state.limits().handler_timeout {
             tokio::time::timeout(timeout, handler_future)
                 .await
@@ -693,7 +1002,7 @@ where
     let connection_info = ConnectionInfo::from(&connection);
     let connection_state = Arc::new(server.connection_state_factory.create(&connection_info));
     let connection = ConnectionContext::new(connection_info, connection_state);
-    let write_timeout = server.http_limits.response_write_timeout;
+    let write_timeout = server.runtime.http_limits.response_write_timeout;
     let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
     let service_server = server.clone();
     let service = service_fn(move |request| {
@@ -704,14 +1013,68 @@ where
     let mut builder = http1::Builder::new();
     builder
         .timer(TokioTimer::new())
-        .header_read_timeout(server.http_limits.header_read_timeout)
-        .keep_alive(server.http_limits.keep_alive);
+        .header_read_timeout(server.runtime.http_limits.header_read_timeout)
+        .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    if let Some(max_age) = server.http_limits.max_connection_age {
+    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
                 server
+                    .runtime
+                    .telemetry
+                    .timeout(NacelleTransport::new("http"), "http_max_connection_age");
+                Err(NacelleError::Timeout("http_max_connection_age"))
+            }
+        }
+    } else {
+        connection.await.map_err(NacelleError::protocol)
+    }
+}
+
+async fn run_local_http_connection<H, F, I>(
+    server: Rc<LocalHyperServer<H, F>>,
+    stream: I,
+    connection: NacelleConnectionMeta,
+    _connection_permit: nacelle_core::limits::TrackedPermit,
+) -> Result<(), NacelleError>
+where
+    F: LocalHttpConnectionStateFactory,
+    H: LocalHttpHandler<F::State>,
+    I: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    let connection_info = ConnectionInfo::from(&connection);
+    let connection_state = Rc::new(server.connection_state_factory.create(&connection_info));
+    let dispatch = LocalHttpDispatch {
+        handler: server.handler.clone(),
+        connection: ConnectionContext::new(connection_info, connection_state),
+    };
+    let write_timeout = server.runtime.http_limits.response_write_timeout;
+    let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
+    let service_server = server.clone();
+    let service_dispatch = dispatch.clone();
+    let service = service_fn(move |request| {
+        let server = service_server.clone();
+        let dispatch = service_dispatch.clone();
+        async move {
+            server
+                .runtime
+                .handle_with_dispatch(request, &dispatch)
+                .await
+        }
+    });
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(server.runtime.http_limits.header_read_timeout)
+        .keep_alive(server.runtime.http_limits.keep_alive);
+    let connection = builder.serve_connection(io, service);
+    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+        match tokio::time::timeout(max_age, connection).await {
+            Ok(result) => result.map_err(NacelleError::protocol),
+            Err(_) => {
+                server
+                    .runtime
                     .telemetry
                     .timeout(NacelleTransport::new("http"), "http_max_connection_age");
                 Err(NacelleError::Timeout("http_max_connection_age"))
@@ -895,6 +1258,38 @@ mod tests {
     use nacelle_core::request::NacelleBody;
 
     use super::*;
+
+    #[test]
+    fn local_http_workers_share_peer_rate_limit_state() {
+        let shared_state = LocalHttpSharedState::default();
+        let policy = NacelleHttpPolicy::new().with_max_requests_per_peer_per_second(1);
+        let first = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
+            |_context: crate::LocalHttpRequestContext<()>| async move {
+                Err(NacelleError::ResourceLimit("unused_test_handler"))
+            },
+        ))
+        .with_http_policy(policy.clone())
+        .with_runtime_context(
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            shared_state.clone(),
+        );
+        let second = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
+            |_context: crate::LocalHttpRequestContext<()>| async move {
+                Err(NacelleError::ResourceLimit("unused_test_handler"))
+            },
+        ))
+        .with_http_policy(policy)
+        .with_runtime_context(
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            shared_state,
+        );
+        let peer = "127.0.0.1".parse().expect("valid peer ip");
+
+        assert!(first.runtime.allow_peer_request(peer));
+        assert!(!second.runtime.allow_peer_request(peer));
+    }
 
     struct CountingConnectionStateFactory {
         creations: Arc<AtomicUsize>,

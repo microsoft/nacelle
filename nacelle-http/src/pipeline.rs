@@ -1,11 +1,12 @@
 use std::net::IpAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode, Uri};
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, Handler, RequestContext, RequiredCompletion,
+    ConnectionContext, ConnectionInfo, Handler, LocalHandler, RequestContext, RequiredCompletion,
     RequiredResponder, Respond,
 };
 use nacelle_core::request::NacelleBody;
@@ -86,6 +87,10 @@ pub type HttpRequestContext<State> = RequestContext<
 /// Successful completion required from a typed HTTP handler.
 pub type HttpHandlerCompletion = RequiredCompletion<HttpCompletion>;
 
+/// Worker-local HTTP request context with concrete `!Send` connection state.
+pub type LocalHttpRequestContext<State> =
+    RequestContext<HttpRequest, RequiredResponder<HttpResponder>, (), ConnectionContext<Rc<State>>>;
+
 /// Statically dispatched typed HTTP handler.
 pub trait HttpHandler<State>:
     Handler<HttpRequestContext<State>, Completion = HttpHandlerCompletion, Error = NacelleError>
@@ -101,10 +106,42 @@ where
 {
 }
 
+/// Worker-local HTTP handler for explicit thread-per-core execution.
+pub trait LocalHttpHandler<State>:
+    LocalHandler<
+        LocalHttpRequestContext<State>,
+        Completion = HttpHandlerCompletion,
+        Error = NacelleError,
+    >
+where
+    State: 'static,
+{
+}
+
+impl<State, H> LocalHttpHandler<State> for H
+where
+    State: 'static,
+    H: LocalHandler<
+            LocalHttpRequestContext<State>,
+            Completion = HttpHandlerCompletion,
+            Error = NacelleError,
+        >,
+{
+}
+
 /// Constructs concrete state once for each accepted HTTP connection.
 pub trait HttpConnectionStateFactory: Send + Sync + 'static {
     /// State shared by requests on one keep-alive connection.
     type State: Send + Sync + 'static;
+
+    /// Construct state after accept/TLS handshake metadata is available.
+    fn create(&self, connection: &ConnectionInfo) -> Self::State;
+}
+
+/// Constructs worker-local state once for each accepted HTTP connection.
+pub trait LocalHttpConnectionStateFactory: 'static {
+    /// State shared locally by requests on one keep-alive connection.
+    type State: 'static;
 
     /// Construct state after accept/TLS handshake metadata is available.
     fn create(&self, connection: &ConnectionInfo) -> Self::State;
@@ -115,6 +152,12 @@ pub trait HttpConnectionStateFactory: Send + Sync + 'static {
 pub struct NoHttpConnectionState;
 
 impl HttpConnectionStateFactory for NoHttpConnectionState {
+    type State = ();
+
+    fn create(&self, _connection: &ConnectionInfo) -> Self::State {}
+}
+
+impl LocalHttpConnectionStateFactory for NoHttpConnectionState {
     type State = ();
 
     fn create(&self, _connection: &ConnectionInfo) -> Self::State {}
