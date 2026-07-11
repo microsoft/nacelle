@@ -889,12 +889,18 @@ mod tests {
         requests: Arc<AtomicUsize>,
     }
 
+    struct CountingConnectionState {
+        requests: Arc<AtomicUsize>,
+    }
+
     impl HttpConnectionStateFactory for CountingConnectionStateFactory {
-        type State = Arc<AtomicUsize>;
+        type State = CountingConnectionState;
 
         fn create(&self, _connection: &ConnectionInfo) -> Self::State {
             self.creations.fetch_add(1, Ordering::SeqCst);
-            self.requests.clone()
+            CountingConnectionState {
+                requests: self.requests.clone(),
+            }
         }
     }
 
@@ -963,8 +969,12 @@ mod tests {
         let creations = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(AtomicUsize::new(0));
         let server = HyperServer::new(handler_fn(
-            |context: HttpRequestContext<Arc<AtomicUsize>>| async move {
-                context.connection().state.fetch_add(1, Ordering::SeqCst);
+            |context: HttpRequestContext<CountingConnectionState>| async move {
+                context
+                    .connection()
+                    .state
+                    .requests
+                    .fetch_add(1, Ordering::SeqCst);
                 context.respond(HttpResponse::empty(StatusCode::OK)).await
             },
         ))
@@ -1388,10 +1398,19 @@ mod tests {
             .with_root_certificates(roots)
             .with_no_client_auth();
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_config));
-        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
-            context
-                .respond(HttpResponse::bytes(StatusCode::OK, "tls ok"))
-                .await
+        let observed = Arc::new(Mutex::new(None));
+        let server = HyperServer::new(handler_fn({
+            let observed = observed.clone();
+            move |context: HttpRequestContext<()>| {
+                let observed = observed.clone();
+                async move {
+                    *observed.lock().expect("observed metadata lock poisoned") =
+                        Some(context.connection().info.clone());
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "tls ok"))
+                        .await
+                }
+            }
         }));
         let server_task = tokio::spawn(async move {
             server
@@ -1421,6 +1440,15 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("tls ok"));
+        let observed = observed.lock().expect("observed metadata lock poisoned");
+        let tls = observed
+            .as_ref()
+            .and_then(|connection| connection.tls.as_ref())
+            .expect("TLS metadata should reach the handler context");
+        assert_eq!(tls.provider, "rustls");
+        assert!(tls.protocol.is_some());
+        assert!(tls.cipher_suite.is_some());
+        assert_eq!(tls.server_name.as_deref(), Some("localhost"));
         server_task.abort();
     }
 
