@@ -351,7 +351,7 @@ fn contended_memory_allocation_waves(
 }
 
 fn telemetry_benches(c: &mut Criterion) {
-    let disabled = NacelleTelemetry::default();
+    let disabled = NacelleTelemetry::default().with_metrics(false);
     let concrete = NacelleTelemetry::new().with_observer(NacelleInMemoryObserver::new());
     let elapsed = Duration::from_micros(250);
 

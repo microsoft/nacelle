@@ -30,7 +30,9 @@ mod tests;
 
 use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read_error};
 use io::read_message_with_timeout;
-use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context};
+use metrics::{
+    TcpTelemetryPlan, finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context,
+};
 use request::{
     LocalOneWayDispatch, LocalRequestDispatch, LocalSerialOneWayDispatch,
     LocalSerialRequestDispatch, OneWayDispatch, RequestDispatch, SerialOneWayDispatch,
@@ -204,15 +206,21 @@ where
     let connection_info = ConnectionInfo::from(&connection);
     let connection_state = protocol.connection_state(&connection_info);
     let mut connection_context = handler.new_connection(connection_info, connection_state);
-    let connection_metrics = tcp_metrics_context(protocol.deref(), &connection);
+    let telemetry_plan = TcpTelemetryPlan::new(&telemetry);
+    let connection_metrics = telemetry_plan
+        .metrics
+        .then(|| tcp_metrics_context(protocol.deref(), &connection));
     let decoder = InstrumentedDecoder::new(
         protocol.decoder(config.max_frame_len),
         &telemetry,
-        &connection_metrics,
+        connection_metrics.as_ref(),
+        telemetry_plan,
     );
     let mut request_reader =
         MessageReader::with_capacity(reader, decoder, config.read_buffer_capacity);
-    telemetry.connection_accepted(&connection_metrics);
+    if let Some(connection_metrics) = &connection_metrics {
+        telemetry.connection_accepted(connection_metrics);
+    }
     telemetry.connection_opened(transport);
 
     let result: Result<(), NacelleError> = async {
@@ -220,12 +228,12 @@ where
             #[cfg(feature = "buffer-rotation")]
             request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
-            let read_started = start_tcp_phase(&telemetry);
+            let read_started = start_tcp_phase(telemetry_plan.phase_duration);
             let read_result =
                 read_message_with_timeout(&mut request_reader, &tcp_limits, "tcp_read").await;
             finish_tcp_phase(
                 &telemetry,
-                Some(&connection_metrics),
+                connection_metrics.as_ref(),
                 "socket_read",
                 read_started,
             );
@@ -233,7 +241,9 @@ where
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,
                 Err(error) => {
-                    telemetry.operation_error(&connection_metrics, "socket_read", &error);
+                    if let Some(connection_metrics) = &connection_metrics {
+                        telemetry.operation_error(connection_metrics, "socket_read", &error);
+                    }
                     return Err(error);
                 }
             };
@@ -259,7 +269,8 @@ where
                             &tcp_limits,
                             &connection,
                             &mut connection_context,
-                            telemetry.metrics_enabled().then_some(&connection_metrics),
+                            connection_metrics.as_ref(),
+                            telemetry_plan,
                         )
                         .await?;
                     }
@@ -277,7 +288,8 @@ where
                             &tcp_limits,
                             &connection,
                             &mut connection_context,
-                            telemetry.metrics_enabled().then_some(&connection_metrics),
+                            connection_metrics.as_ref(),
+                            telemetry_plan,
                         )
                         .await?;
                     }
@@ -292,7 +304,9 @@ where
     }
     .await;
 
-    telemetry.connection_closed(&connection_metrics, tcp_close_reason(&result));
+    if let Some(connection_metrics) = &connection_metrics {
+        telemetry.connection_closed(connection_metrics, tcp_close_reason(&result));
+    }
     result
 }
 

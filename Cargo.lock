@@ -910,6 +910,7 @@ name = "nacelle-tcp"
 version = "0.3.0"
 dependencies = [
  "bytes",
+ "criterion",
  "nacelle-codec",
  "nacelle-core",
  "openssl",

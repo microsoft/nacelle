@@ -6,7 +6,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
-use super::metrics::{finish_tcp_phase, start_tcp_phase};
+use super::metrics::{TcpTelemetryPlan, finish_tcp_phase, start_tcp_phase};
 
 pub(super) fn allocate_connection_buffers(
     config: &NacelleTcpConfig,
@@ -21,7 +21,8 @@ pub(super) fn allocate_connection_buffers(
 pub(super) struct InstrumentedDecoder<'a, D, Observer: NacelleTelemetryObserver> {
     decoder: D,
     telemetry: &'a NacelleTelemetry<Observer>,
-    metrics_context: &'a NacelleMetricsContext,
+    metrics_context: Option<&'a NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 }
 
 impl<'a, D, Observer> InstrumentedDecoder<'a, D, Observer>
@@ -31,12 +32,14 @@ where
     pub(super) const fn new(
         decoder: D,
         telemetry: &'a NacelleTelemetry<Observer>,
-        metrics_context: &'a NacelleMetricsContext,
+        metrics_context: Option<&'a NacelleMetricsContext>,
+        telemetry_plan: TcpTelemetryPlan,
     ) -> Self {
         Self {
             decoder,
             telemetry,
             metrics_context,
+            telemetry_plan,
         }
     }
 }
@@ -50,33 +53,33 @@ where
     type Error = NacelleError;
 
     fn decode(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
-        let decode_started = start_tcp_phase(self.telemetry);
+        let decode_started = start_tcp_phase(self.telemetry_plan.phase_duration);
         let result = self.decoder.decode(input);
         finish_tcp_phase(
             self.telemetry,
-            Some(self.metrics_context),
+            self.metrics_context,
             "decode",
             decode_started,
         );
-        if let Err(error) = &result {
+        if let (Err(error), Some(metrics_context)) = (&result, self.metrics_context) {
             self.telemetry
-                .operation_error(self.metrics_context, "decode", error);
+                .operation_error(metrics_context, "decode", error);
         }
         result
     }
 
     fn decode_eof(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
-        let decode_started = start_tcp_phase(self.telemetry);
+        let decode_started = start_tcp_phase(self.telemetry_plan.phase_duration);
         let result = self.decoder.decode_eof(input);
         finish_tcp_phase(
             self.telemetry,
-            Some(self.metrics_context),
+            self.metrics_context,
             "decode",
             decode_started,
         );
-        if let Err(error) = &result {
+        if let (Err(error), Some(metrics_context)) = (&result, self.metrics_context) {
             self.telemetry
-                .operation_error(self.metrics_context, "decode", error);
+                .operation_error(metrics_context, "decode", error);
         }
         result
     }

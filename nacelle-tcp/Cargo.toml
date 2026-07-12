@@ -33,3 +33,10 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 tokio-openssl = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+
+[[bench]]
+name = "telemetry_paths"
+harness = false

@@ -8,7 +8,7 @@ use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::io::write_all_tracked_with_timeout;
-use super::metrics::{finish_tcp_phase, record_tcp_error, start_tcp_phase};
+use super::metrics::{TcpTelemetryPlan, finish_tcp_phase, record_tcp_error, start_tcp_phase};
 
 pub(super) struct ResponseDeliveryError {
     pub(super) error: NacelleError,
@@ -26,6 +26,7 @@ pub(super) async fn encode_response_body<P, W, Observer>(
     runtime_state: &NacelleRuntimeState,
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
@@ -55,6 +56,7 @@ where
                 runtime_state,
                 telemetry,
                 metrics_context,
+                telemetry_plan,
                 |dst| protocol.encode_response_terminal_chunk(&mut response_context, chunk, dst),
             )
             .await;
@@ -69,6 +71,7 @@ where
                 runtime_state,
                 telemetry,
                 metrics_context,
+                telemetry_plan,
                 |dst| protocol.encode_response_end(&mut response_context, dst),
             )
             .await;
@@ -106,6 +109,7 @@ where
             runtime_state,
             telemetry,
             metrics_context,
+            telemetry_plan,
             |dst| protocol.encode_response_chunk(&mut response_context, chunk, dst),
         )
         .await
@@ -122,6 +126,7 @@ where
         runtime_state,
         telemetry,
         metrics_context,
+        telemetry_plan,
         |dst| protocol.encode_response_end(&mut response_context, dst),
     )
     .await
@@ -142,6 +147,7 @@ pub(super) async fn write_error<P, W, Observer>(
     runtime_state: &NacelleRuntimeState,
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
@@ -157,6 +163,7 @@ where
         runtime_state,
         telemetry,
         metrics_context,
+        telemetry_plan,
         |dst| protocol.encode_error(context.as_ref(), error, dst),
     )
     .await
@@ -181,6 +188,7 @@ fn stage_and_write<'a, W, E, Observer>(
     runtime_state: &'a NacelleRuntimeState,
     telemetry: &'a NacelleTelemetry<Observer>,
     metrics_context: Option<&'a NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
     encode: E,
 ) -> impl Future<Output = Result<usize, ResponseDeliveryError>> + 'a
 where
@@ -218,7 +226,7 @@ where
             }
         };
         let written = write_buf.len();
-        let write_started = start_tcp_phase(telemetry);
+        let write_started = start_tcp_phase(telemetry_plan.phase_duration);
         let result =
             write_all_tracked_with_timeout(writer, write_buf, tcp_limits, "tcp_write").await;
         finish_tcp_phase(telemetry, metrics_context, "socket_write", write_started);
@@ -302,6 +310,7 @@ mod tests {
             &runtime_state,
             &telemetry,
             None,
+            TcpTelemetryPlan::new(&telemetry),
             |frame| {
                 encoded.set(true);
                 frame.extend_from_slice(b"frame")

@@ -22,7 +22,7 @@ use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTe
 
 use super::body::{buffered_request_body, pump_request_body, read_buffered_request_body};
 use super::metrics::{
-    TcpRequestMetricsGuard, finish_tcp_phase, record_core_request_completed,
+    TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
 use super::response::{encode_response_body, write_error};
@@ -342,6 +342,7 @@ pub(super) async fn run_request<P, D, R, W, Observer>(
     connection: &NacelleConnectionMeta,
     connection_context: &mut D::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
@@ -351,13 +352,11 @@ where
     W: AsyncWrite + Unpin,
 {
     let request = decoded.request;
-    let detailed_request_metrics = telemetry.request_metrics_enabled();
-    let core_request_events = telemetry.observer_enabled();
-    let core_request_duration_metrics =
-        core_request_events && telemetry.request_duration_metrics_enabled();
-    let request_started = (core_request_duration_metrics
-        || telemetry.request_duration_metrics_enabled())
-    .then(std::time::Instant::now);
+    let detailed_request_metrics = telemetry_plan.request_metrics;
+    let core_request_events = telemetry_plan.observer;
+    let request_started = telemetry_plan
+        .request_duration
+        .then(std::time::Instant::now);
     let request_bytes = protocol.request_wire_bytes(&request, decoded.body_len);
     let response_context = protocol.response_context(&request);
     let max_request_body_bytes = protocol.max_request_body_bytes(
@@ -388,6 +387,7 @@ where
             runtime_state,
             telemetry,
             metrics_context,
+            telemetry_plan,
         )
         .await
         {
@@ -409,7 +409,7 @@ where
         request_started,
     );
     let outcome = if decoded.body_len <= read_buf.len() {
-        let body_started = start_tcp_phase(telemetry);
+        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
         let body =
             buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
         finish_tcp_phase(
@@ -427,10 +427,11 @@ where
             connection_context,
             telemetry,
             metrics_context,
+            telemetry_plan,
         )
         .await
     } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
-        let body_started = start_tcp_phase(telemetry);
+        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
         let body = read_buffered_request_body(
             reader,
             read_buf,
@@ -457,6 +458,7 @@ where
             connection_context,
             telemetry,
             metrics_context,
+            telemetry_plan,
         )
         .await
     } else {
@@ -486,6 +488,7 @@ where
             connection_context,
             telemetry,
             metrics_context,
+            telemetry_plan,
         );
         let pump_future = pump_request_body(
             reader,
@@ -517,7 +520,7 @@ where
             handler_result = &mut handler_future => {
                 match handler_result {
                     Ok(completion) => {
-                        let body_started = start_tcp_phase(telemetry);
+                        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
                         let pump_result = pump_future.await;
                         finish_tcp_phase(
                             telemetry,
@@ -539,7 +542,7 @@ where
 
     match outcome {
         Ok(completion) => {
-            let encode_started = start_tcp_phase(telemetry);
+            let encode_started = start_tcp_phase(telemetry_plan.phase_duration);
             let encode_result = encode_response_body::<P, W, Observer>(
                 protocol,
                 completion.into_inner(),
@@ -550,6 +553,7 @@ where
                 runtime_state,
                 telemetry,
                 metrics_context,
+                telemetry_plan,
             )
             .await;
             finish_tcp_phase(
@@ -603,6 +607,7 @@ where
                 runtime_state,
                 telemetry,
                 metrics_context,
+                telemetry_plan,
             )
             .await
             {
@@ -644,6 +649,7 @@ pub(super) async fn run_one_way<P, A, D, R, Observer>(
     connection: &NacelleConnectionMeta,
     connection_context: &mut A::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
@@ -654,8 +660,8 @@ where
 {
     let request = decoded.request;
     let request_bytes = protocol.one_way_wire_bytes(&request, decoded.body_len);
-    let request_started = telemetry
-        .request_duration_metrics_enabled()
+    let request_started = telemetry_plan
+        .request_duration
         .then(std::time::Instant::now);
     let max_request_body_bytes = protocol.max_one_way_body_bytes(
         &request,
@@ -729,7 +735,7 @@ where
             request_metrics.complete("ok", 0);
             record_core_request_completed(
                 telemetry,
-                telemetry.request_events_enabled(),
+                telemetry_plan.request_events,
                 metrics_context.is_none(),
                 connection.transport,
                 request_bytes,
@@ -742,7 +748,7 @@ where
             request_metrics.complete("error", 0);
             record_core_request_failed(
                 telemetry,
-                telemetry.request_events_enabled(),
+                telemetry_plan.request_events,
                 metrics_context.is_none(),
                 connection.transport,
                 request_started,
@@ -790,13 +796,15 @@ async fn execute_handler_with_metrics<P, D, Observer>(
     connection_context: &mut D::Connection,
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
+    telemetry_plan: TcpTelemetryPlan,
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
     Observer: NacelleTelemetryObserver,
 {
-    let handler_started = metrics_context.and_then(|_| start_tcp_phase(telemetry));
+    let handler_started =
+        metrics_context.and_then(|_| start_tcp_phase(telemetry_plan.phase_duration));
     let result = execute_handler(
         handler,
         request,
