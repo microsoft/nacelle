@@ -46,6 +46,13 @@ The telemetry group can be run independently:
 cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
 ```
 
+The TCP crate also measures one complete connection plus one request with OTel
+compiled in:
+
+```bash
+cargo bench -p nacelle-tcp --bench telemetry_paths --all-features -- --noplot
+```
+
 The codec target compares direct decoding with `MessageReader::decode_buffered`,
 measures incomplete-header calls, and separates the no-op buffer-rotation check
 from replacing an empty 256 KiB buffer. The TCP target measures per-connection
@@ -110,6 +117,23 @@ reported 20 MiB of accounted connection memory while 256 connections were
 active and returned to zero after they closed. These are saturation results;
 use pipeline depth 1 for established-connection RTT measurements. They are not
 a substitute for a matched pre-migration baseline or target-hardware load test.
+
+## Disabled-policy specialization
+
+A matched local comparison used the `telemetry_paths` benchmark at checkpoint
+`0bce7f0` and after caching the effective TCP telemetry plan once per connection.
+Both builds used the same WSL2 host/toolchain and all TCP features:
+
+| Path | Before | After | Local delta |
+| --- | ---: | ---: | ---: |
+| Metrics disabled | 5.72-5.76 us | 5.03-5.07 us | approximately 12% lower |
+| Metrics enabled | 7.00-7.04 us | 7.02-7.08 us | no material change |
+
+The optimized path does not construct `NacelleMetricsContext` or OTel attribute
+arrays when metrics are disabled, and request/phase mode checks are cached in a
+copyable per-connection plan. Connection/request permits and memory accounting
+remain active because they enforce runtime limits and expose operational state;
+disabling telemetry does not disable safety policy.
 
 Suggested RPS comparison:
 

@@ -56,6 +56,10 @@ Retained costs are scoped by ownership:
 - Optional tracing, Hyper, Tokio, TLS providers, allocators, and OpenTelemetry
 	retain their own external indirection.
 
+TCP computes effective telemetry modes once per connection. When metrics are
+disabled it skips `NacelleMetricsContext` and OTel attribute construction while
+retaining connection/request permits, memory accounting, and configured limits.
+
 Enable the `buffer-rotation` feature for long-lived TCP connections that may
 occasionally receive large requests. Once an oversized cumulative input buffer
 is empty, Nacelle replaces it with a buffer sized to `read_buffer_capacity`.
