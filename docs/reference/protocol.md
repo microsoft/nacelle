@@ -103,12 +103,17 @@ Runtime budgets, timeouts, and active counters are configured through
 `NacelleLimits` / `NacelleRuntimeState`.
 
 TCP protocols can apply phase-aware request body limits by overriding
-`Protocol::max_request_body_bytes(request, connection, default_limit)`. The TCP
+`Protocol::max_request_body_bytes(request, connection, state, default_limit)`.
+The TCP
 runtime calls this after decoding the request head and before buffering or
 streaming the body. Implementations can use concrete protocol configuration,
-the decoded head, and immutable `NacelleConnectionMeta` to select the limit,
-while application handlers read `Protocol::ConnectionState` through their typed
-request context without type erasure.
+the decoded head, immutable `ConnectionInfo`, and the same concrete
+`Protocol::ConnectionState` exposed to handlers. Rejection occurs before
+body-specific allocation or additional body reads, although decoder read-ahead
+may already have buffered bytes.
+One-way messages use the equivalent
+`Protocol::max_one_way_body_bytes(request, connection, state, default_limit)`
+hook and the same early-rejection boundary.
 
 TCP request handling is sequential per connection. Pipelined frames can sit
 in the socket/read buffer, but Nacelle does not run multiple handlers

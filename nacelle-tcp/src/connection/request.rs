@@ -140,7 +140,8 @@ where
     let response_context = protocol.response_context(&request);
     let max_request_body_bytes = protocol.max_request_body_bytes(
         &request,
-        connection,
+        &connection_context.info,
+        connection_context.state.as_ref(),
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {
@@ -434,7 +435,8 @@ where
         .then(std::time::Instant::now);
     let max_request_body_bytes = protocol.max_one_way_body_bytes(
         &request,
-        connection,
+        &connection_context.info,
+        connection_context.state.as_ref(),
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {

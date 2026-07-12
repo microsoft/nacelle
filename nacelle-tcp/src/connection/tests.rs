@@ -8,7 +8,7 @@ use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
-use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
+use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetry};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -19,7 +19,7 @@ use crate::protocol::{
 };
 use crate::server::TcpServer;
 
-use super::serve_stream_with_connection_meta;
+use super::{serve_local_stream_without_connection_limit, serve_stream_with_connection_meta};
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;
 
@@ -28,7 +28,7 @@ struct PhaseRequest;
 
 #[derive(Debug)]
 struct AuthState {
-    authenticated: bool,
+    authenticated: AtomicBool,
 }
 
 struct PhaseProtocol {
@@ -71,7 +71,7 @@ impl Protocol for PhaseProtocol {
 
     fn connection_state(&self, _: &ConnectionInfo) -> Self::ConnectionState {
         AuthState {
-            authenticated: self.authenticated,
+            authenticated: AtomicBool::new(self.authenticated),
         }
     }
 
@@ -90,10 +90,11 @@ impl Protocol for PhaseProtocol {
     fn max_request_body_bytes(
         &self,
         _request: &Self::Request,
-        _connection: &NacelleConnectionMeta,
+        _connection: &ConnectionInfo,
+        state: &Self::ConnectionState,
         default_limit: usize,
     ) -> usize {
-        if self.authenticated {
+        if state.authenticated.load(Ordering::Acquire) {
             default_limit
         } else {
             PRE_AUTH_BODY_LIMIT
@@ -216,7 +217,7 @@ async fn authenticated_phase_uses_default_request_body_limit() {
                 let handler_called = handler_called.clone();
                 async move {
                     let auth_state: &Arc<AuthState> = &context.connection().state;
-                    assert!(auth_state.authenticated);
+                    assert!(auth_state.authenticated.load(Ordering::Acquire));
                     handler_called.store(true, Ordering::SeqCst);
                     let mut body = Vec::new();
                     while let Some(chunk) = context.request_mut().body.next_chunk().await {
@@ -251,6 +252,128 @@ async fn authenticated_phase_uses_default_request_body_limit() {
         .expect("server should finish")
         .expect("server task should join");
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn connection_state_transition_changes_next_request_body_limit() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: false,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let calls = calls.clone();
+            move |mut context: TcpRequestContext<PhaseProtocol>| {
+                let calls = calls.clone();
+                async move {
+                    let call = calls.fetch_add(1, Ordering::SeqCst);
+                    if call == 0 {
+                        context
+                            .connection()
+                            .state
+                            .authenticated
+                            .store(true, Ordering::Release);
+                    } else {
+                        let mut body = Vec::new();
+                        while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                            body.extend_from_slice(&chunk?);
+                        }
+                        assert_eq!(body, b"hey");
+                    }
+                    context.respond(TcpResponse::bytes("ok")).await
+                }
+            }
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[0, 3, b'h', b'e', b'y'])
+        .await
+        .expect("requests should write");
+    let mut responses = [0_u8; 4];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut responses))
+        .await
+        .expect("responses should arrive")
+        .expect("responses should read");
+    assert_eq!(&responses, b"okok");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join")
+        .expect("connection should close cleanly");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_dispatch_uses_identical_state_aware_body_limits() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let handler = local_handler_fn({
+        let calls = calls.clone();
+        move |mut context: TcpRequestContext<PhaseProtocol>| {
+            let calls = calls.clone();
+            async move {
+                let call = calls.get();
+                calls.set(call + 1);
+                if call == 0 {
+                    context
+                        .connection()
+                        .state
+                        .authenticated
+                        .store(true, Ordering::Release);
+                } else {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        body.extend_from_slice(&chunk?);
+                    }
+                    assert_eq!(body, b"hey");
+                }
+                context.respond(TcpResponse::bytes("ok")).await
+            }
+        }
+    });
+    let server = serve_local_stream_without_connection_limit(
+        server_io,
+        std::rc::Rc::new(PhaseProtocol {
+            authenticated: false,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        std::rc::Rc::new(handler),
+        std::rc::Rc::new(crate::protocol::NoOneWayHandler::<PhaseProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+    let client = async move {
+        client
+            .write_all(&[0, 3, b'h', b'e', b'y'])
+            .await
+            .expect("requests should write");
+        let mut responses = [0_u8; 4];
+        client
+            .read_exact(&mut responses)
+            .await
+            .expect("responses should read");
+        assert_eq!(&responses, b"okok");
+        client.shutdown().await.expect("client should close");
+    };
+
+    let (server_result, ()) = tokio::join!(server, client);
+    server_result.expect("local connection should close cleanly");
+    assert_eq!(calls.get(), 2);
 }
 
 #[tokio::test]
@@ -628,6 +751,20 @@ impl Protocol for MixedProtocol {
         2 + body_len
     }
 
+    fn max_one_way_body_bytes(
+        &self,
+        _request: &Self::OneWayRequest,
+        _connection: &ConnectionInfo,
+        state: &Self::ConnectionState,
+        default_limit: usize,
+    ) -> usize {
+        if state.load(Ordering::Acquire) == 0 {
+            PRE_AUTH_BODY_LIMIT
+        } else {
+            default_limit
+        }
+    }
+
     fn response_context(&self, _req: &Self::Request) -> Self::ResponseContext {}
 
     fn error_context(&self, _req: &Self::Request) -> Self::ErrorContext {}
@@ -685,7 +822,7 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
         .protocol(MixedProtocol)
         .handler(handler_fn(
             |context: TcpRequestContext<MixedProtocol>| async move {
-                let seen = context.connection().state.load(Ordering::SeqCst);
+                let seen = context.connection().state.fetch_add(1, Ordering::SeqCst);
                 context.respond(TcpResponse::bytes(seen.to_string())).await
             },
         ))
@@ -705,15 +842,15 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
     let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
 
     client
-        .write_all(&[1, 5, b'e', b'v', b'e', b'n', b't', 2, 0])
+        .write_all(&[2, 0, 1, 5, b'e', b'v', b'e', b'n', b't', 2, 0])
         .await
         .expect("messages should write");
-    let mut response = [0_u8; 1];
+    let mut response = [0_u8; 2];
     tokio::time::timeout(Duration::from_millis(250), client.read_exact(&mut response))
         .await
         .expect("request response should arrive")
         .expect("response should read");
-    assert_eq!(&response, b"1");
+    assert_eq!(&response, b"02");
     client.shutdown().await.expect("client should close");
 
     let result = tokio::time::timeout(Duration::from_millis(250), server_task)
@@ -721,6 +858,44 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
         .expect("server should finish")
         .expect("server task should join");
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn one_way_limit_rejects_before_body_read_or_handler_dispatch() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let handler_called = Arc::new(AtomicBool::new(false));
+    let server = TcpServer::<MixedProtocol>::builder()
+        .protocol(MixedProtocol)
+        .handler(handler_fn(
+            |context: TcpRequestContext<MixedProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        ))
+        .one_way_handler(handler_fn({
+            let handler_called = handler_called.clone();
+            move |context: TcpOneWayContext<MixedProtocol>| {
+                handler_called.store(true, Ordering::SeqCst);
+                async move { Ok(context.complete()) }
+            }
+        }))
+        .build()
+        .expect("typed mixed server should build");
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[1, 3])
+        .await
+        .expect("one-way head should write");
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should reject without waiting for body bytes")
+        .expect("server task should join");
+
+    assert!(matches!(
+        result,
+        Err(NacelleError::ResourceLimit("request_body_bytes"))
+    ));
+    assert!(!handler_called.load(Ordering::SeqCst));
 }
 
 #[tokio::test]

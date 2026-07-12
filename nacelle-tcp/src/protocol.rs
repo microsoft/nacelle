@@ -11,7 +11,6 @@ use nacelle_core::pipeline::{
     RequestContext, RequiredCompletion, RequiredResponder, Respond,
 };
 use nacelle_core::request::NacelleBody;
-use nacelle_core::request::NacelleConnectionMeta;
 
 #[derive(Debug)]
 pub struct DecodedRequest<Req> {
@@ -314,20 +313,29 @@ pub trait Protocol: Send + Sync + 'static {
     fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, body_len: usize) -> usize;
 
     /// Select the body limit after decoding the request head.
+    ///
+    /// `state` is the same connection-local value exposed to handlers. The
+    /// runtime calls this hook before body-specific allocation or additional
+    /// body reads.
     fn max_request_body_bytes(
         &self,
         _request: &Self::Request,
-        _connection: &NacelleConnectionMeta,
+        _connection: &ConnectionInfo,
+        _state: &Self::ConnectionState,
         default_limit: usize,
     ) -> usize {
         default_limit
     }
 
     /// Select the body limit after decoding a one-way message head.
+    ///
+    /// Required-response and one-way messages observe identical connection
+    /// metadata and state semantics.
     fn max_one_way_body_bytes(
         &self,
         _request: &Self::OneWayRequest,
-        _connection: &NacelleConnectionMeta,
+        _connection: &ConnectionInfo,
+        _state: &Self::ConnectionState,
         default_limit: usize,
     ) -> usize {
         default_limit

@@ -75,11 +75,10 @@ TCP processes requests sequentially per connection. `request_body_channel_capaci
 
 For TCP protocols, `NacelleLimits::max_request_body_bytes` is the default body
 limit. Override
-`Protocol::max_request_body_bytes(request, connection, default_limit)` to choose
-a per-request limit from the decoded head and immutable connection metadata
-before body buffering or streaming. Protocol handlers access mutable phase or
-authentication state through the concrete `Protocol::ConnectionState`; there
-is no dynamically typed connection extension.
+`Protocol::max_request_body_bytes(request, connection, state, default_limit)` to
+choose a per-request limit from the decoded head, immutable connection metadata,
+and concrete connection state before body-specific allocation or additional
+body reads. There is no dynamically typed connection extension.
 
 Dangerous configurations:
 
