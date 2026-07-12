@@ -53,6 +53,12 @@ compiled in:
 cargo bench -p nacelle-tcp --bench telemetry_paths --all-features -- --noplot
 ```
 
+Response delivery policies have a separate end-to-end benchmark:
+
+```bash
+cargo bench -p nacelle-tcp --bench response_delivery -- --noplot
+```
+
 The codec target compares direct decoding with `MessageReader::decode_buffered`,
 measures incomplete-header calls, and separates the no-op buffer-rotation check
 from replacing an empty 256 KiB buffer. The TCP target measures per-connection
@@ -134,6 +140,22 @@ arrays when metrics are disabled, and request/phase mode checks are cached in a
 copyable per-connection plan. Connection/request permits and memory accounting
 remain active because they enforce runtime limits and expose operational state;
 disabling telemetry does not disable safety policy.
+
+On the same local WSL2 host, 64 already-buffered one-byte requests producing
+32-byte responses measured. The first two rows use a 2 KiB base response
+buffer; the threshold rows use a 1 KiB base buffer:
+
+| Policy | Time | Recorded writes |
+| --- | ---: | ---: |
+| Immediate | 27.14-27.55 us | 64 |
+| CoalesceBuffered | 20.18-20.40 us | 1 |
+| FlushAtBytes(1024) | 20.22-20.45 us | 2 |
+| FlushAtBytes(2048), grows from 1024 | 20.40-20.63 us | 1 |
+
+This is a synthetic in-memory writer benchmark and demonstrates dispatch/write
+amortization plus one transactional buffer-growth case, not network throughput.
+Keep immediate delivery for latency-first workloads unless a matched workload
+shows a benefit.
 
 Suggested RPS comparison:
 

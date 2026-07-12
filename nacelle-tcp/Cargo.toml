@@ -40,3 +40,7 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "telemetry_paths"
 harness = false
+
+[[bench]]
+name = "response_delivery"
+harness = false
