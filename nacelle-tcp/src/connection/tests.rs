@@ -732,6 +732,18 @@ impl MessageDecoder for MixedDecoder {
     }
 }
 
+#[test]
+fn incomplete_classification_prefix_does_not_consume_input() {
+    let mut decoder = MixedDecoder;
+    let mut input = BytesMut::from(&[1_u8][..]);
+    let before = input.clone();
+
+    let decoded = decoder.decode(&mut input).expect("prefix should decode");
+
+    assert!(decoded.is_none());
+    assert_eq!(input, before);
+}
+
 impl Protocol for MixedProtocol {
     type Request = PhaseRequest;
     type OneWayRequest = OneWayHead;

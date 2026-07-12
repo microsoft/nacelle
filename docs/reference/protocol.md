@@ -44,6 +44,14 @@ Custom protocols provide a per-connection `MessageDecoder` through
 returning a request consumes at least one head byte, while requesting more input
 leaves the cumulative buffer unchanged.
 
+A decoder may wait for a fixed header plus a small protocol prefix before
+classifying a message as `DecodedMessage::Request` or
+`DecodedMessage::OneWay`. If the prefix is incomplete, return `Ok(None)` and
+leave every byte untouched. Once classification is possible, consume only the
+header/prefix and report the unconsumed body length in `DecodedRequest`. This
+preserves early body-limit checks and streaming while allowing one-way flags to
+live immediately after the fixed header.
+
 `opcode` is request metadata. The application handler decides whether to use it
 for routing, reject it, or ignore it. If the handler rejects an opcode after
 draining the body and returns an error, the server encodes that error as a
