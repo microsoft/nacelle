@@ -909,8 +909,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[cfg(all(target_os = "linux", any(feature = "tcp", feature = "http")))]
+    use std::cell::Cell;
 
     use super::*;
 

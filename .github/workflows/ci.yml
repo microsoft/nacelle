@@ -70,6 +70,8 @@ jobs:
   # Stable
   stable:
     name: stable
+    env:
+      RUSTUP_TOOLCHAIN: stable
     strategy:
       matrix:
         os:
@@ -109,6 +111,9 @@ jobs:
   nightly:
     name: nightly
     runs-on: ubuntu-latest
+    env:
+      RUST_VERSION: nightly
+      RUSTUP_TOOLCHAIN: nightly-2026-04-16
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
@@ -143,14 +148,22 @@ jobs:
 
   # Loom
   loom:
-    name: loom
+    name: loom (${{ matrix.rust }})
+    strategy:
+      matrix:
+        # Keep Loom aligned with the Rust versions exercised by the normal
+        # build: the MSRV, current stable, and our pinned nightly.
+        rust:
+          - "1.95"
+          - stable
+          - nightly-2026-04-16
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
-        run: rustup update $nightly && rustup default $nightly
+        run: rustup update ${{ matrix.rust }} --no-self-update
       - name: Loom tests
-        run: .github/scripts/loom.sh
+        run: .github/scripts/loom.sh ${{ matrix.rust }}
 
   panic-abort:
     name: panic=abort tests
