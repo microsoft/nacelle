@@ -100,7 +100,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -135,6 +135,74 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    pub fn enable_serial_tcp<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.enable_serial_tcp_with_bind_options(
+            name,
+            addr,
+            NacelleTcpBindOptions::default(),
+            server,
+        )
+    }
+
+    #[cfg(feature = "tcp")]
+    pub fn enable_serial_tcp_with_bind_options<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        bind_options: NacelleTcpBindOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        let telemetry = self.telemetry.clone();
+        let shutdown = self.shutdown.token();
+        let drain_deadline = self.drain_deadline.clone();
+        let server = server
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_listener_label(name.clone());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
+        self.tasks.spawn(async move {
+            let result =
+                nacelle_tcp::runtime::serve_serial_tcp_with_bind_options_and_shutdown_deadline(
+                    std::sync::Arc::new(server),
+                    addr,
+                    bind_options,
+                    shutdown,
+                    drain_deadline,
+                )
+                .await;
+            if let Err(error) = &result {
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
+            }
+            result
+        });
+        self
+    }
+
+    #[cfg(feature = "tcp")]
     pub fn enable_tcp_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -143,7 +211,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -187,7 +255,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -230,7 +298,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -275,7 +343,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -321,7 +389,7 @@ where
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -365,7 +433,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -389,7 +457,7 @@ where
         tcp_options: NacelleTcpOptions,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -413,7 +481,7 @@ where
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -459,7 +527,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -485,7 +553,7 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -511,7 +579,7 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> &mut Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,

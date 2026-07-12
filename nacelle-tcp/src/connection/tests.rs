@@ -7,16 +7,22 @@ use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
+use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetry};
+use nacelle_core::telemetry::{
+    NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{
-    DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpOneWayContext, TcpRequestContext,
+    DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
+    LocalSerialTcpOneWayHandler, Protocol, SerialTcpHandler, SerialTcpOneWayContext,
+    SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext, TcpRequestContext,
     TcpResponse,
 };
+use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::TcpServer;
 
 use super::{serve_local_stream_without_connection_limit, serve_stream_with_connection_meta};
@@ -951,4 +957,660 @@ async fn tcp_server_with_arc_in_memory_observer_serves_and_records_request_event
     assert!(events.iter().any(|event| {
         event.kind == nacelle_core::telemetry::NacelleTelemetryEventKind::RequestCompleted
     }));
+}
+
+struct SerialCounterProtocol;
+
+struct SerialCounterState {
+    count: usize,
+    in_call: bool,
+}
+
+impl Protocol for SerialCounterProtocol {
+    type Request = PhaseRequest;
+    type OneWayRequest = Infallible;
+    type Response = TcpResponse;
+    type ConnectionState = SerialCounterState;
+    type Decoder = PhaseDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        PhaseDecoder
+    }
+
+    fn connection_state(&self, _connection: &ConnectionInfo) -> Self::ConnectionState {
+        SerialCounterState {
+            count: 0,
+            in_call: false,
+        }
+    }
+
+    fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
+        1 + body_len
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+        match *request {}
+    }
+
+    fn max_request_body_bytes(
+        &self,
+        _request: &Self::Request,
+        _connection: &ConnectionInfo,
+        state: &Self::ConnectionState,
+        default_limit: usize,
+    ) -> usize {
+        if state.count == 0 {
+            PRE_AUTH_BODY_LIMIT
+        } else {
+            default_limit
+        }
+    }
+
+    fn response_context(&self, _req: &Self::Request) -> Self::ResponseContext {}
+
+    fn error_context(&self, _req: &Self::Request) -> Self::ErrorContext {}
+
+    fn apply_response(&self, _context: &mut Self::ResponseContext, _response: &Self::Response) {}
+
+    fn max_response_frame_overhead(&self) -> usize {
+        0
+    }
+
+    fn response_body(&self, response: Self::Response) -> NacelleBody {
+        response.body
+    }
+
+    fn encode_response_chunk(
+        &self,
+        _context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        dst.extend_from_slice(&chunk)
+    }
+
+    fn encode_response_terminal_chunk(
+        &self,
+        context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        self.encode_response_chunk(context, chunk, dst)
+    }
+
+    fn encode_response_end(
+        &self,
+        _context: &mut Self::ResponseContext,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+
+    fn encode_error(
+        &self,
+        _context: Option<&Self::ErrorContext>,
+        _error: &NacelleError,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+}
+
+struct SerialCounterHandler;
+
+impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, SerialCounterProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<SerialCounterProtocol>, NacelleError> {
+        let state = &mut context.connection_mut().state;
+        assert!(!state.in_call);
+        state.in_call = true;
+        tokio::task::yield_now().await;
+        let response = state.count.to_string();
+        state.count += 1;
+        state.in_call = false;
+        context.respond(TcpResponse::bytes(response)).await
+    }
+}
+
+#[tokio::test]
+async fn serial_state_mutation_is_ordered_and_not_reentrant() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[0, 0])
+        .await
+        .expect("requests should write");
+    let mut responses = [0_u8; 2];
+    client
+        .read_exact(&mut responses)
+        .await
+        .expect("responses should read");
+    assert_eq!(&responses, b"01");
+    client.shutdown().await.expect("client should close");
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should close cleanly");
+}
+
+#[tokio::test]
+async fn serial_state_is_scoped_to_each_connection() {
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);
+    let (mut first_client, first_io) = tokio::io::duplex(64);
+    let (mut second_client, second_io) = tokio::io::duplex(64);
+    let first_server = server.clone();
+    let second_server = server.clone();
+    let first = tokio::spawn(async move { first_server.serve_io(first_io).await });
+    let second = tokio::spawn(async move { second_server.serve_io(second_io).await });
+
+    first_client.write_all(&[0]).await.expect("first request");
+    second_client.write_all(&[0]).await.expect("second request");
+    let mut first_response = [0_u8; 1];
+    let mut second_response = [0_u8; 1];
+    first_client
+        .read_exact(&mut first_response)
+        .await
+        .expect("first response");
+    second_client
+        .read_exact(&mut second_response)
+        .await
+        .expect("second response");
+    assert_eq!(&first_response, b"0");
+    assert_eq!(&second_response, b"0");
+    drop(first_client);
+    drop(second_client);
+    first.await.expect("first join").expect("first server");
+    second.await.expect("second join").expect("second server");
+}
+
+#[tokio::test]
+async fn serial_state_transition_changes_next_body_limit() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+        .with_runtime_state(NacelleRuntimeState::new(
+            NacelleLimits::default().with_max_request_body_bytes(4),
+        ));
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[0, 3, b'h', b'e', b'y'])
+        .await
+        .expect("requests should write");
+    let mut responses = [0_u8; 2];
+    client
+        .read_exact(&mut responses)
+        .await
+        .expect("responses should read");
+    assert_eq!(&responses, b"01");
+    client.shutdown().await.expect("client should close");
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should close cleanly");
+}
+
+struct ResetOnDrop(Arc<AtomicBool>);
+
+impl Drop for ResetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+struct SerialTimeoutHandler {
+    in_call: Arc<AtomicBool>,
+}
+
+impl SerialTcpHandler<SerialCounterProtocol> for SerialTimeoutHandler {
+    async fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, SerialCounterProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<SerialCounterProtocol>, NacelleError> {
+        assert!(!self.in_call.swap(true, Ordering::SeqCst));
+        let _reset = ResetOnDrop(self.in_call.clone());
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        context.respond(TcpResponse::empty()).await
+    }
+}
+
+#[tokio::test]
+async fn serial_handler_timeout_cancels_mutable_loan_without_reentry() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let in_call = Arc::new(AtomicBool::new(false));
+    let server = SerialTcpServer::new(
+        SerialCounterProtocol,
+        SerialTimeoutHandler {
+            in_call: in_call.clone(),
+        },
+    )
+    .with_runtime_state(NacelleRuntimeState::new(
+        NacelleLimits::default().with_handler_timeout(Duration::from_millis(10)),
+    ));
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[0, 0])
+        .await
+        .expect("requests should write");
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("handler timeout should finish the connection")
+        .expect("server task should join");
+    assert!(matches!(result, Err(NacelleError::Timeout("handler"))));
+    assert!(!in_call.load(Ordering::SeqCst));
+}
+
+struct LocalSerialCounterHandler;
+
+impl LocalSerialTcpHandler<SerialCounterProtocol> for LocalSerialCounterHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, SerialCounterProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<SerialCounterProtocol>, NacelleError> {
+        let state = &mut context.connection_mut().state;
+        let response = state.count.to_string();
+        state.count += 1;
+        context.respond(TcpResponse::bytes(response)).await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shared_and_local_serial_results_match() {
+    let (mut shared_client, shared_io) = tokio::io::duplex(64);
+    let shared_server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);
+    let shared = async move { shared_server.serve_io(shared_io).await };
+    let shared_client = async move {
+        shared_client
+            .write_all(&[0, 0])
+            .await
+            .expect("shared requests");
+        shared_client.shutdown().await.expect("shared shutdown");
+        let mut response = Vec::new();
+        shared_client
+            .read_to_end(&mut response)
+            .await
+            .expect("shared response");
+        response
+    };
+    let (shared_result, shared_response) = tokio::join!(shared, shared_client);
+    shared_result.expect("shared serial server");
+
+    let (mut local_client, local_io) = tokio::io::duplex(64);
+    let local_server = LocalSerialTcpServer::new(SerialCounterProtocol, LocalSerialCounterHandler);
+    let local = async move { local_server.serve_io(local_io).await };
+    let local_client = async move {
+        local_client
+            .write_all(&[0, 0])
+            .await
+            .expect("local requests");
+        local_client.shutdown().await.expect("local shutdown");
+        let mut response = Vec::new();
+        local_client
+            .read_to_end(&mut response)
+            .await
+            .expect("local response");
+        response
+    };
+    let (local_result, local_response) = tokio::join!(local, local_client);
+    local_result.expect("local serial server");
+
+    assert_eq!(shared_response, b"01");
+    assert_eq!(local_response, shared_response);
+}
+
+struct SerialMixedHandler;
+
+impl SerialTcpHandler<MixedProtocol> for SerialMixedHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, MixedProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<MixedProtocol>, NacelleError> {
+        let state = context.connection_mut().state.get_mut();
+        let response = state.to_string();
+        *state += 1;
+        context.respond(TcpResponse::bytes(response)).await
+    }
+}
+
+impl SerialTcpOneWayHandler<MixedProtocol> for SerialMixedHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpOneWayContext<'connection, MixedProtocol>,
+    ) -> Result<nacelle_core::pipeline::Completed, NacelleError> {
+        *context.connection_mut().state.get_mut() += 1;
+        Ok(context.complete())
+    }
+}
+
+impl LocalSerialTcpHandler<MixedProtocol> for SerialMixedHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, MixedProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<MixedProtocol>, NacelleError> {
+        let state = context.connection_mut().state.get_mut();
+        let response = state.to_string();
+        *state += 1;
+        context.respond(TcpResponse::bytes(response)).await
+    }
+}
+
+impl LocalSerialTcpOneWayHandler<MixedProtocol> for SerialMixedHandler {
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpOneWayContext<'connection, MixedProtocol>,
+    ) -> Result<nacelle_core::pipeline::Completed, NacelleError> {
+        *context.connection_mut().state.get_mut() += 1;
+        Ok(context.complete())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn serial_one_way_mutation_emits_no_bytes_in_shared_and_local_modes() {
+    let messages = [2, 0, 1, 0, 2, 0];
+
+    let (mut shared_client, shared_io) = tokio::io::duplex(64);
+    let shared_server =
+        SerialTcpServer::with_handlers(MixedProtocol, SerialMixedHandler, SerialMixedHandler);
+    let shared = async move { shared_server.serve_io(shared_io).await };
+    let shared_client = async move {
+        shared_client
+            .write_all(&messages)
+            .await
+            .expect("shared messages");
+        shared_client.shutdown().await.expect("shared shutdown");
+        let mut response = Vec::new();
+        shared_client
+            .read_to_end(&mut response)
+            .await
+            .expect("shared read");
+        response
+    };
+    let (shared_result, shared_response) = tokio::join!(shared, shared_client);
+    shared_result.expect("shared mixed server");
+
+    let (mut local_client, local_io) = tokio::io::duplex(64);
+    let local_server =
+        LocalSerialTcpServer::with_handlers(MixedProtocol, SerialMixedHandler, SerialMixedHandler);
+    let local = async move { local_server.serve_io(local_io).await };
+    let local_client = async move {
+        local_client
+            .write_all(&messages)
+            .await
+            .expect("local messages");
+        local_client.shutdown().await.expect("local shutdown");
+        let mut response = Vec::new();
+        local_client
+            .read_to_end(&mut response)
+            .await
+            .expect("local read");
+        response
+    };
+    let (local_result, local_response) = tokio::join!(local, local_client);
+    local_result.expect("local mixed server");
+
+    assert_eq!(shared_response, b"02");
+    assert_eq!(local_response, shared_response);
+}
+
+struct LocalOnlyProtocol;
+
+impl Protocol for LocalOnlyProtocol {
+    type Request = PhaseRequest;
+    type OneWayRequest = Infallible;
+    type Response = TcpResponse;
+    type ConnectionState = std::rc::Rc<std::cell::Cell<usize>>;
+    type Decoder = PhaseDecoder;
+    type ResponseContext = ();
+    type ErrorContext = ();
+
+    fn decoder(&self, _max_frame_len: usize) -> Self::Decoder {
+        PhaseDecoder
+    }
+
+    fn connection_state(&self, _connection: &ConnectionInfo) -> Self::ConnectionState {
+        std::rc::Rc::new(std::cell::Cell::new(0))
+    }
+
+    fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
+        1 + body_len
+    }
+
+    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
+        match *request {}
+    }
+
+    fn response_context(&self, _req: &Self::Request) -> Self::ResponseContext {}
+    fn error_context(&self, _req: &Self::Request) -> Self::ErrorContext {}
+    fn apply_response(&self, _context: &mut Self::ResponseContext, _response: &Self::Response) {}
+    fn max_response_frame_overhead(&self) -> usize {
+        0
+    }
+    fn response_body(&self, response: Self::Response) -> NacelleBody {
+        response.body
+    }
+    fn encode_response_chunk(
+        &self,
+        _context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        dst.extend_from_slice(&chunk)
+    }
+    fn encode_response_terminal_chunk(
+        &self,
+        context: &mut Self::ResponseContext,
+        chunk: Bytes,
+        dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        self.encode_response_chunk(context, chunk, dst)
+    }
+    fn encode_response_end(
+        &self,
+        _context: &mut Self::ResponseContext,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+    fn encode_error(
+        &self,
+        _context: Option<&Self::ErrorContext>,
+        _error: &NacelleError,
+        _dst: &mut FrameBuffer<'_>,
+    ) -> Result<(), NacelleError> {
+        Ok(())
+    }
+}
+
+struct LocalOnlyHandler;
+
+impl LocalSerialTcpHandler<LocalOnlyProtocol> for LocalOnlyHandler {
+    #[allow(clippy::future_not_send)]
+    async fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, LocalOnlyProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<LocalOnlyProtocol>, NacelleError> {
+        let state = context.connection_mut().state.clone();
+        let response = state.get().to_string();
+        state.set(state.get() + 1);
+        tokio::task::yield_now().await;
+        context.respond(TcpResponse::bytes(response)).await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_serial_accepts_non_send_state_and_future() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server = LocalSerialTcpServer::new(LocalOnlyProtocol, LocalOnlyHandler);
+    let server_future = server.serve_io(server_io);
+    let client_future = async move {
+        client
+            .write_all(&[0, 0])
+            .await
+            .expect("requests should write");
+        let mut responses = [0_u8; 2];
+        client
+            .read_exact(&mut responses)
+            .await
+            .expect("responses should read");
+        client.shutdown().await.expect("client should close");
+        responses
+    };
+    let (server_result, responses) = tokio::join!(server_future, client_future);
+    server_result.expect("local serial server should close cleanly");
+    assert_eq!(&responses, b"01");
+}
+
+#[tokio::test]
+async fn shared_serial_listener_serves_and_drains_connection_permits() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let runtime_state = NacelleRuntimeState::default();
+    let server = Arc::new(
+        SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+            .with_runtime_state(runtime_state.clone()),
+    );
+    let shutdown = NacelleShutdown::new();
+    let server_task = tokio::spawn(
+        crate::runtime::serve_serial_tcp_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            crate::options::NacelleTcpOptions::default(),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    client.write_all(&[0]).await.expect("request should write");
+    let mut response = [0_u8; 1];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("response should read");
+    assert_eq!(&response, b"0");
+    assert_eq!(runtime_state.active_connections(), 1);
+
+    shutdown.shutdown();
+    drop(client);
+    server_task
+        .await
+        .expect("listener task should join")
+        .expect("listener should drain cleanly");
+    assert_eq!(runtime_state.active_connections(), 0);
+}
+
+#[tokio::test]
+async fn shared_serial_listener_records_connection_rejection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let observer = NacelleInMemoryObserver::new();
+    let server = Arc::new(
+        SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+            .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
+            .with_runtime_state(runtime_state.clone()),
+    );
+    let shutdown = NacelleShutdown::new();
+    let server_task = tokio::spawn(
+        crate::runtime::serve_serial_tcp_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            crate::options::NacelleTcpOptions::default(),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let first = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("first client should connect");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime_state.active_connections() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first connection should acquire the permit");
+    let second = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("second TCP handshake should complete");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !observer
+            .events()
+            .iter()
+            .any(|event| event.kind == NacelleTelemetryEventKind::ConnectionRejected)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second connection should be rejected by runtime limits");
+
+    drop(second);
+    shutdown.shutdown();
+    drop(first);
+    server_task
+        .await
+        .expect("listener task should join")
+        .expect("listener should drain cleanly");
+    assert_eq!(runtime_state.active_connections(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_serial_listener_serves_non_send_state_and_drains() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener.local_addr().expect("listener address");
+            let runtime_state = NacelleRuntimeState::default();
+            let server = std::rc::Rc::new(
+                LocalSerialTcpServer::new(LocalOnlyProtocol, LocalOnlyHandler)
+                    .with_runtime_state(runtime_state.clone()),
+            );
+            let shutdown = NacelleShutdown::new();
+            let listener_task =
+                tokio::task::spawn_local(crate::runtime::serve_local_serial_tcp_listener(
+                    server,
+                    listener,
+                    crate::options::NacelleTcpOptions::default(),
+                    shutdown.token(),
+                    NacelleDrainDeadline::new(Duration::from_secs(1)),
+                ));
+
+            let mut client = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("client should connect");
+            client.write_all(&[0]).await.expect("request should write");
+            let mut response = [0_u8; 1];
+            client
+                .read_exact(&mut response)
+                .await
+                .expect("response should read");
+            assert_eq!(&response, b"0");
+            assert_eq!(runtime_state.active_connections(), 1);
+
+            shutdown.shutdown();
+            drop(client);
+            listener_task
+                .await
+                .expect("listener task should join")
+                .expect("listener should drain cleanly");
+            assert_eq!(runtime_state.active_connections(), 0);
+        })
+        .await;
 }

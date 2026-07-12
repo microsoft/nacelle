@@ -36,7 +36,9 @@ pub mod runtime {
     #[cfg(feature = "http")]
     pub use crate::thread_per_core::{LocalHttpRuntimeConfig, run_local_http_thread_per_core};
     #[cfg(feature = "tcp")]
-    pub use crate::thread_per_core::{LocalTcpRuntimeConfig, run_local_tcp_thread_per_core};
+    pub use crate::thread_per_core::{
+        LocalTcpRuntimeConfig, run_local_serial_tcp_thread_per_core, run_local_tcp_thread_per_core,
+    };
     pub use crate::thread_per_core::{
         RuntimeMode, ThreadPerCoreConfig, ThreadPerCoreLimits, Worker, WorkerContext, WorkerSet,
         bind_reuse_port_listener, run_thread_per_core, run_thread_per_core_with_shutdown,

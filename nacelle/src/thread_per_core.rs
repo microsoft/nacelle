@@ -24,6 +24,8 @@ use nacelle_tcp::options::NacelleTcpOptions;
 use nacelle_tcp::protocol::{LocalTcpHandler, LocalTcpOneWayHandler, Protocol};
 #[cfg(feature = "tcp")]
 use nacelle_tcp::server::LocalTcpServer;
+#[cfg(feature = "tcp")]
+use nacelle_tcp::{LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalSerialTcpServer};
 
 /// Application runtime topology.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -655,6 +657,55 @@ where
     })
 }
 
+/// Run one worker-local serial TCP listener stack per configured worker.
+#[cfg(feature = "tcp")]
+pub fn run_local_serial_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
+    config: LocalTcpRuntimeConfig<Observer>,
+    server_factory: Factory,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
+{
+    if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
+        return Err(NacelleError::ResourceLimit(
+            "thread_per_core_ephemeral_port",
+        ));
+    }
+    let runtime = config.runtime;
+    let shutdown = config.shutdown;
+    let limits = config.limits;
+    let telemetry = config.telemetry;
+    let addr = config.addr;
+    let tcp_options = config.tcp_options;
+    let drain_timeout = config.drain_timeout;
+    run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
+        let listener = bind_reuse_port_listener(addr)?;
+        let server = std::rc::Rc::new(
+            server_factory(context.worker)?
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+        );
+        let tcp_options = tcp_options.clone();
+        Ok(async move {
+            nacelle_tcp::runtime::serve_local_serial_tcp_listener(
+                server,
+                listener,
+                tcp_options,
+                context.shutdown,
+                nacelle_core::lifecycle::NacelleDrainDeadline::new(drain_timeout),
+            )
+            .await
+        })
+    })
+}
+
 /// Run one worker-local Rustls TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "rustls"))]
 pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
@@ -858,7 +909,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use super::*;
@@ -878,8 +929,9 @@ mod tests {
     };
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_tcp::{
-        DecodedMessage, DecodedRequest, FrameBuffer, LocalTcpServer, Protocol,
-        TcpHandlerCompletion, TcpRequestContext, TcpResponse,
+        DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler, LocalSerialTcpServer,
+        LocalTcpServer, Protocol, SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext,
+        TcpResponse,
     };
 
     #[test]
@@ -1111,7 +1163,7 @@ mod tests {
 
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     #[test]
-    fn local_tcp_worker_serves_request_with_non_send_handler_state() {
+    fn local_tcp_worker_supports_shared_and_serial_non_send_state() {
         #[derive(Clone)]
         struct TestProtocol;
 
@@ -1142,7 +1194,7 @@ mod tests {
             type Request = ();
             type OneWayRequest = std::convert::Infallible;
             type Response = TcpResponse;
-            type ConnectionState = ();
+            type ConnectionState = Rc<Cell<usize>>;
             type Decoder = TestDecoder;
             type ResponseContext = ();
             type ErrorContext = ();
@@ -1151,7 +1203,12 @@ mod tests {
                 TestDecoder
             }
 
-            fn connection_state(&self, _connection: &nacelle_core::pipeline::ConnectionInfo) {}
+            fn connection_state(
+                &self,
+                _connection: &nacelle_core::pipeline::ConnectionInfo,
+            ) -> Self::ConnectionState {
+                Rc::new(Cell::new(0))
+            }
 
             fn request_wire_bytes(&self, _request: &(), body_len: usize) -> usize {
                 4 + body_len
@@ -1240,6 +1297,26 @@ mod tests {
             }
         }
 
+        struct LocalSerialStateHandler;
+
+        impl LocalSerialTcpHandler<TestProtocol> for LocalSerialStateHandler {
+            async fn call<'connection>(
+                &'connection self,
+                mut context: SerialTcpRequestContext<'connection, TestProtocol>,
+            ) -> Result<TcpHandlerCompletion<TestProtocol>, NacelleError> {
+                let state = context.connection_mut().state.clone();
+                state.set(state.get() + 1);
+                let chunk = context
+                    .request_mut()
+                    .body
+                    .next_chunk()
+                    .await
+                    .transpose()?
+                    .unwrap_or_default();
+                context.respond(TcpResponse::bytes(chunk)).await
+            }
+        }
+
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe should bind");
         let addr = probe.local_addr().expect("probe address");
         drop(probe);
@@ -1291,6 +1368,56 @@ mod tests {
         );
         client.join().expect("client thread should join");
         result.expect("worker-local TCP runtime should shut down cleanly");
+
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe should bind");
+        let serial_addr = probe.local_addr().expect("probe address");
+        drop(probe);
+        let serial_workers = WorkerSet::first(1).expect("one worker should be available");
+        let serial_shutdown = NacelleShutdown::new();
+        let client_shutdown = serial_shutdown.clone();
+        let serial_client = thread::spawn(move || {
+            let mut stream = loop {
+                match std::net::TcpStream::connect(serial_addr) {
+                    Ok(stream) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("client connect failed: {error}"),
+                }
+            };
+            use std::io::{Read, Write};
+            stream
+                .write_all(&[4, 0, 0, 0, b'p', b'o', b'n', b'g'])
+                .expect("request should write");
+            let mut response = [0_u8; 8];
+            stream
+                .read_exact(&mut response)
+                .expect("response should read");
+            assert_eq!(&response, &[4, 0, 0, 0, b'p', b'o', b'n', b'g']);
+            client_shutdown.shutdown();
+        });
+
+        let serial_result = run_local_serial_tcp_thread_per_core(
+            LocalTcpRuntimeConfig::new(
+                ThreadPerCoreConfig::new(serial_workers),
+                serial_addr,
+                NacelleRuntimeState::default(),
+            )
+            .with_shutdown(serial_shutdown)
+            .with_limits(
+                ThreadPerCoreLimits::worker(NacelleLimits::default(), 1)
+                    .expect("worker limits should build"),
+            )
+            .with_drain_timeout(std::time::Duration::from_secs(1)),
+            |_worker| {
+                Ok(LocalSerialTcpServer::new(
+                    TestProtocol,
+                    LocalSerialStateHandler,
+                ))
+            },
+        );
+        serial_client.join().expect("client thread should join");
+        serial_result.expect("worker-local serial TCP runtime should shut down cleanly");
     }
 
     #[cfg(all(target_os = "linux", feature = "http"))]

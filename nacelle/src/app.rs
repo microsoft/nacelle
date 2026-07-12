@@ -125,12 +125,53 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_with_bind_options(name, addr, NacelleTcpBindOptions::default(), server)
+    }
+
+    #[cfg(feature = "tcp")]
+    /// Register a serial TCP listener with exclusive mutable connection state.
+    pub fn serial_tcp<P, H, OH, ServerObserver>(
+        self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.serial_tcp_with_bind_options(name, addr, NacelleTcpBindOptions::default(), server)
+    }
+
+    #[cfg(feature = "tcp")]
+    /// Register a serial TCP listener with explicit bind options.
+    pub fn serial_tcp_with_bind_options<P, H, OH, ServerObserver>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        bind_options: NacelleTcpBindOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_serial_tcp_with_bind_options(name, addr, bind_options, server);
+        }));
+        self
     }
 
     #[cfg(feature = "tcp")]
@@ -143,7 +184,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -161,7 +202,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -182,7 +223,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -200,7 +241,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -222,7 +263,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -240,7 +281,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, OH, ServerObserver>,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -263,7 +304,7 @@ where
         tls_config: NacelleTlsConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -285,7 +326,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -310,7 +351,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -332,7 +373,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -365,7 +406,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -393,7 +434,7 @@ where
         tls_config: NacelleOpenSslConfig,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -423,7 +464,7 @@ where
         detection_options: NacelleTlsDetectionOptions,
     ) -> Self
     where
-        P: nacelle_tcp::Protocol,
+        P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P>,
         OH: nacelle_tcp::TcpOneWayHandler<P>,
         ServerObserver: NacelleTelemetryObserver,
@@ -539,7 +580,8 @@ mod tests {
     use nacelle_core::telemetry::{NacelleInMemoryObserver, NacelleTelemetryEventKind};
     #[cfg(feature = "tcp")]
     use nacelle_tcp::{
-        DecodedMessage, FrameBuffer, Protocol, TcpRequestContext, TcpResponse, TcpServer,
+        DecodedMessage, FrameBuffer, Protocol, SerialTcpHandler, SerialTcpRequestContext,
+        SerialTcpServer, TcpRequestContext, TcpResponse, TcpServer,
     };
 
     use super::*;
@@ -669,6 +711,24 @@ mod tests {
         );
 
         assert_eq!(app.listener_count(), 1);
+
+        struct SerialHandler;
+
+        impl SerialTcpHandler<TestProtocol> for SerialHandler {
+            async fn call<'connection>(
+                &'connection self,
+                context: SerialTcpRequestContext<'connection, TestProtocol>,
+            ) -> Result<nacelle_tcp::TcpHandlerCompletion<TestProtocol>, NacelleError> {
+                context.respond(TcpResponse::empty()).await
+            }
+        }
+
+        let serial_app = NacelleApp::new().serial_tcp(
+            "serial-tcp-test",
+            "127.0.0.1:0".parse().expect("valid socket address"),
+            SerialTcpServer::new(TestProtocol, SerialHandler),
+        );
+        assert_eq!(serial_app.listener_count(), 1);
     }
 
     #[cfg(feature = "tcp")]

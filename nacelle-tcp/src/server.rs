@@ -10,7 +10,7 @@ use crate::connection::{
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{LocalTcpHandler, LocalTcpOneWayHandler};
-use crate::protocol::{NoOneWayHandler, Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{NoOneWayHandler, Protocol, SharedProtocol, TcpHandler, TcpOneWayHandler};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleConnectionMeta;
@@ -235,7 +235,7 @@ impl<P> TcpServer<P, (), NoOneWayHandler<P>, NoopObserver> {
 
 impl<P, H, OH, Observer> TcpServer<P, H, OH, Observer>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -558,7 +558,7 @@ impl<ProtocolState, HandlerState, P, H, OH, Observer>
 
 impl<P, H, OH, Observer> TcpServerBuilder<Present, Present, P, H, OH, Observer>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

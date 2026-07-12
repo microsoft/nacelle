@@ -8,7 +8,7 @@ use crate::options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 use crate::options::NacelleUnixSocketOptions;
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use nacelle_core::error::NacelleError;
 use nacelle_core::telemetry::NacelleTelemetryObserver;
 #[cfg(feature = "openssl")]
@@ -20,7 +20,7 @@ use super::TcpServer;
 
 impl<P, H, OH, Observer> TcpServer<P, H, OH, Observer>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

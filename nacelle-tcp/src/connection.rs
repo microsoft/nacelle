@@ -9,10 +9,13 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{DecodedMessage, NoOneWayHandler, Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{
+    DecodedMessage, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol,
+    SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol, TcpHandler, TcpOneWayHandler,
+};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo};
+use nacelle_core::pipeline::ConnectionInfo;
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 
@@ -29,8 +32,9 @@ use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read
 use io::read_message_with_timeout;
 use metrics::{finish_tcp_phase, start_tcp_phase, tcp_close_reason, tcp_metrics_context};
 use request::{
-    LocalOneWayDispatch, LocalRequestDispatch, OneWayDispatch, RequestDispatch,
-    SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
+    LocalOneWayDispatch, LocalRequestDispatch, LocalSerialOneWayDispatch,
+    LocalSerialRequestDispatch, OneWayDispatch, RequestDispatch, SerialOneWayDispatch,
+    SerialRequestDispatch, SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
 };
 
 /// Drive one TCP framed connection.
@@ -44,7 +48,7 @@ pub async fn serve_connection<P, H, R, W, Observer>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
@@ -78,7 +82,7 @@ pub async fn serve_connection_with_connection_meta<P, H, R, W, Observer>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
@@ -113,7 +117,7 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<P, H, OH
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -150,7 +154,7 @@ async fn drive_connection<P, H, OH, R, W, Observer>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -189,7 +193,7 @@ where
     P: Protocol,
     PO: Deref<Target = P>,
     D: RequestDispatch<P>,
-    OD: OneWayDispatch<P>,
+    OD: OneWayDispatch<P, D::Connection>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -197,10 +201,9 @@ where
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
     let transport = connection.transport;
-    let connection_context = ConnectionContext::new(
-        ConnectionInfo::from(&connection),
-        Arc::new(protocol.connection_state(&ConnectionInfo::from(&connection))),
-    );
+    let connection_info = ConnectionInfo::from(&connection);
+    let connection_state = protocol.connection_state(&connection_info);
+    let mut connection_context = handler.new_connection(connection_info, connection_state);
     let connection_metrics = tcp_metrics_context(protocol.deref(), &connection);
     let decoder = InstrumentedDecoder::new(
         protocol.decoder(config.max_frame_len),
@@ -255,7 +258,7 @@ where
                             &runtime_state,
                             &tcp_limits,
                             &connection,
-                            &connection_context,
+                            &mut connection_context,
                             telemetry.metrics_enabled().then_some(&connection_metrics),
                         )
                         .await?;
@@ -265,6 +268,7 @@ where
                             reader,
                             read_buf,
                             protocol.deref(),
+                            &handler,
                             &one_way_handler,
                             request,
                             &config,
@@ -272,7 +276,7 @@ where
                             &runtime_state,
                             &tcp_limits,
                             &connection,
-                            &connection_context,
+                            &mut connection_context,
                             telemetry.metrics_enabled().then_some(&connection_metrics),
                         )
                         .await?;
@@ -328,6 +332,79 @@ where
     .await
 }
 
+/// Drive one serial shared-runtime TCP connection without another connection permit.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_serial_stream_without_connection_limit<P, H, OH, IO, Observer>(
+    mut io: IO,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    one_way_handler: Arc<OH>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpHandler<P>,
+    OH: SerialTcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    drive_connection_with_dispatch(
+        reader,
+        writer,
+        protocol,
+        SerialRequestDispatch(handler),
+        SerialOneWayDispatch(one_way_handler),
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+    )
+    .await
+}
+
+/// Drive one worker-local serial TCP connection without another connection permit.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_serial_stream_without_connection_limit<P, H, OH, IO, Observer>(
+    mut io: IO,
+    protocol: Rc<P>,
+    handler: Rc<H>,
+    one_way_handler: Rc<OH>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P>,
+    OH: LocalSerialTcpOneWayHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    IO: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    drive_connection_with_dispatch(
+        reader,
+        writer,
+        protocol,
+        LocalSerialRequestDispatch(handler),
+        LocalSerialOneWayDispatch(one_way_handler),
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+    )
+    .await
+}
+
 /// Drive one TCP framed connection using a single unsplit I/O object.
 pub async fn serve_stream<P, H, IO, Observer>(
     io: IO,
@@ -338,7 +415,7 @@ pub async fn serve_stream<P, H, IO, Observer>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -368,7 +445,7 @@ pub async fn serve_stream_with_connection_meta<P, H, IO, Observer>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -400,7 +477,7 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<P, H, OH, IO
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -431,7 +508,7 @@ pub async fn serve_stream_without_connection_limit<P, H, IO, Observer>(
     runtime_state: NacelleRuntimeState,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -461,7 +538,7 @@ pub async fn serve_stream_without_connection_limit_with_connection_meta<P, H, IO
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -499,7 +576,7 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -532,7 +609,7 @@ async fn serve_stream_inner<P, H, OH, IO, Observer>(
     connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

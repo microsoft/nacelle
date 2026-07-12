@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -18,7 +18,7 @@ pub async fn serve_tcp_tls<P, H, OH, Observer>(
     tls_config: NacelleTlsConfig,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -34,7 +34,7 @@ pub async fn serve_tcp_tls_with_shutdown<P, H, OH, Observer>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -51,7 +51,7 @@ pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, OH, Observer>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -75,7 +75,7 @@ pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, OH, Observer>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -100,7 +100,7 @@ pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, OH, Observer>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

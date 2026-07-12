@@ -15,9 +15,15 @@ use nacelle_core::tls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
-use crate::connection::serve_local_stream_without_connection_limit;
+use crate::connection::{
+    serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
+};
 use crate::options::NacelleTcpOptions;
-use crate::protocol::{LocalTcpHandler, LocalTcpOneWayHandler, Protocol};
+use crate::protocol::{
+    LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler,
+    Protocol,
+};
+use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
 
 /// Serve one worker-local TCP listener until shared shutdown is requested.
@@ -70,6 +76,83 @@ where
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
                     serve_local_stream_without_connection_limit(
+                        stream,
+                        server.protocol(),
+                        server.handler(),
+                        server.one_way_handler(),
+                        server.config(),
+                        server.telemetry(),
+                        server.runtime_state(),
+                        server.tcp_limits(),
+                        connection,
+                    )
+                    .await
+                });
+            }
+        }
+    }
+
+    server.telemetry().shutdown_event(
+        NacelleTelemetryEventKind::ListenerStoppedAccepting,
+        transport,
+    );
+    drain_local_connections(
+        connections,
+        drain_deadline.get(),
+        server.telemetry(),
+        transport,
+    )
+    .await;
+    Ok(())
+}
+
+/// Serve one worker-local serial TCP listener until shared shutdown.
+pub async fn serve_local_serial_tcp_listener<P, H, OH, Observer>(
+    server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
+    listener: tokio::net::TcpListener,
+    tcp_options: NacelleTcpOptions,
+    mut shutdown: NacelleShutdownToken,
+    drain_deadline: NacelleDrainDeadline,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
+{
+    let transport = NacelleTransport::new("tcp");
+    let local_addr = listener.local_addr().ok();
+    let mut connections = tokio::task::JoinSet::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+                continue;
+            }
+            accepted = listener.accept() => {
+                let (stream, peer_addr) = accepted?;
+                tcp_options.apply_to_stream(&stream)?;
+                let connection_permit = match server
+                    .runtime_state()
+                    .acquire_connection_for_peer(peer_addr.ip())
+                {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        server
+                            .telemetry()
+                            .connection_rejected(transport, connection_rejection_reason(&error));
+                        continue;
+                    }
+                };
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let server = server.clone();
+                connections.spawn_local(async move {
+                    let _connection_permit = connection_permit;
+                    serve_local_serial_stream_without_connection_limit(
                         stream,
                         server.protocol(),
                         server.handler(),

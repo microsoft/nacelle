@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::net::UnixListener;
 
 use crate::options::NacelleUnixSocketOptions;
-use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -28,7 +28,7 @@ pub async fn serve_unix<P, H, OH, Observer>(
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -44,7 +44,7 @@ pub async fn serve_unix_with_shutdown<P, H, OH, Observer>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -61,7 +61,7 @@ pub async fn serve_unix_with_shutdown_timeout<P, H, OH, Observer>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -82,7 +82,7 @@ pub async fn serve_unix_with_options<P, H, OH, Observer>(
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -100,7 +100,7 @@ pub async fn serve_unix_with_options_and_shutdown<P, H, OH, Observer>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -125,7 +125,7 @@ pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, OH, Observer>(
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -148,7 +148,7 @@ pub async fn serve_unix_with_shutdown_deadline<P, H, OH, Observer>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -172,7 +172,7 @@ pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, OH, Observer>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -200,7 +200,7 @@ pub async fn serve_unix_listener_with_shutdown_deadline<P, H, OH, Observer>(
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

@@ -8,12 +8,15 @@ use tokio::sync::mpsc;
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
-    DecodedRequest, LocalTcpHandler, LocalTcpOneWayHandler, Protocol, TcpHandler,
-    TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder,
+    DecodedRequest, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler,
+    LocalTcpOneWayHandler, Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol,
+    TcpHandler, TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpResponder,
 };
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::pipeline::{ConnectionContext, NoResponse, RequestContext, RequiredResponder};
+use nacelle_core::pipeline::{
+    ConnectionContext, ConnectionInfo, NoResponse, RequestContext, RequiredResponder,
+};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
@@ -24,54 +27,229 @@ use super::metrics::{
 };
 use super::response::{encode_response_body, write_error};
 
-pub(super) trait RequestDispatch<P>
+pub(super) trait ConnectionAccess<P>
 where
     P: Protocol,
 {
-    fn call(
+    type Connection;
+
+    fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection;
+
+    fn info<'connection>(
         &self,
-        context: TcpRequestContext<P>,
-    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>>;
+        connection: &'connection Self::Connection,
+    ) -> &'connection ConnectionInfo;
+
+    fn state<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection P::ConnectionState;
 }
 
-pub(super) trait OneWayDispatch<P>
+pub(super) trait RequestDispatch<P>: ConnectionAccess<P>
 where
     P: Protocol,
 {
-    fn call(
-        &self,
-        context: crate::protocol::TcpOneWayContext<P>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>>;
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Self::Connection,
+        request: TcpRequest<P::Request>,
+        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection;
+}
+
+pub(super) trait OneWayDispatch<P, Connection>
+where
+    P: Protocol,
+{
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Connection,
+        request: TcpRequest<P::OneWayRequest>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection;
 }
 
 pub(super) struct SharedRequestDispatch<H>(pub(super) Arc<H>);
 pub(super) struct SharedOneWayDispatch<H>(pub(super) Arc<H>);
 pub(super) struct LocalRequestDispatch<H>(pub(super) Rc<H>);
 pub(super) struct LocalOneWayDispatch<H>(pub(super) Rc<H>);
+pub(super) struct SerialRequestDispatch<H>(pub(super) Arc<H>);
+pub(super) struct SerialOneWayDispatch<H>(pub(super) Arc<H>);
+pub(super) struct LocalSerialRequestDispatch<H>(pub(super) Rc<H>);
+pub(super) struct LocalSerialOneWayDispatch<H>(pub(super) Rc<H>);
+
+impl<P, H> ConnectionAccess<P> for SharedRequestDispatch<H>
+where
+    P: SharedProtocol,
+    H: TcpHandler<P>,
+{
+    type Connection = ConnectionContext<Arc<P::ConnectionState>>;
+
+    fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
+        ConnectionContext::new(info, Arc::new(state))
+    }
+
+    fn info<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection ConnectionInfo {
+        &connection.info
+    }
+
+    fn state<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection P::ConnectionState {
+        connection.state.as_ref()
+    }
+}
+
+impl<P, H> ConnectionAccess<P> for LocalRequestDispatch<H>
+where
+    P: Protocol,
+    H: LocalTcpHandler<P>,
+{
+    type Connection = ConnectionContext<Arc<P::ConnectionState>>;
+
+    fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
+        ConnectionContext::new(info, Arc::new(state))
+    }
+
+    fn info<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection ConnectionInfo {
+        &connection.info
+    }
+
+    fn state<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection P::ConnectionState {
+        connection.state.as_ref()
+    }
+}
+
+impl<P, H> ConnectionAccess<P> for SerialRequestDispatch<H>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpHandler<P>,
+{
+    type Connection = ConnectionContext<P::ConnectionState>;
+
+    fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
+        ConnectionContext::new(info, state)
+    }
+
+    fn info<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection ConnectionInfo {
+        &connection.info
+    }
+
+    fn state<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection P::ConnectionState {
+        &connection.state
+    }
+}
+
+impl<P, H> ConnectionAccess<P> for LocalSerialRequestDispatch<H>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P>,
+{
+    type Connection = ConnectionContext<P::ConnectionState>;
+
+    fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
+        ConnectionContext::new(info, state)
+    }
+
+    fn info<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection ConnectionInfo {
+        &connection.info
+    }
+
+    fn state<'connection>(
+        &self,
+        connection: &'connection Self::Connection,
+    ) -> &'connection P::ConnectionState {
+        &connection.state
+    }
+}
 
 impl<P, H> RequestDispatch<P> for SharedRequestDispatch<H>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
 {
-    fn call(
-        &self,
-        context: TcpRequestContext<P>,
-    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> {
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Self::Connection,
+        request: TcpRequest<P::Request>,
+        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
+        let context = RequestContext::new(request, responder, (), connection.clone());
         nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
     }
 }
 
-impl<P, H> OneWayDispatch<P> for SharedOneWayDispatch<H>
+impl<P, H> OneWayDispatch<P, ConnectionContext<Arc<P::ConnectionState>>> for SharedOneWayDispatch<H>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpOneWayHandler<P>,
 {
-    fn call(
-        &self,
-        context: crate::protocol::TcpOneWayContext<P>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> {
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut ConnectionContext<Arc<P::ConnectionState>>,
+        request: TcpRequest<P::OneWayRequest>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
+    {
+        let context = RequestContext::new(request, NoResponse, (), connection.clone());
         nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
+    }
+}
+
+impl<P, H> RequestDispatch<P> for SerialRequestDispatch<H>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpHandler<P>,
+{
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Self::Connection,
+        request: TcpRequest<P::Request>,
+        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
+        SerialTcpHandler::call(
+            self.0.as_ref(),
+            RequestContext::new(request, responder, (), connection),
+        )
+    }
+}
+
+impl<P, H> OneWayDispatch<P, ConnectionContext<P::ConnectionState>> for SerialOneWayDispatch<H>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpOneWayHandler<P>,
+{
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut ConnectionContext<P::ConnectionState>,
+        request: TcpRequest<P::OneWayRequest>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
+    {
+        SerialTcpOneWayHandler::call(
+            self.0.as_ref(),
+            RequestContext::new(request, NoResponse, (), connection),
+        )
     }
 }
 
@@ -81,25 +259,69 @@ where
     P: Protocol,
     H: LocalTcpHandler<P>,
 {
-    fn call(
-        &self,
-        context: TcpRequestContext<P>,
-    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> {
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Self::Connection,
+        request: TcpRequest<P::Request>,
+        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
+        let context = RequestContext::new(request, responder, (), connection.clone());
         nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
     }
 }
 
 #[allow(clippy::future_not_send)]
-impl<P, H> OneWayDispatch<P> for LocalOneWayDispatch<H>
+impl<P, H> OneWayDispatch<P, ConnectionContext<Arc<P::ConnectionState>>> for LocalOneWayDispatch<H>
 where
     P: Protocol,
     H: LocalTcpOneWayHandler<P>,
 {
-    fn call(
-        &self,
-        context: crate::protocol::TcpOneWayContext<P>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> {
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut ConnectionContext<Arc<P::ConnectionState>>,
+        request: TcpRequest<P::OneWayRequest>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
+    {
+        let context = RequestContext::new(request, NoResponse, (), connection.clone());
         nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H> RequestDispatch<P> for LocalSerialRequestDispatch<H>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P>,
+{
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut Self::Connection,
+        request: TcpRequest<P::Request>,
+        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
+        LocalSerialTcpHandler::call(
+            self.0.as_ref(),
+            RequestContext::new(request, responder, (), connection),
+        )
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H> OneWayDispatch<P, ConnectionContext<P::ConnectionState>> for LocalSerialOneWayDispatch<H>
+where
+    P: Protocol,
+    H: LocalSerialTcpOneWayHandler<P>,
+{
+    fn call<'connection>(
+        &'connection self,
+        connection: &'connection mut ConnectionContext<P::ConnectionState>,
+        request: TcpRequest<P::OneWayRequest>,
+    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
+    {
+        LocalSerialTcpOneWayHandler::call(
+            self.0.as_ref(),
+            RequestContext::new(request, NoResponse, (), connection),
+        )
     }
 }
 
@@ -118,7 +340,7 @@ pub(super) async fn run_request<P, D, R, W, Observer>(
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
     connection: &NacelleConnectionMeta,
-    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+    connection_context: &mut D::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<(), NacelleError>
 where
@@ -140,8 +362,8 @@ where
     let response_context = protocol.response_context(&request);
     let max_request_body_bytes = protocol.max_request_body_bytes(
         &request,
-        &connection_context.info,
-        connection_context.state.as_ref(),
+        handler.info(connection_context),
+        handler.state(connection_context),
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {
@@ -408,10 +630,11 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_one_way<P, D, R, Observer>(
+pub(super) async fn run_one_way<P, A, D, R, Observer>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     protocol: &P,
+    connection_access: &A,
     handler: &D,
     decoded: DecodedRequest<P::OneWayRequest>,
     config: &NacelleTcpConfig,
@@ -419,12 +642,13 @@ pub(super) async fn run_one_way<P, D, R, Observer>(
     runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
     connection: &NacelleConnectionMeta,
-    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+    connection_context: &mut A::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    D: OneWayDispatch<P>,
+    A: ConnectionAccess<P>,
+    D: OneWayDispatch<P, A::Connection>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
 {
@@ -435,8 +659,8 @@ where
         .then(std::time::Instant::now);
     let max_request_body_bytes = protocol.max_one_way_body_bytes(
         &request,
-        &connection_context.info,
-        connection_context.state.as_ref(),
+        connection_access.info(connection_context),
+        connection_access.state(connection_context),
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {
@@ -529,27 +753,24 @@ where
     }
 }
 
-async fn execute_one_way<P, D>(
+async fn execute_one_way<P, D, Connection>(
     handler: &D,
     request: P::OneWayRequest,
     body: NacelleBody,
     runtime_state: &NacelleRuntimeState,
-    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+    connection_context: &mut Connection,
 ) -> Result<nacelle_core::pipeline::Completed, NacelleError>
 where
     P: Protocol,
-    D: OneWayDispatch<P>,
+    D: OneWayDispatch<P, Connection>,
 {
-    let context = RequestContext::new(
+    let future = handler.call(
+        connection_context,
         TcpRequest {
             head: request,
             body,
         },
-        NoResponse,
-        (),
-        connection_context.clone(),
     );
-    let future = handler.call(context);
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await
@@ -566,7 +787,7 @@ async fn execute_handler_with_metrics<P, D, Observer>(
     body: NacelleBody,
     response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
-    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+    connection_context: &mut D::Connection,
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
@@ -595,22 +816,20 @@ async fn execute_handler<P, D>(
     body: NacelleBody,
     response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
-    connection_context: &ConnectionContext<std::sync::Arc<P::ConnectionState>>,
+    connection_context: &mut D::Connection,
 ) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
 {
-    let context = RequestContext::new(
+    let future = handler.call(
+        connection_context,
         TcpRequest {
             head: request,
             body,
         },
         RequiredResponder::new(TcpResponder::new(response_context)),
-        (),
-        connection_context.clone(),
     );
-    let future = handler.call(context);
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await

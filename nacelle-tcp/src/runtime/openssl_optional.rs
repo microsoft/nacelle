@@ -5,7 +5,7 @@ use std::time::Duration;
 use openssl::ssl::Ssl;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions, NacelleTlsDetectionOptions};
-use crate::protocol::{Protocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -27,7 +27,7 @@ pub async fn serve_tcp_optional_openssl<P, H, OH, Observer>(
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -43,7 +43,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown<P, H, OH, Observer>(
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -67,7 +67,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H, OH, Observer
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -92,7 +92,7 @@ pub async fn serve_tcp_optional_openssl_with_options<P, H, OH, Observer>(
     detection_options: NacelleTlsDetectionOptions,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -118,7 +118,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H, OH, Obse
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -146,7 +146,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H, 
     drain_timeout: Duration,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -175,7 +175,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H,
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -209,7 +209,7 @@ pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
@@ -244,7 +244,7 @@ pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadl
     drain_deadline: NacelleDrainDeadline,
 ) -> Result<(), NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: TcpHandler<P>,
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,

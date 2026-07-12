@@ -154,13 +154,13 @@ pub type TcpHandlerCompletion<P> =
 pub trait TcpHandler<P>:
     Handler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
 {
 }
 
 impl<P, H> TcpHandler<P> for H
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: Handler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>,
 {
 }
@@ -174,6 +174,41 @@ pub trait LocalTcpHandler<P>:
 where
     P: Protocol,
 {
+}
+
+/// Exclusive connection-state context for one serial required-response request.
+pub type SerialTcpRequestContext<'connection, P> = RequestContext<
+    TcpRequest<<P as Protocol>::Request>,
+    RequiredResponder<TcpResponder<<P as Protocol>::Response, <P as Protocol>::ResponseContext>>,
+    (),
+    &'connection mut ConnectionContext<<P as Protocol>::ConnectionState>,
+>;
+
+/// Shared-runtime handler with exclusive access to one connection's state.
+///
+/// The connection loop awaits each call before decoding the next request, so
+/// safe implementations cannot overlap mutable access for one connection.
+pub trait SerialTcpHandler<P>: Send + Sync + 'static
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + Send + 'connection;
+}
+
+/// Worker-local serial handler with exclusive mutable connection state.
+#[allow(clippy::future_not_send)]
+pub trait LocalSerialTcpHandler<P>
+where
+    P: Protocol,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection;
 }
 
 impl<P, H> LocalTcpHandler<P> for H
@@ -199,13 +234,13 @@ pub type TcpOneWayContext<P> = RequestContext<
 pub trait TcpOneWayHandler<P>:
     Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>
 where
-    P: Protocol,
+    P: SharedProtocol,
 {
 }
 
 impl<P, H> TcpOneWayHandler<P> for H
 where
-    P: Protocol,
+    P: SharedProtocol,
     H: Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>,
 {
 }
@@ -216,6 +251,38 @@ pub trait LocalTcpOneWayHandler<P>:
 where
     P: Protocol,
 {
+}
+
+/// Exclusive connection-state context for one serial one-way message.
+pub type SerialTcpOneWayContext<'connection, P> = RequestContext<
+    TcpRequest<<P as Protocol>::OneWayRequest>,
+    NoResponse,
+    (),
+    &'connection mut ConnectionContext<<P as Protocol>::ConnectionState>,
+>;
+
+/// Shared-runtime serial one-way handler.
+pub trait SerialTcpOneWayHandler<P>: Send + Sync + 'static
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpOneWayContext<'connection, P>,
+    ) -> impl Future<Output = Result<Completed, NacelleError>> + Send + 'connection;
+}
+
+/// Worker-local serial one-way handler.
+#[allow(clippy::future_not_send)]
+pub trait LocalSerialTcpOneWayHandler<P>
+where
+    P: Protocol,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpOneWayContext<'connection, P>,
+    ) -> impl Future<Output = Result<Completed, NacelleError>> + 'connection;
 }
 
 impl<P, H> LocalTcpOneWayHandler<P> for H
@@ -237,7 +304,7 @@ impl<P> NoOneWayHandler<P> {
 
 impl<P> Handler<TcpOneWayContext<P>> for NoOneWayHandler<P>
 where
-    P: Protocol<OneWayRequest = Infallible>,
+    P: SharedProtocol<OneWayRequest = Infallible>,
 {
     type Completion = Completed;
     type Error = NacelleError;
@@ -256,6 +323,32 @@ where
     type Error = NacelleError;
 
     async fn call(&self, _context: TcpOneWayContext<P>) -> Result<Self::Completion, Self::Error> {
+        unreachable!("an Infallible one-way request cannot be decoded")
+    }
+}
+
+impl<P> SerialTcpOneWayHandler<P> for NoOneWayHandler<P>
+where
+    P: Protocol<OneWayRequest = Infallible>,
+    P::ConnectionState: Send,
+{
+    async fn call<'connection>(
+        &'connection self,
+        _context: SerialTcpOneWayContext<'connection, P>,
+    ) -> Result<Completed, NacelleError> {
+        unreachable!("an Infallible one-way request cannot be decoded")
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P> LocalSerialTcpOneWayHandler<P> for NoOneWayHandler<P>
+where
+    P: Protocol<OneWayRequest = Infallible>,
+{
+    async fn call<'connection>(
+        &'connection self,
+        _context: SerialTcpOneWayContext<'connection, P>,
+    ) -> Result<Completed, NacelleError> {
         unreachable!("an Infallible one-way request cannot be decoded")
     }
 }
@@ -287,7 +380,7 @@ pub trait Protocol: Send + Sync + 'static {
     /// Application response accepted by this protocol.
     type Response: Send + 'static;
     /// Concrete state shared by requests on one accepted connection.
-    type ConnectionState: Send + Sync + 'static;
+    type ConnectionState: 'static;
     type Decoder: MessageDecoder<
             Message = DecodedMessage<Self::Request, Self::OneWayRequest>,
             Error = NacelleError,
@@ -380,4 +473,14 @@ pub trait Protocol: Send + Sync + 'static {
         error: &NacelleError,
         dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError>;
+}
+
+/// Protocol whose connection state may be shared across runtime threads.
+pub trait SharedProtocol: Protocol<ConnectionState: Send + Sync> {}
+
+impl<P> SharedProtocol for P
+where
+    P: Protocol,
+    P::ConnectionState: Send + Sync,
+{
 }
