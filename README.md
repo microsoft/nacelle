@@ -108,6 +108,8 @@ cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 
 - App-core serving with swappable protocol adapters.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
+- Optional serial plain-TCP handlers with exclusive mutable connection state and
+    no async mutex on the connection path.
 - HTTP/1 serving through Hyper.
 - Rustls TLS for HTTP and TCP.
 - OpenSSL TLS for TCP, including optional plain/TLS detection on one listener.

@@ -80,6 +80,11 @@ choose a per-request limit from the decoded head, immutable connection metadata,
 and concrete connection state before body-specific allocation or additional
 body reads. There is no dynamically typed connection extension.
 
+Thread-per-core server factories execute once per configured worker. Nacelle's
+global or partitioned runtime counters do not partition external client pools or
+backend resources automatically; pass explicitly shared resources into worker
+factories when process-wide budgets must remain global.
+
 Dangerous configurations:
 
 - unbounded connections with large per-connection buffers

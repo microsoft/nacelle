@@ -56,6 +56,14 @@ peer/local addresses, listener label, TLS metadata, and
 `Arc<P::ConnectionState>`. The runtime constructs that state once with
 `Protocol::connection_state` and shares it across requests on the connection.
 
+State confined to the serial connection loop can use `SerialTcpServer` or
+`LocalSerialTcpServer`. Their handlers implement `SerialTcpHandler` or
+`LocalSerialTcpHandler` and receive `SerialTcpRequestContext<'_, P>`, which
+lends exclusive mutable access to directly owned connection state. The loop
+awaits completion before decoding the next message, so one connection cannot
+overlap serial handler calls. Serial one-way contexts expose the same mutable
+state and still provide no response capability.
+
 ## Responses
 
 Handlers call `context.respond(P::Response)` and return the resulting typed
@@ -121,3 +129,9 @@ concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler, and declared streaming body bytes are allocated against the memory
 budget until the streaming request finishes.
+
+`SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
+required by the existing `Arc`-backed shared server. Shared serial servers
+require state and handler futures to be `Send`, but not `Sync`, because each
+connection owns its state. Worker-local serial servers may use `!Send` state and
+futures.

@@ -62,9 +62,12 @@ handlers as `ConnectionInfo` through `RequestContext`.
 
 The pipeline model for connection-local application state is
 `ConnectionContext<State>`. TCP protocols construct `Protocol::ConnectionState`
-once per accepted connection, and handlers receive it as
-`Arc<P::ConnectionState>` through the typed request context. No dynamic
-extension map participates in the request path.
+once per accepted connection. `TcpServer` and `LocalTcpServer` expose shared
+state as `Arc<P::ConnectionState>`. `SerialTcpServer` and
+`LocalSerialTcpServer` instead lend `&mut ConnectionContext<P::ConnectionState>`
+to exactly one awaited handler at a time, avoiding an async mutex for state
+confined to one serial connection loop. No dynamic extension map participates
+in either request path.
 
 The shared multi-thread Tokio runtime remains the default. Experimental
 thread-per-core execution is explicit and currently supports TCP, HTTP, Rustls
@@ -74,10 +77,18 @@ current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
 remain on the accepting worker. Unsupported platforms fail configuration;
 Nacelle does not silently switch runtime topology.
 
+Serial mutable-state listeners currently support plain TCP in shared and
+worker-local runtimes. Rustls, OpenSSL, optional TLS detection, and Unix socket
+serial listener variants are not yet exposed; use shared-state servers for
+those transports.
+
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
 request, streaming, and per-peer capacities in configured worker order while
 retaining a single shared FIFO hard memory ceiling for process safety.
+Worker factories execute once per worker. Process-wide client pools, backend
+limits, and other external resource budgets must be shared explicitly when they
+must not scale with worker count.
 
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header
