@@ -91,6 +91,14 @@ the next one, so socket backpressure bounds response production. It stages only
 one bounded frame at a time, accounts staging growth against the runtime memory
 budget, and writes an explicit end frame after a streaming body reaches EOF.
 
+`ResponseWritePolicy::Immediate` writes each completed frame immediately.
+`CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
+already-decoded requests, preserving order and rolling back only the current
+frame on encoder failure. The queue drains before another socket read and before
+awaiting another streaming response chunk. Request telemetry records encoded
+response bytes when a request completes; a later batch write failure is reported
+as a connection operation error.
+
 The protocol guarantees:
 
 - the first response frame has `FRAME_FLAG_START`

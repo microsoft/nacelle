@@ -48,6 +48,7 @@ Start with these public entry points:
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
 - `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
-  memory budget allocations.
+  memory budget allocations. Owned allocation guards can release retained
+  capacity with `NacelleMemoryAllocation::shrink_to(...)`.
 - `nacelle::tcp::TcpServer`, `nacelle::http::HyperServer`, `nacelle::runtime::NacelleHost`, and
   `nacelle::advanced::runtime` when a service needs lower-level listener control.

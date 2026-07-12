@@ -51,6 +51,10 @@ Retained costs are scoped by ownership:
 - Memory-wait queue allocation and its boxed timeout occur only under memory
 	contention; the available-capacity path is atomic and allocation-free.
 - Type-erased protocol/handler errors are constructed only on error paths.
+- TCP response coalescing is opt-in. It queues only complete bounded frames,
+	retains overflow memory guards until flush, and restores socket backpressure
+	at thresholds, streaming waits, and socket-read boundaries. Overflow grows
+	geometrically through an old-plus-replacement memory-accounted transaction.
 - App listener installers and worker thread closures erase startup-only closure
 	types; they are not involved in request dispatch.
 - Optional tracing, Hyper, Tokio, TLS providers, allocators, and OpenTelemetry

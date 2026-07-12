@@ -59,6 +59,17 @@ keepalive deliberately per deployment target because OS defaults and supported
 fields vary. `NacelleTcpBindOptions` adds listener bind controls such as
 IPv6-only mode for APIs that need explicit family behavior.
 
+`NacelleTcpConfig::response_write_policy` defaults to
+`ResponseWritePolicy::Immediate`. Select `CoalesceBuffered` or
+`FlushAtBytes(n)` only for measured workloads with already-buffered request
+bursts. Coalescing preserves complete-frame order and flushes before waiting for
+more socket input; streaming responses flush before awaiting the next body
+chunk. Larger thresholds can delay earlier responses until a threshold or batch
+boundary and apply the write timeout to the complete queued batch. Growth above
+`response_buffer_capacity` is transactional: the memory budget must temporarily
+cover both the current batch allocation and its complete replacement. Size the
+base buffer near a measured batch size when using larger thresholds.
+
 Use `NacelleTcpLimits` for TCP socket read, socket write, and idle timeouts.
 Use `NacelleHttpLimits` on `HyperServer` for HTTP header read, request body
 read, response write, keep-alive, and max connection age behavior.
