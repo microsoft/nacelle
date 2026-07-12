@@ -9,7 +9,7 @@ pub mod runtime;
 mod serial_server;
 pub mod server;
 
-pub use config::{NacelleTcpConfig, TcpRequestBodyMode};
+pub use config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 pub use connection::{serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;
 #[cfg(unix)]

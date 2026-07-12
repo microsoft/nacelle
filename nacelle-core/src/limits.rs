@@ -813,6 +813,16 @@ impl NacelleMemoryAllocation {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
+
+    /// Retain at most `bytes` in this guard and release the remainder.
+    pub fn shrink_to(&mut self, bytes: usize) {
+        let retained = self.bytes.min(bytes);
+        let released = self.bytes.saturating_sub(retained);
+        self.bytes = retained;
+        if let Some(state) = &self.state {
+            state.release_memory(released);
+        }
+    }
 }
 
 impl Drop for NacelleMemoryAllocation {
@@ -829,6 +839,43 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    #[test]
+    fn memory_allocation_can_release_part_of_its_guard() {
+        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(16));
+        let mut allocation = state.allocate_memory(12).expect("allocation should fit");
+
+        allocation.shrink_to(5);
+
+        assert_eq!(allocation.bytes(), 5);
+        assert_eq!(state.memory_used_bytes(), 5);
+        drop(allocation);
+        assert_eq!(state.memory_used_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn shrinking_memory_allocation_grants_waiting_budget() {
+        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
+        let mut held = state
+            .allocate_memory(10)
+            .expect("full allocation should fit");
+        let waiter_state = state.clone();
+        let waiter = tokio::spawn(async move { waiter_state.allocate_memory_wait(4).await });
+        while state.inner.memory.memory_waiters.load(Ordering::Acquire) != 1 {
+            tokio::task::yield_now().await;
+        }
+
+        held.shrink_to(6);
+
+        let granted = waiter
+            .await
+            .expect("waiter should join")
+            .expect("released memory should grant waiter");
+        assert_eq!(state.memory_used_bytes(), 10);
+        drop(granted);
+        drop(held);
+        assert_eq!(state.memory_used_bytes(), 0);
+    }
 
     #[test]
     fn default_limits_keep_memory_limiting_opt_in() {

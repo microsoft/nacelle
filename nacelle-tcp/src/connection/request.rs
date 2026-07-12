@@ -25,7 +25,7 @@ use super::metrics::{
     TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
-use super::response::{encode_response_body, write_error};
+use super::response::{ResponseDelivery, encode_response_body, write_error};
 
 pub(super) trait ConnectionAccess<P>
 where
@@ -330,7 +330,7 @@ pub(super) async fn run_request<P, D, R, W, Observer>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
-    write_buf: &mut BytesMut,
+    delivery: &mut ResponseDelivery,
     protocol: &P,
     handler: &D,
     decoded: DecodedRequest<P::Request>,
@@ -381,9 +381,8 @@ where
             protocol,
             Some(error_context),
             &error,
-            config.response_buffer_capacity,
             tcp_limits,
-            write_buf,
+            delivery,
             runtime_state,
             telemetry,
             metrics_context,
@@ -548,8 +547,7 @@ where
                 completion.into_inner(),
                 writer,
                 tcp_limits,
-                write_buf,
-                config.response_buffer_capacity,
+                delivery,
                 runtime_state,
                 telemetry,
                 metrics_context,
@@ -565,12 +563,14 @@ where
             let response_bytes = match encode_result {
                 Ok(response_bytes) => response_bytes,
                 Err(delivery_error) => {
-                    record_tcp_error(
-                        telemetry,
-                        metrics_context,
-                        "response_encode",
-                        &delivery_error.error,
-                    );
+                    if delivery_error.is_encode_failure() {
+                        record_tcp_error(
+                            telemetry,
+                            metrics_context,
+                            delivery_error.phase(),
+                            &delivery_error.error,
+                        );
+                    }
                     request_metrics.complete("error", delivery_error.delivered_bytes);
                     return Err(delivery_error.error);
                 }
@@ -601,9 +601,8 @@ where
                 protocol,
                 Some(error_context),
                 &error,
-                config.response_buffer_capacity,
                 tcp_limits,
-                write_buf,
+                delivery,
                 runtime_state,
                 telemetry,
                 metrics_context,

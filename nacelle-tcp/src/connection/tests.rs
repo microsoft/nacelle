@@ -1,9 +1,11 @@
 use std::convert::Infallible;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
+use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
@@ -14,7 +16,7 @@ use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
     NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::protocol::{
     DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
@@ -28,6 +30,51 @@ use crate::server::TcpServer;
 use super::{serve_local_stream_without_connection_limit, serve_stream_with_connection_meta};
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;
+
+struct RecordingIo {
+    input: Vec<u8>,
+    position: usize,
+    writes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+impl AsyncRead for RecordingIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.position >= self.input.len() {
+            return Poll::Ready(Ok(()));
+        }
+        let available = &self.input[self.position..];
+        let take = available.len().min(buf.remaining());
+        buf.put_slice(&available[..take]);
+        self.position += take;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for RecordingIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.writes
+            .lock()
+            .expect("write recorder poisoned")
+            .push(buf.to_vec());
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
 
 #[derive(Debug)]
 struct PhaseRequest;
@@ -160,6 +207,93 @@ impl Protocol for PhaseProtocol {
         dst.extend_from_slice(error.to_string().as_bytes())?;
         Ok(())
     }
+}
+
+async fn recorded_response_writes(policy: ResponseWritePolicy) -> Vec<Vec<u8>> {
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let responses = Arc::new(AtomicUsize::new(0));
+    let io = RecordingIo {
+        input: vec![0, 0, 0],
+        position: 0,
+        writes: writes.clone(),
+    };
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn({
+            let responses = responses.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let responses = responses.clone();
+                async move {
+                    let body = match responses.fetch_add(1, Ordering::Relaxed) {
+                        0 => "a",
+                        1 => "b",
+                        _ => "c",
+                    };
+                    context.respond(TcpResponse::bytes(body)).await
+                }
+            }
+        }))
+        .tcp_config(NacelleTcpConfig::default().with_response_write_policy(policy))
+        .build()
+        .expect("recording server should build");
+
+    server
+        .serve_io(io)
+        .await
+        .expect("recording server should run");
+    writes.lock().expect("write recorder poisoned").clone()
+}
+
+#[tokio::test]
+async fn response_write_policies_reduce_writes_and_preserve_order() {
+    let immediate = recorded_response_writes(ResponseWritePolicy::Immediate).await;
+    let coalesced = recorded_response_writes(ResponseWritePolicy::CoalesceBuffered).await;
+    let threshold = recorded_response_writes(ResponseWritePolicy::FlushAtBytes(2)).await;
+
+    assert_eq!(immediate, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    assert_eq!(coalesced, vec![b"abc".to_vec()]);
+    assert_eq!(threshold, vec![b"ab".to_vec(), b"c".to_vec()]);
+}
+
+#[tokio::test]
+async fn coalesced_single_response_flushes_before_waiting_for_input() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .tcp_config(
+            NacelleTcpConfig::default()
+                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        )
+        .build()
+        .expect("coalesced server should build");
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client.write_all(&[0]).await.expect("request should write");
+    let mut response = [0_u8; 2];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut response))
+        .await
+        .expect("response should flush before another request")
+        .expect("response should read");
+    assert_eq!(&response, b"ok");
+
+    client.shutdown().await.expect("client should close");
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should close cleanly");
 }
 
 #[tokio::test]
@@ -621,7 +755,8 @@ async fn first_streaming_response_chunk_is_written_before_body_eof() {
                 context.respond(TcpResponse::new(body)).await
             }
         }),
-        NacelleTcpConfig::default(),
+        NacelleTcpConfig::default()
+            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),
         NacelleConnectionMeta::tcp(None, None),

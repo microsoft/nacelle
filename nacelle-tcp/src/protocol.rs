@@ -30,23 +30,37 @@ pub enum DecodedMessage<Request, OneWayRequest> {
 /// Bounded response-frame encoder backed by runtime-accounted storage.
 pub struct FrameBuffer<'buffer> {
     inner: &'buffer mut BytesMut,
+    start_len: usize,
     max_len: usize,
 }
 
 impl<'buffer> FrameBuffer<'buffer> {
     /// Wrap response-frame storage with its maximum encoded length.
     pub const fn new(inner: &'buffer mut BytesMut, max_len: usize) -> Self {
-        Self { inner, max_len }
+        Self {
+            inner,
+            start_len: 0,
+            max_len,
+        }
+    }
+
+    pub(crate) fn append_to(inner: &'buffer mut BytesMut, max_len: usize) -> Self {
+        let start_len = inner.len();
+        Self {
+            inner,
+            start_len,
+            max_len,
+        }
     }
 
     /// Current encoded frame length.
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner.len().saturating_sub(self.start_len)
     }
 
     /// Return whether the encoded frame is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.len() == 0
     }
 
     /// Append bytes if they fit inside the declared frame bound.
@@ -72,7 +86,6 @@ impl<'buffer> FrameBuffer<'buffer> {
 
     fn ensure_capacity(&self, additional: usize) -> Result<(), NacelleError> {
         let next = self
-            .inner
             .len()
             .checked_add(additional)
             .ok_or(NacelleError::ResourceLimit("response_frame_bytes"))?;
@@ -483,4 +496,25 @@ where
     P: Protocol,
     P::ConnectionState: Send + Sync,
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_buffer_new_keeps_cumulative_buffer_semantics() {
+        let mut bytes = BytesMut::from(&b"prior"[..]);
+        let mut frame = FrameBuffer::new(&mut bytes, 6);
+
+        assert_eq!(frame.len(), 5);
+        frame
+            .extend_from_slice(b"!")
+            .expect("remaining cumulative capacity should be available");
+        assert!(matches!(
+            frame.extend_from_slice(b"x"),
+            Err(NacelleError::ResourceLimit("response_frame_bytes"))
+        ));
+        assert_eq!(&bytes[..], b"prior!");
+    }
 }

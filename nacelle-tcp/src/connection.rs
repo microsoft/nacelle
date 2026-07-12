@@ -3,7 +3,6 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use bytes::BytesMut;
 use nacelle_codec::MessageReader;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -38,6 +37,7 @@ use request::{
     LocalSerialRequestDispatch, OneWayDispatch, RequestDispatch, SerialOneWayDispatch,
     SerialRequestDispatch, SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
 };
+use response::ResponseDelivery;
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W, Observer>(
@@ -201,7 +201,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
-    let mut write_buf = BytesMut::with_capacity(config.response_buffer_capacity);
+    let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
     let connection_info = ConnectionInfo::from(&connection);
     let connection_state = protocol.connection_state(&connection_info);
@@ -258,7 +258,7 @@ where
                             reader,
                             &mut writer,
                             read_buf,
-                            &mut write_buf,
+                            &mut response_delivery,
                             protocol.deref(),
                             &handler,
                             request,
@@ -298,12 +298,35 @@ where
                     .decode_buffered()
                     .map_err(map_message_read_error)?;
             }
+            response_delivery
+                .flush(
+                    &mut writer,
+                    &tcp_limits,
+                    &telemetry,
+                    connection_metrics.as_ref(),
+                    telemetry_plan,
+                )
+                .await
+                .map_err(|error| error.error)?;
         }
 
         Ok(())
     }
     .await;
 
+    let result = match response_delivery
+        .flush(
+            &mut writer,
+            &tcp_limits,
+            &telemetry,
+            connection_metrics.as_ref(),
+            telemetry_plan,
+        )
+        .await
+    {
+        Ok(_) => result,
+        Err(error) => Err(error.error),
+    };
     if let Some(connection_metrics) = &connection_metrics {
         telemetry.connection_closed(connection_metrics, tcp_close_reason(&result));
     }

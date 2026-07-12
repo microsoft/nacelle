@@ -7,6 +7,18 @@ pub enum TcpRequestBodyMode {
     Streaming,
 }
 
+/// When complete encoded response frames are delivered to the socket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResponseWritePolicy {
+    /// Write each complete frame immediately.
+    #[default]
+    Immediate,
+    /// Coalesce already-buffered responses up to `response_buffer_capacity`.
+    CoalesceBuffered,
+    /// Coalesce complete frames until at least the configured byte threshold.
+    FlushAtBytes(usize),
+}
+
 /// TCP framing, buffering, and request-body delivery configuration.
 #[derive(Debug, Clone)]
 pub struct NacelleTcpConfig {
@@ -22,6 +34,8 @@ pub struct NacelleTcpConfig {
     pub request_body_channel_capacity: usize,
     /// Request-body delivery mode.
     pub request_body_mode: TcpRequestBodyMode,
+    /// Response frame delivery policy.
+    pub response_write_policy: ResponseWritePolicy,
 }
 
 impl Default for NacelleTcpConfig {
@@ -33,6 +47,7 @@ impl Default for NacelleTcpConfig {
             request_body_chunk_size: 64 * 1024,
             request_body_channel_capacity: 4,
             request_body_mode: TcpRequestBodyMode::Buffered,
+            response_write_policy: ResponseWritePolicy::Immediate,
         }
     }
 }
@@ -73,6 +88,12 @@ impl NacelleTcpConfig {
         self.request_body_mode = mode;
         self
     }
+
+    /// Select immediate or bounded coalesced response delivery.
+    pub fn with_response_write_policy(mut self, policy: ResponseWritePolicy) -> Self {
+        self.response_write_policy = policy;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -87,6 +108,7 @@ mod tests {
         assert_eq!(config.response_buffer_capacity, 64 * 1024);
         assert_eq!(config.max_frame_len, 16 * 1024 * 1024);
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Buffered);
+        assert_eq!(config.response_write_policy, ResponseWritePolicy::Immediate);
     }
 
     #[test]
@@ -98,12 +120,17 @@ mod tests {
             .with_request_body_chunk_size(0)
             .with_request_body_channel_capacity(0)
             .with_request_body_mode(TcpRequestBodyMode::Streaming);
+        let config = config.with_response_write_policy(ResponseWritePolicy::FlushAtBytes(0));
 
         assert_eq!(config.read_buffer_capacity, 1024);
         assert_eq!(config.response_buffer_capacity, 1024);
         assert_eq!(config.max_frame_len, 24);
         assert_eq!(config.request_body_chunk_size, 1);
         assert_eq!(config.request_body_channel_capacity, 1);
+        assert_eq!(
+            config.response_write_policy,
+            ResponseWritePolicy::FlushAtBytes(0)
+        );
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Streaming);
     }
 }
