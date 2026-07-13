@@ -148,6 +148,13 @@ impl ThreadPerCoreLimits {
         if worker_count == 0 {
             return Err(NacelleError::ResourceLimit("worker_count"));
         }
+        if limits.max_connection_opens_per_peer_per_second.is_some()
+            && limits.connection_rate_limit_table_capacity < worker_count
+        {
+            return Err(NacelleError::ResourceLimit(
+                "connection_rate_limit_table_capacity",
+            ));
+        }
         let partitions: Vec<_> = (0..worker_count)
             .map(|worker| partition_limits(&limits, worker_count, worker))
             .collect();
@@ -178,6 +185,10 @@ fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> Na
     partition.max_connection_opens_per_peer_per_second = limits
         .max_connection_opens_per_peer_per_second
         .map(|limit| partition_capacity(limit, workers, worker));
+    if limits.max_connection_opens_per_peer_per_second.is_some() {
+        partition.connection_rate_limit_table_capacity =
+            partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+    }
     partition
 }
 
@@ -1014,6 +1025,20 @@ mod tests {
         drop(first_memory);
         drop(first_request);
         drop(second_request);
+    }
+
+    #[test]
+    fn worker_limits_require_one_rate_limit_slot_per_worker() {
+        let limits = NacelleLimits::default()
+            .with_max_connection_opens_per_peer_per_second(1)
+            .with_connection_rate_limit_table_capacity(1);
+
+        assert!(matches!(
+            ThreadPerCoreLimits::worker(limits, 2),
+            Err(NacelleError::ResourceLimit(
+                "connection_rate_limit_table_capacity"
+            ))
+        ));
     }
 
     #[cfg(target_os = "linux")]

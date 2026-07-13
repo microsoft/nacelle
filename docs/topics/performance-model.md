@@ -49,7 +49,11 @@ Retained costs are scoped by ownership:
 	write deadline retains a boxed `Sleep` only after connection-level
 	backpressure because Hyper requires its I/O wrapper to remain `Unpin`.
 - Memory-wait queue allocation and its boxed timeout occur only under memory
-	contention; the available-capacity path is atomic and allocation-free.
+  contention; the available-capacity path is atomic and allocation-free.
+- Enabled per-peer request and connection-open rate limits use fixed-capacity,
+  lock-free tables. Admission probes a bounded number of atomic slots and
+  rejects a newly observed peer when the configured table is full; it does not
+  take a per-request mutex or sweep every tracked peer.
 - Type-erased protocol/handler errors are constructed only on error paths.
 - TCP response coalescing is opt-in. It queues only complete bounded frames,
 	retains overflow memory guards until flush, and restores socket backpressure

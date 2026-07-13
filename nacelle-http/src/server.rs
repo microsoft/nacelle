@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -21,7 +20,7 @@ use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
 pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
-use crate::rate_limit::{PeerRateWindow, allow_peer_request, forwarded_peer_ip};
+use crate::rate_limit::forwarded_peer_ip;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
@@ -35,6 +34,7 @@ use nacelle_core::telemetry::{
 };
 #[cfg(feature = "rustls")]
 use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_core::{NacellePeerRateLimitResult, NacellePeerRateLimiter};
 
 use crate::pipeline::{
     HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
@@ -145,7 +145,7 @@ struct HttpRuntime<Observer> {
     http_policy: NacelleHttpPolicy,
     access_log_enabled: bool,
     listener: Arc<str>,
-    peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
+    peer_rate_limiter: Option<Arc<NacellePeerRateLimiter>>,
 }
 
 impl Default for HttpRuntime<NoopObserver> {
@@ -166,7 +166,7 @@ where
             http_policy: NacelleHttpPolicy::default(),
             access_log_enabled: false,
             listener: Arc::from("direct"),
-            peer_rate_limits: Arc::new(Mutex::new(HashMap::new())),
+            peer_rate_limiter: None,
         }
     }
 }
@@ -182,9 +182,39 @@ pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserve
 ///
 /// Clones share per-peer request-rate windows so thread-per-core execution
 /// preserves the same process-wide policy semantics as one shared listener.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct LocalHttpSharedState {
-    peer_rate_limits: Arc<Mutex<HashMap<IpAddr, PeerRateWindow>>>,
+    peer_rate_limiter: Arc<OnceLock<Arc<NacellePeerRateLimiter>>>,
+}
+
+impl Default for LocalHttpSharedState {
+    fn default() -> Self {
+        Self {
+            peer_rate_limiter: Arc::new(OnceLock::new()),
+        }
+    }
+}
+
+impl LocalHttpSharedState {
+    fn peer_rate_limiter(&self, policy: &NacelleHttpPolicy) -> Option<Arc<NacellePeerRateLimiter>> {
+        policy.max_requests_per_peer_per_second.map(|_| {
+            self.peer_rate_limiter
+                .get_or_init(|| {
+                    Arc::new(NacellePeerRateLimiter::new(
+                        policy.peer_rate_limit_table_capacity,
+                    ))
+                })
+                .clone()
+        })
+    }
+}
+
+fn peer_rate_limiter(policy: &NacelleHttpPolicy) -> Option<Arc<NacellePeerRateLimiter>> {
+    policy.max_requests_per_peer_per_second.map(|_| {
+        Arc::new(NacellePeerRateLimiter::new(
+            policy.peer_rate_limit_table_capacity,
+        ))
+    })
 }
 
 impl<H> LocalHyperServer<H, NoHttpConnectionState, NoopObserver> {
@@ -237,7 +267,7 @@ where
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
-                peer_rate_limits: self.runtime.peer_rate_limits,
+                peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         }
     }
@@ -253,6 +283,7 @@ where
         Next: NacelleTelemetryObserver,
     {
         telemetry.register_runtime_state(runtime_state.clone());
+        let peer_rate_limiter = shared_state.peer_rate_limiter(&self.runtime.http_policy);
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
@@ -263,7 +294,7 @@ where
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
-                peer_rate_limits: shared_state.peer_rate_limits,
+                peer_rate_limiter,
             },
         }
     }
@@ -276,6 +307,7 @@ where
 
     /// Set worker-local HTTP edge policy.
     pub fn with_http_policy(mut self, policy: NacelleHttpPolicy) -> Self {
+        self.runtime.peer_rate_limiter = peer_rate_limiter(&policy);
         self.runtime.http_policy = policy;
         self
     }
@@ -490,7 +522,7 @@ where
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
-                peer_rate_limits: self.runtime.peer_rate_limits,
+                peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         }
     }
@@ -523,7 +555,7 @@ where
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
-                peer_rate_limits: self.runtime.peer_rate_limits,
+                peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         }
     }
@@ -538,6 +570,7 @@ where
     }
 
     pub fn with_http_policy(mut self, http_policy: NacelleHttpPolicy) -> Self {
+        self.runtime.peer_rate_limiter = peer_rate_limiter(&http_policy);
         self.runtime.http_policy = http_policy;
         self
     }
@@ -883,26 +916,28 @@ where
                 &self.http_policy,
             );
         }
-        if let Some(peer_ip) = effective_peer_ip
-            && !self.allow_peer_request(peer_ip)
-        {
-            self.telemetry
-                .request_rejected(NacelleTransport::new("http"), "peer_rate");
-            self.access_log(HttpAccessLog {
-                method: &method,
-                uri: &uri,
-                peer_ip: effective_peer_ip,
-                status: StatusCode::TOO_MANY_REQUESTS,
-                request_bytes: 0,
-                elapsed: elapsed_since(request_started),
-                reason: Some("peer_rate"),
-            });
-            return response_to_http(
-                HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, "peer_rate"),
-                self.runtime_state.clone(),
-                self.telemetry.clone(),
-                &self.http_policy,
-            );
+        if let Some(peer_ip) = effective_peer_ip {
+            let rate_result = self.allow_peer_request(peer_ip);
+            if !rate_result.is_allowed() {
+                let reason = peer_rate_rejection_reason(rate_result);
+                self.telemetry
+                    .request_rejected(NacelleTransport::new("http"), reason);
+                self.access_log(HttpAccessLog {
+                    method: &method,
+                    uri: &uri,
+                    peer_ip: effective_peer_ip,
+                    status: StatusCode::TOO_MANY_REQUESTS,
+                    request_bytes: 0,
+                    elapsed: elapsed_since(request_started),
+                    reason: Some(reason),
+                });
+                return response_to_http(
+                    HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
+                    self.runtime_state.clone(),
+                    self.telemetry.clone(),
+                    &self.http_policy,
+                );
+            }
         }
         let _request_permit = match self.runtime_state.acquire_request_tracked() {
             Ok(permit) => permit,
@@ -1034,11 +1069,15 @@ where
         self.access_log_enabled || self.telemetry.request_duration_metrics_enabled()
     }
 
-    fn allow_peer_request(&self, peer_ip: IpAddr) -> bool {
+    fn allow_peer_request(&self, peer_ip: IpAddr) -> NacellePeerRateLimitResult {
         let Some(limit) = self.http_policy.max_requests_per_peer_per_second else {
-            return true;
+            return NacellePeerRateLimitResult::Allowed;
         };
-        allow_peer_request(&self.peer_rate_limits, limit, peer_ip)
+        self.peer_rate_limiter
+            .as_ref()
+            .map_or(NacellePeerRateLimitResult::TableFull, |limiter| {
+                limiter.try_acquire(peer_ip, limit)
+            })
     }
 
     fn effective_peer_ip(
@@ -1072,6 +1111,14 @@ where
             reason = log.reason,
             "http access"
         );
+    }
+}
+
+fn peer_rate_rejection_reason(result: NacellePeerRateLimitResult) -> &'static str {
+    match result {
+        NacellePeerRateLimitResult::Allowed => unreachable!("allowed peers are not rejected"),
+        NacellePeerRateLimitResult::RateLimited => "peer_rate",
+        NacellePeerRateLimitResult::TableFull => "peer_rate_table_full",
     }
 }
 
@@ -1469,8 +1516,43 @@ mod tests {
         );
         let peer = "127.0.0.1".parse().expect("valid peer ip");
 
-        assert!(first.runtime.allow_peer_request(peer));
-        assert!(!second.runtime.allow_peer_request(peer));
+        assert_eq!(
+            first.runtime.allow_peer_request(peer),
+            NacellePeerRateLimitResult::Allowed
+        );
+        assert_eq!(
+            second.runtime.allow_peer_request(peer),
+            NacellePeerRateLimitResult::RateLimited
+        );
+    }
+
+    #[test]
+    fn http_peer_rate_table_rejects_new_peers_when_full() {
+        let server = HyperServer::new(nacelle_core::pipeline::handler_fn(
+            |_context: crate::HttpRequestContext<()>| async move {
+                Err(NacelleError::ResourceLimit("unused_test_handler"))
+            },
+        ))
+        .with_http_policy(
+            NacelleHttpPolicy::new()
+                .with_max_requests_per_peer_per_second(1)
+                .with_peer_rate_limit_table_capacity(1),
+        );
+        let first = "127.0.0.1".parse().expect("valid first peer");
+        let second = "127.0.0.2".parse().expect("valid second peer");
+
+        assert_eq!(
+            server.runtime.allow_peer_request(first),
+            NacellePeerRateLimitResult::Allowed
+        );
+        assert_eq!(
+            server.runtime.allow_peer_request(second),
+            NacellePeerRateLimitResult::TableFull
+        );
+        assert_eq!(
+            peer_rate_rejection_reason(NacellePeerRateLimitResult::TableFull),
+            "peer_rate_table_full"
+        );
     }
 
     struct CountingConnectionStateFactory {

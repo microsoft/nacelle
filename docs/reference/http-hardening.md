@@ -19,12 +19,24 @@ Defaults:
 - maximum header count
 - maximum aggregate header bytes
 - optional per-peer request rate limits through `with_max_requests_per_peer_per_second`
+- bounded lock-free per-peer request-rate state through
+  `with_peer_rate_limit_table_capacity` (16,384 peers by default when enabled)
 - optional trusted proxy forwarded address handling through `with_trusted_proxy_ips`
 - optional security headers through `with_security_header(...)` or `with_default_security_headers()`
 - optional per-peer connection caps through `NacelleLimits::with_max_connections_per_peer`
 - optional per-peer connection-open rate caps through `NacelleLimits::with_max_connection_opens_per_peer_per_second`
 
-Rejected requests receive deterministic HTTP responses where the request parser has already accepted the request: `405`, `414`, `421`, `429`, or `431`. Rejections emit low-cardinality telemetry reasons such as `host`, `method_not_allowed`, `uri_too_long`, `header_count`, `header_bytes`, and `peer_rate`.
+Rejected requests receive deterministic HTTP responses where the request parser has already accepted the request: `405`, `414`, `421`, `429`, or `431`. Rejections emit low-cardinality telemetry reasons such as `host`, `method_not_allowed`, `uri_too_long`, `header_count`, `header_bytes`, `peer_rate`, and `peer_rate_table_full`.
+
+Per-peer request and connection-open rate limiters use fixed-capacity,
+lock-free tables. They retain active peer entries for 60 seconds and do not
+allocate, lock, or scan every tracked peer during admission. Size the HTTP
+table with `NacelleHttpPolicy::with_peer_rate_limit_table_capacity(...)` and
+the TCP/connection table with
+`NacelleLimits::with_connection_rate_limit_table_capacity(...)`. If a table is
+full or no inactive entry is found within its fixed probe budget, a newly
+observed peer is rejected. Choose capacity from the deployment's expected
+active-peer cardinality rather than silently accepting unbounded state.
 
 Enable the `rustls` feature to terminate HTTP over TLS. `NacelleTlsConfig` loads PEM certificate/key pairs, accepts explicit Rustls `ServerConfig` values, supports reloads for future handshakes, and enforces a TLS handshake timeout. Enable `tls-self-signed` only when local load tests or auto-deploying applications need to generate a self-signed certificate immediately; it implies `rustls`.
 

@@ -3,6 +3,7 @@
 pub mod error;
 pub mod lifecycle;
 pub mod limits;
+pub mod peer_rate;
 pub mod pipeline;
 pub mod request;
 pub mod runtime;
@@ -14,6 +15,9 @@ pub use error::{BoxError, NacelleError};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
 pub use limits::{
     NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget, NacelleRuntimeState, TrackedPermit,
+};
+pub use peer_rate::{
+    DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
 pub use request::{NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta};
 pub use telemetry::{

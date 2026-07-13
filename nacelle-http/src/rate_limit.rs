@@ -1,46 +1,10 @@
-//! Per-peer HTTP rate limiting and trusted-proxy forwarded-IP resolution.
+//! Trusted-proxy forwarded-IP resolution.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use http::header::HeaderName;
 use hyper::Request;
 use hyper::body::Incoming;
-
-#[derive(Debug, Clone)]
-pub(crate) struct PeerRateWindow {
-    started_at: Instant,
-    count: usize,
-}
-
-/// Returns `true` if a request from `peer_ip` is within the per-second budget,
-/// recording the request against the current window. Evicts stale windows.
-pub(crate) fn allow_peer_request(
-    peer_rate_limits: &Mutex<HashMap<IpAddr, PeerRateWindow>>,
-    limit: usize,
-    peer_ip: IpAddr,
-) -> bool {
-    let now = Instant::now();
-    let mut peers = peer_rate_limits
-        .lock()
-        .expect("HTTP peer rate map poisoned");
-    peers.retain(|_peer, window| now.duration_since(window.started_at) < Duration::from_secs(60));
-    let window = peers.entry(peer_ip).or_insert(PeerRateWindow {
-        started_at: now,
-        count: 0,
-    });
-    if now.duration_since(window.started_at) >= Duration::from_secs(1) {
-        window.started_at = now;
-        window.count = 0;
-    }
-    if window.count >= limit {
-        return false;
-    }
-    window.count += 1;
-    true
-}
 
 pub(crate) fn forwarded_peer_ip(request: &Request<Incoming>) -> Option<IpAddr> {
     request

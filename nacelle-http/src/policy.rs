@@ -4,9 +4,10 @@
 use http::header::{HeaderName, HeaderValue};
 use hyper::body::Incoming;
 use hyper::{Method, Request, StatusCode};
+use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
 use std::net::IpAddr;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct NacelleHttpPolicy {
     pub(crate) allowed_hosts: Option<Vec<String>>,
     pub(crate) allowed_methods: Option<Vec<Method>>,
@@ -14,6 +15,7 @@ pub struct NacelleHttpPolicy {
     pub(crate) max_header_count: Option<usize>,
     pub(crate) max_header_bytes: Option<usize>,
     pub(crate) max_requests_per_peer_per_second: Option<usize>,
+    pub(crate) peer_rate_limit_table_capacity: usize,
     pub(crate) trusted_proxy_ips: Option<Vec<IpAddr>>,
     pub(crate) security_headers: Vec<(HeaderName, HeaderValue)>,
 }
@@ -61,6 +63,17 @@ impl NacelleHttpPolicy {
         self
     }
 
+    /// Set the maximum number of peers retained by the HTTP request-rate limiter.
+    ///
+    /// When the bounded table is full or cannot find an inactive entry within
+    /// its fixed probe budget, newly observed peers receive a rate-limit
+    /// rejection. This bound applies only when
+    /// [`Self::with_max_requests_per_peer_per_second`] is enabled.
+    pub fn with_peer_rate_limit_table_capacity(mut self, capacity: usize) -> Self {
+        self.peer_rate_limit_table_capacity = capacity.max(1);
+        self
+    }
+
     pub fn with_trusted_proxy_ips(mut self, ips: impl IntoIterator<Item = IpAddr>) -> Self {
         self.trusted_proxy_ips = Some(ips.into_iter().collect());
         self
@@ -94,6 +107,22 @@ impl NacelleHttpPolicy {
         self.security_headers
             .push((http::header::STRICT_TRANSPORT_SECURITY, value));
         self
+    }
+}
+
+impl Default for NacelleHttpPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_hosts: None,
+            allowed_methods: None,
+            max_uri_len: None,
+            max_header_count: None,
+            max_header_bytes: None,
+            max_requests_per_peer_per_second: None,
+            peer_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
+            trusted_proxy_ips: None,
+            security_headers: Vec::new(),
+        }
     }
 }
 

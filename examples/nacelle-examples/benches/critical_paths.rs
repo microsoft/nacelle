@@ -2,7 +2,8 @@ use bytes::{Bytes, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nacelle::codec::{MessageDecoder, MessageReader};
 use nacelle::core::{
-    NacelleInMemoryObserver, NacelleLimits, NacelleRuntimeState, NacelleTelemetry, NacelleTransport,
+    NacelleInMemoryObserver, NacelleLimits, NacellePeerRateLimiter, NacelleRuntimeState,
+    NacelleTelemetry, NacelleTransport,
 };
 use nacelle::tcp::{DecodedMessage, FrameBuffer, Protocol};
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
@@ -268,6 +269,38 @@ fn runtime_limit_benches(c: &mut Criterion) {
     group.finish();
 }
 
+fn peer_rate_limit_benches(c: &mut Criterion) {
+    let mut group = c.benchmark_group("peer_rate_limit_distinct_peers");
+
+    for peer_count in [1_usize, 1_000, 100_000] {
+        let peers: Vec<IpAddr> = (0..peer_count)
+            .map(|index| {
+                let octets = (index as u32).to_be_bytes();
+                std::net::Ipv4Addr::new(10, octets[1], octets[2], octets[3]).into()
+            })
+            .collect();
+        group.throughput(Throughput::Elements(peer_count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("initial_admission", peer_count),
+            &peers,
+            |b, peers| {
+                b.iter_batched(
+                    || NacellePeerRateLimiter::new(peers.len()),
+                    |limiter| {
+                        for peer in peers {
+                            assert!(limiter.try_acquire(*peer, usize::MAX).is_allowed());
+                        }
+                        black_box(limiter);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
 fn memory_contention_benches(c: &mut Criterion) {
     let bounded = Arc::new(NacelleRuntimeState::new(
         NacelleLimits::default().with_max_memory_bytes(8 * 1024 * 1024 * 1024),
@@ -392,6 +425,7 @@ criterion_group!(
     protocol_frame_benches,
     protocol_pipeline_benches,
     runtime_limit_benches,
+    peer_rate_limit_benches,
     memory_contention_benches,
     telemetry_benches
 );

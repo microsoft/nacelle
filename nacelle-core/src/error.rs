@@ -49,8 +49,11 @@ impl NacelleError {
             Self::ResourceLimit("connections") => {
                 Some("raise NacelleLimits::max_connections or reduce concurrent clients")
             }
-            Self::ResourceLimit("connection_opens_per_peer_per_second") => Some(
+            Self::ResourceLimit("peer_connection_rate") => Some(
                 "raise NacelleLimits::max_connection_opens_per_peer_per_second or slow reconnect churn",
+            ),
+            Self::ResourceLimit("peer_connection_rate_table_full") => Some(
+                "raise NacelleLimits::connection_rate_limit_table_capacity or reduce active peer cardinality",
             ),
             Self::ResourceLimit("connections_per_peer") => Some(
                 "raise NacelleLimits::max_connections_per_peer or distribute clients across peers",
