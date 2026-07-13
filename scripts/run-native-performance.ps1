@@ -12,8 +12,10 @@ Detects Linux CPU/NUMA topology and runs native Nacelle performance workloads.
 ./scripts/run-native-performance.ps1 -Profile min-rtt,pooled
 #>
 param(
-    [ValidateSet("all", "min-rtt", "pooled", "pool-saturation", "throughput")]
-    [string[]] $Profile = @("all"),
+    [ValidateSet("all", "capacity", "min-rtt", "pooled", "pool-saturation", "throughput")]
+    [string[]] $Profile = @("capacity"),
+    [int[]] $CapacityWorkerCounts = @(1, 2, 4, 8, 16, 32, 36),
+    [int[]] $CapacityResponseKiB = @(0, 1, 10, 100),
     [ValidateRange(1, 100)][int] $Runs = 5,
     [ValidateRange(1, 3600)][int] $DurationSecs = 60,
     [ValidateRange(0, 600)][int] $WarmupSecs = 15,
@@ -121,7 +123,11 @@ function Convert-CpuList {
 }
 
 function Get-HostPlan {
-    param([Parameter(Mandatory)] $Topology)
+    param(
+        [Parameter(Mandatory)] $Topology,
+        [Parameter(Mandatory)][int[]] $WorkerCounts,
+        [Parameter(Mandatory)][int[]] $ResponseSizesKiB
+    )
 
     $nodeGroups = @($Topology.Cores | Group-Object Node | Sort-Object { [int]$_.Name })
     $availableByNode = @{}
@@ -153,12 +159,13 @@ function Get-HostPlan {
         $throughputClientCpus = [int[]]$throughputSplit.Client
     }
 
-    $profiles = @(
+    $diagnosticProfiles = @(
         [pscustomobject]@{
             Name          = "min-rtt"
             Connections   = 1
             Pipeline      = 1
             PayloadBytes  = 64
+            ResponseBytes = 64
             ServerCpus    = @($primaryCpus[0])
             ClientCpus    = @($primaryCpus[1])
             ServerNode    = $primaryNode
@@ -170,6 +177,7 @@ function Get-HostPlan {
             Connections   = 32
             Pipeline      = 1
             PayloadBytes  = 256
+            ResponseBytes = 64
             ServerCpus    = @($sameNode.Server)
             ClientCpus    = @($sameNode.Client)
             ServerNode    = $primaryNode
@@ -181,6 +189,7 @@ function Get-HostPlan {
             Connections   = 256
             Pipeline      = 1
             PayloadBytes  = 256
+            ResponseBytes = 64
             ServerCpus    = @($throughputServerCpus)
             ClientCpus    = @($throughputClientCpus)
             ServerNode    = $throughputServerNode
@@ -192,6 +201,7 @@ function Get-HostPlan {
             Connections   = 256
             Pipeline      = 8
             PayloadBytes  = 256
+            ResponseBytes = 64
             ServerCpus    = @($throughputServerCpus)
             ClientCpus    = @($throughputClientCpus)
             ServerNode    = $throughputServerNode
@@ -200,9 +210,44 @@ function Get-HostPlan {
         }
     )
 
+    $capacityProfiles = @()
+    $omittedWorkerCounts = @()
+    foreach ($workerCount in $WorkerCounts | Sort-Object -Unique) {
+        if ($workerCount -lt 1) {
+            throw "Capacity worker counts must be greater than zero."
+        }
+        if ($workerCount -gt $throughputServerCpus.Count) {
+            $omittedWorkerCounts += $workerCount
+            continue
+        }
+        $serverCpus = @($throughputServerCpus[0..($workerCount - 1)])
+        foreach ($responseKiB in $ResponseSizesKiB | Sort-Object -Unique) {
+            if ($responseKiB -lt 0) {
+                throw "Capacity response sizes cannot be negative."
+            }
+            $capacityProfiles += [pscustomobject]@{
+                Name          = "capacity-$($workerCount)cpu-$($responseKiB)kb"
+                Connections   = 50
+                Pipeline      = 1
+                PayloadBytes  = 0
+                ResponseBytes = $responseKiB * 1024
+                ServerCpus    = $serverCpus
+                ClientCpus    = @($throughputClientCpus)
+                ServerNode    = $throughputServerNode
+                ClientNode    = $throughputClientNode
+                ServerThreads = $workerCount
+            }
+        }
+    }
+
     return [pscustomobject]@{
-        ReservedOsCpus = $reserved
-        Profiles       = $profiles
+        ReservedOsCpus       = $reserved
+        AvailableServerCores = $throughputServerCpus.Count
+        AvailableClientCores = $throughputClientCpus.Count
+        CapacityProfiles     = $capacityProfiles
+        DiagnosticProfiles   = $diagnosticProfiles
+        OmittedWorkerCounts  = @($omittedWorkerCounts | Sort-Object -Unique)
+        Profiles             = @($capacityProfiles) + @($diagnosticProfiles)
     }
 }
 
@@ -384,12 +429,23 @@ if (-not $IsLinux) {
 Assert-Command lscpu
 
 $topology = Get-CpuTopology
-$hostPlan = Get-HostPlan $topology
+$hostPlan = Get-HostPlan `
+    -Topology $topology `
+    -WorkerCounts $CapacityWorkerCounts `
+    -ResponseSizesKiB $CapacityResponseKiB
 $selectedProfiles = if ($Profile -contains "all") {
     @($hostPlan.Profiles)
 }
 else {
-    @($hostPlan.Profiles | Where-Object { $Profile -contains $_.Name })
+    @(
+        if ($Profile -contains "capacity") {
+            $hostPlan.CapacityProfiles
+        }
+        $hostPlan.DiagnosticProfiles | Where-Object { $Profile -contains $_.Name }
+    )
+}
+if ($selectedProfiles.Count -eq 0) {
+    throw "The selected profile and worker counts produced no runnable workloads on this host."
 }
 
 $configPath = Resolve-RepoPath $Config
@@ -444,6 +500,9 @@ $plan | ConvertTo-Json -Depth 8 | Set-Content $planPath
 
 Write-Host "==> Detected $($topology.PhysicalCoreCount) physical cores, $($topology.LogicalCpuCount) logical CPUs, $($topology.SocketCount) sockets, $($topology.NodeCount) NUMA nodes"
 Write-Host "==> Reserved OS CPUs: $(Convert-CpuList $hostPlan.ReservedOsCpus)"
+if ($hostPlan.OmittedWorkerCounts.Count -gt 0) {
+    Write-Warning "Omitting capacity worker counts [$($hostPlan.OmittedWorkerCounts -join ',')] because only $($hostPlan.AvailableClientCores) isolated client cores and $($hostPlan.AvailableServerCores) server cores are available to this single-host plan."
+}
 if ($virtualization -ne "none" -and $virtualization -ne "unknown") {
     Write-Warning "Virtualization detected: $virtualization. Treat measurements as virtual-host results."
 }
@@ -451,7 +510,7 @@ if ($governors.Count -gt 0 -and $governors -notcontains "performance") {
     Write-Warning "CPU governor is '$($governors -join ',')', not 'performance'."
 }
 foreach ($profileConfig in $selectedProfiles) {
-    Write-Host "==> $($profileConfig.Name): server=[$(Convert-CpuList $profileConfig.ServerCpus)] node=$($profileConfig.ServerNode) client=[$(Convert-CpuList $profileConfig.ClientCpus)] node=$($profileConfig.ClientNode) threads=$($profileConfig.ServerThreads) connections=$($profileConfig.Connections) pipeline=$($profileConfig.Pipeline) payload=$($profileConfig.PayloadBytes)B"
+    Write-Host "==> $($profileConfig.Name): server=[$(Convert-CpuList $profileConfig.ServerCpus)] node=$($profileConfig.ServerNode) client=[$(Convert-CpuList $profileConfig.ClientCpus)] node=$($profileConfig.ClientNode) threads=$($profileConfig.ServerThreads) connections=$($profileConfig.Connections) pipeline=$($profileConfig.Pipeline) request=$($profileConfig.PayloadBytes)B response=$($profileConfig.ResponseBytes)B"
 }
 Write-Host "==> Plan: $planPath"
 
@@ -504,7 +563,8 @@ foreach ($profileConfig in $selectedProfiles) {
             "--membind=$($profileConfig.ServerNode)",
             $serverBinary,
             "--bind", $Bind,
-            "--server-threads", "$($profileConfig.ServerThreads)"
+            "--server-threads", "$($profileConfig.ServerThreads)",
+            "--response-bytes", "$($profileConfig.ResponseBytes)"
         )
         if ($configPath -ne (Join-Path $RepoRoot "config.toml")) {
             $serverArguments += @("--config", $configPath)

@@ -134,7 +134,7 @@ running workloads:
 ./scripts/run-native-performance.ps1 -PlanOnly
 ```
 
-Run the default matrix with a warm-up before every measured sample:
+Run the default capacity matrix with a warm-up before every measured sample:
 
 ```powershell
 ./scripts/run-native-performance.ps1 `
@@ -143,13 +143,33 @@ Run the default matrix with a warm-up before every measured sample:
 	-DurationSecs 60
 ```
 
-The default matrix covers minimum established-connection RTT, a 32-connection
-stop-and-wait pool, a 256-connection stop-and-wait pool, and a separate
-pipelined saturation profile. Limit execution with `-Profile`, for example:
+The default capacity matrix uses 50 persistent connections, pipeline depth 1,
+worker counts of 1, 2, 4, 8, 16, 32, and 36, and response bodies of 0, 1, 10,
+and 100 KiB. Worker counts larger than the isolated server core set detected on
+the host are omitted. Requests use a zero-byte body while retaining the
+protocol's fixed frame overhead.
+
+Run plain TCP and TLS as separate result sets:
+
+```powershell
+./scripts/run-native-performance.ps1 `
+	-Config examples/nacelle-stress-server/configs/tcp.toml `
+	-OutputDirectory target/native-performance/plain
+./scripts/run-native-performance.ps1 `
+	-Config examples/nacelle-stress-server/configs/tcp-tls.toml `
+	-OutputDirectory target/native-performance/tls
+```
+
+The earlier diagnostic profiles remain available explicitly. For example:
 
 ```powershell
 ./scripts/run-native-performance.ps1 -Profile min-rtt,pooled
 ```
+
+Use `-Profile all` to run both the capacity matrix and the diagnostic
+minimum-RTT, pooled, pool-saturation, and pipelined-throughput profiles. Override
+the capacity dimensions with `-CapacityWorkerCounts` or
+`-CapacityResponseKiB`.
 
 The harness builds native release binaries once, starts a fresh server for each
 sample, applies process and memory binding with `numactl`, and writes the host
