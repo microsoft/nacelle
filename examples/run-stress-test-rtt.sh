@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# This script runs a stress test for the nacelle server and measures the round trip time (RTT) for requests.
+
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
