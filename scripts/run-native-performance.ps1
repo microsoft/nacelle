@@ -312,28 +312,28 @@ function Invoke-StressClient {
         $arguments += "--tls-insecure"
     }
 
-    $output = & numactl @arguments 2>&1
+    $outputLines = @(& numactl @arguments 2>&1)
     $exitCode = $LASTEXITCODE
+    $output = ($outputLines | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     if ($LogPath) {
-        $output | Set-Content $LogPath
+        Set-Content -Path $LogPath -Value $output
     }
     if ($exitCode -ne 0) {
-        throw "Stress client failed with exit code $exitCode.`n$($output -join [Environment]::NewLine)"
+        throw "Stress client failed with exit code $exitCode.`n$output"
     }
-    return @($output)
+    return $output
 }
 
 function Convert-StressResult {
     param(
-        [Parameter(Mandatory)][string[]] $Output,
+        [Parameter(Mandatory)][AllowEmptyString()][string] $Output,
         [Parameter(Mandatory)] $ProfileConfig,
         [Parameter(Mandatory)][int] $Run
     )
 
-    $text = $Output -join "`n"
     $readNumber = {
         param([string] $Name)
-        if ($text -match "(?m)^$([regex]::Escape($Name))\s+([0-9.]+)") {
+        if ($Output -match "(?m)^$([regex]::Escape($Name))\s+([0-9.]+)") {
             return [double]$Matches[1]
         }
         return $null
