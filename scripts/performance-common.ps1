@@ -31,7 +31,7 @@ function Assert-NacellePerformanceCommand {
 function Invoke-NacelleCaptureCommand {
     param(
         [Parameter(Mandatory)][string] $Command,
-        [Parameter(Mandatory)][string[]] $Arguments
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]] $Arguments
     )
 
     $output = & $Command @Arguments 2>&1
@@ -124,6 +124,25 @@ function Remove-NacelleCriterionBaseline {
     Where-Object { $_.Name -eq $BaselineId } |
     Sort-Object { $_.FullName.Length } -Descending |
     Remove-Item -Recurse -Force
+}
+
+function Copy-NacelleCriterionBaselines {
+    param(
+        [Parameter(Mandatory)][string] $SourceTargetDirectory,
+        [Parameter(Mandatory)][string] $DestinationTargetDirectory
+    )
+
+    $source = Join-Path $SourceTargetDirectory "criterion"
+    if (-not (Test-Path $source)) {
+        throw "Criterion data was not found under '$SourceTargetDirectory'."
+    }
+
+    $destination = Join-Path $DestinationTargetDirectory "criterion"
+    if (Test-Path $destination) {
+        Remove-Item $destination -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($DestinationTargetDirectory) | Out-Null
+    Copy-Item $source $destination -Recurse
 }
 
 function Invoke-NacellePerformanceBenchmarks {

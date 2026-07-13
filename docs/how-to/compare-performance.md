@@ -61,9 +61,12 @@ cargo bench -p nacelle-tcp --bench response_delivery -- --noplot
 
 ## Compare a tag or commit
 
-The PowerShell comparison scripts keep Criterion data under
+The PowerShell comparison scripts keep data under
 `target/performance-comparisons`, resolve tags to immutable commit hashes, and
-use detached temporary worktrees so the current checkout is not modified.
+use detached temporary worktrees so the current checkout is not modified. Each
+revision receives an isolated Cargo target directory; only Criterion baseline
+data is copied into the candidate target before comparison, preventing build
+artifacts from being reused across worktrees.
 
 Capture all Criterion suites for a release tag or commit:
 

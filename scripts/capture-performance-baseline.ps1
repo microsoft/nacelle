@@ -25,7 +25,7 @@ Assert-NacellePerformanceCommand rustc
 
 $resolved = Resolve-NacelleGitReference $Reference
 $outputRoot = Resolve-NacellePerformancePath $OutputDirectory
-$targetDirectory = Join-Path $outputRoot "cargo-target"
+$targetDirectory = Join-Path $outputRoot (Join-Path "cargo-targets" $resolved.BaselineId)
 $baselineDirectory = Join-Path $outputRoot (Join-Path "baselines" $resolved.BaselineId)
 $metadataPath = Join-Path $baselineDirectory "metadata.json"
 $logPath = Join-Path $baselineDirectory "capture.log"

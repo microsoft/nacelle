@@ -25,7 +25,6 @@ Assert-NacellePerformanceCommand rustc
 
 $baseline = Resolve-NacelleGitReference $BaselineReference
 $outputRoot = Resolve-NacellePerformancePath $OutputDirectory
-$targetDirectory = Join-Path $outputRoot "cargo-target"
 $baselineDirectory = Join-Path $outputRoot (Join-Path "baselines" $baseline.BaselineId)
 $baselineMetadataPath = Join-Path $baselineDirectory "metadata.json"
 if (-not (Test-Path $baselineMetadataPath)) {
@@ -69,6 +68,10 @@ try {
     $comparisonName = "$($baseline.BaselineId)-vs-$candidateId-$timestamp"
     $logPath = Join-Path $comparisonDirectory "$comparisonName.log"
     $metadataPath = Join-Path $comparisonDirectory "$comparisonName.json"
+    $targetDirectory = Join-Path $outputRoot (Join-Path "cargo-targets" $candidateId)
+    Copy-NacelleCriterionBaselines `
+        -SourceTargetDirectory $baselineMetadata.criterion_target `
+        -DestinationTargetDirectory $targetDirectory
 
     Invoke-NacellePerformanceBenchmarks `
         -Workspace $workspace `
