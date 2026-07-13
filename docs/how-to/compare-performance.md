@@ -122,6 +122,43 @@ comparison records the same candidate metadata and Criterion's percentage and
 confidence-interval output. Use `-Force` to replace an existing baseline for
 the same resolved commit.
 
+## Run native host workloads
+
+On a dedicated Linux host, the native workload harness detects physical cores,
+SMT siblings, sockets, NUMA nodes, memory, and CPU governors. It reserves one
+physical core per NUMA node for the operating system and uses one logical CPU
+per remaining physical core. Review the generated plan without building or
+running workloads:
+
+```powershell
+./scripts/run-native-performance.ps1 -PlanOnly
+```
+
+Run the default matrix with a warm-up before every measured sample:
+
+```powershell
+./scripts/run-native-performance.ps1 `
+	-Runs 5 `
+	-WarmupSecs 15 `
+	-DurationSecs 60
+```
+
+The default matrix covers minimum established-connection RTT, a 32-connection
+stop-and-wait pool, a 256-connection stop-and-wait pool, and a separate
+pipelined saturation profile. Limit execution with `-Profile`, for example:
+
+```powershell
+./scripts/run-native-performance.ps1 -Profile min-rtt,pooled
+```
+
+The harness builds native release binaries once, starts a fresh server for each
+sample, applies process and memory binding with `numactl`, and writes the host
+snapshot, exact workload plan, raw server/client logs, per-run parsed results,
+and median summary JSON under `target/native-performance`. It warns when it
+detects virtualization or a non-performance CPU governor and refuses to reuse
+an occupied bind address. Use `-SkipBuild` only when the release binaries
+already match the current source.
+
 The codec target compares direct decoding with `MessageReader::decode_buffered`,
 measures incomplete-header calls, and separates the no-op buffer-rotation check
 from replacing an empty 256 KiB buffer. The TCP target measures per-connection
