@@ -138,16 +138,18 @@ Run the default capacity matrix with a warm-up before every measured sample:
 
 ```powershell
 ./scripts/run-native-performance.ps1 `
-	-Runs 5 `
+	-Runs 3 `
 	-WarmupSecs 15 `
-	-DurationSecs 60
+	-DurationSecs 30
 ```
 
-The default capacity matrix uses 50 persistent connections, pipeline depth 1,
-worker counts of 1, 2, 4, 8, 16, 32, and 36, and response bodies of 0, 1, 10,
-and 100 KiB. Worker counts larger than the isolated server core set detected on
-the host are omitted. Requests use a zero-byte body while retaining the
-protocol's fixed frame overhead.
+The harness defaults to three 30-second measured runs per workload. The default
+capacity matrix uses 50 persistent connections, pipeline depth 1, worker counts
+of 1, 2, 4, 8, 16, 32, and 36, and response bodies of 0, 1, 10, and 100 KiB.
+Worker counts larger than the isolated server core set detected on the host are
+omitted. Requests use a zero-byte body while retaining the protocol's fixed
+frame overhead; sample banners report request and response body sizes
+separately.
 
 Run plain TCP and TLS as separate result sets:
 

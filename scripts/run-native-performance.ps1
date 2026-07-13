@@ -6,7 +6,7 @@ Detects Linux CPU/NUMA topology and runs native Nacelle performance workloads.
 ./scripts/run-native-performance.ps1 -PlanOnly
 
 .EXAMPLE
-./scripts/run-native-performance.ps1 -Runs 5 -DurationSecs 60 -WarmupSecs 15
+./scripts/run-native-performance.ps1 -Runs 3 -DurationSecs 30 -WarmupSecs 15
 
 .EXAMPLE
 ./scripts/run-native-performance.ps1 -Profile min-rtt,pooled
@@ -16,8 +16,8 @@ param(
     [string[]] $Profile = @("capacity"),
     [int[]] $CapacityWorkerCounts = @(1, 2, 4, 8, 16, 32, 36),
     [int[]] $CapacityResponseKiB = @(0, 1, 10, 100),
-    [ValidateRange(1, 100)][int] $Runs = 5,
-    [ValidateRange(1, 3600)][int] $DurationSecs = 60,
+    [ValidateRange(1, 100)][int] $Runs = 3,
+    [ValidateRange(1, 3600)][int] $DurationSecs = 30,
     [ValidateRange(0, 600)][int] $WarmupSecs = 15,
     [string] $Bind = "127.0.0.1:7878",
     [string] $Config = "examples/nacelle-stress-server/configs/tcp.toml",
@@ -572,7 +572,7 @@ foreach ($profileConfig in $selectedProfiles) {
 
         $server = $null
         try {
-            Write-Host "==> Running $($profileConfig.Name) sample $run/$Runs"
+            Write-Host "==> Running $($profileConfig.Name) sample $run/$Runs (request=$($profileConfig.PayloadBytes)B response=$($profileConfig.ResponseBytes)B)"
             $server = Start-Process `
                 -FilePath (Get-Command numactl).Source `
                 -ArgumentList $serverArguments `

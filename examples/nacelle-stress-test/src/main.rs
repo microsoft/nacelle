@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = parse_args(std::env::args().skip(1))?;
 
     println!(
-        "stress target={} connections={} pipeline={} payload={}B duration={}s",
+        "stress target={} connections={} pipeline={} request_payload={}B duration={}s",
         config.server_addr,
         config.connections,
         config.pipeline,
@@ -432,7 +432,7 @@ fn print_summary(config: &StressConfig, result: &WorkerResult, elapsed: Duration
     }
     println!();
     println!(
-        "profile              connections={} pipeline={} payload={}B elapsed={:.2}s",
+        "profile              connections={} pipeline={} request_payload={}B elapsed={:.2}s",
         config.connections, config.pipeline, config.payload_bytes, elapsed_secs,
     );
 }
