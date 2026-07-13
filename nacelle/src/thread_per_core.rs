@@ -923,7 +923,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    #[cfg(all(target_os = "linux", any(feature = "tcp", feature = "http")))]
+    #[cfg(all(target_os = "linux", feature = "tcp"))]
     use std::cell::Cell;
 
     use super::*;

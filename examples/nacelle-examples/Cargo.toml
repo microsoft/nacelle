@@ -21,7 +21,7 @@ bench = []
 [dependencies]
 bytes = { workspace = true }
 http = { workspace = true, optional = true }
-nacelle = { path = "../../nacelle", version = "0.3.0", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.0-beta.1", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 

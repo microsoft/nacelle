@@ -161,7 +161,7 @@ if (-not $Publish) {
     Invoke-CargoPackageList -Name "nacelle"
     Write-Host "==> Dry run verified nacelle-codec and nacelle-core."
     Write-Host "==> Package payloads validated for nacelle-tcp, nacelle-http, and nacelle."
-    Write-Host "==> Cargo can fully verify dependent crates after their 0.3.0 internal dependencies reach crates.io."
+    Write-Host "==> Cargo can fully verify dependent crates after their $($release['nacelle-core']) internal dependencies reach crates.io."
     Write-Host "==> Run with -Publish to publish in dependency order."
     return
 }

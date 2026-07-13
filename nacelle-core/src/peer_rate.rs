@@ -17,6 +17,7 @@ const READERS_MASK: u64 = ((1 << READERS_BITS) - 1) << READERS_SHIFT;
 const GENERATION_SHIFT: u32 = READERS_SHIFT + READERS_BITS;
 const GENERATION_MASK: u64 = u64::MAX >> GENERATION_SHIFT;
 const MAX_SLOT_RETRIES: usize = 8;
+const MAX_KEY_RESERVATION_RETRIES: usize = 64;
 const MAX_PROBES: usize = 64;
 const RETENTION_SECONDS: u32 = 60;
 
@@ -53,6 +54,9 @@ pub struct NacellePeerRateLimiter {
     hasher: RandomState,
     capacity: usize,
     active_entries: AtomicUsize,
+    // Cold peers claim their hash while selecting a slot so racing probes cannot
+    // install the same exact IP in separate slots. Established peers do not use it.
+    key_reservations: Box<[AtomicU64]>,
     slots: Box<[PeerRateSlot]>,
 }
 
@@ -77,11 +81,21 @@ struct SlotReader<'a> {
     slot: &'a PeerRateSlot,
 }
 
+struct KeyReservation<'a> {
+    reservation: &'a AtomicU64,
+}
+
 impl Drop for SlotReader<'_> {
     fn drop(&mut self) {
         self.slot
             .state
             .fetch_sub(READERS_INCREMENT, Ordering::Release);
+    }
+}
+
+impl Drop for KeyReservation<'_> {
+    fn drop(&mut self) {
+        self.reservation.store(0, Ordering::Release);
     }
 }
 
@@ -102,7 +116,7 @@ impl PeerRateSlot {
             return None;
         }
         self.state
-            .compare_exchange_weak(
+            .compare_exchange(
                 state,
                 state + READERS_INCREMENT,
                 Ordering::AcqRel,
@@ -146,6 +160,9 @@ impl NacellePeerRateLimiter {
             hasher: RandomState::new(),
             capacity,
             active_entries: AtomicUsize::new(0),
+            key_reservations: std::iter::repeat_with(|| AtomicU64::new(0))
+                .take(slot_count)
+                .collect(),
             slots: std::iter::repeat_with(PeerRateSlot::new)
                 .take(slot_count)
                 .collect(),
@@ -174,26 +191,80 @@ impl NacellePeerRateLimiter {
             return NacellePeerRateLimitResult::RateLimited;
         }
         let key = PeerRateKey::from(peer);
-        let start = (self.hasher.hash_one(key) as usize) % self.slots.len();
+        let hash = self.hasher.hash_one(key);
+        let start = (hash as usize) % self.slots.len();
+        let reservation_key = hash.max(1);
 
+        if let Some(result) = self.try_admit_existing(key, limit, tick, start) {
+            return result;
+        }
+
+        for _ in 0..MAX_KEY_RESERVATION_RETRIES {
+            if let Some(_reservation) = self.try_reserve_key(reservation_key) {
+                return self.try_acquire_reserved(key, limit, tick, start);
+            }
+
+            if let Some(result) = self.try_admit_existing(key, limit, tick, start) {
+                return result;
+            }
+            std::thread::yield_now();
+        }
+
+        NacellePeerRateLimitResult::TableFull
+    }
+
+    fn try_admit_existing(
+        &self,
+        key: PeerRateKey,
+        limit: usize,
+        tick: u32,
+        start: usize,
+    ) -> Option<NacellePeerRateLimitResult> {
         for offset in 0..self.slots.len().min(MAX_PROBES) {
             let slot = &self.slots[(start + offset) % self.slots.len()];
             for _ in 0..MAX_SLOT_RETRIES {
                 let state = slot.state.load(Ordering::Acquire);
                 match status(state) {
+                    EMPTY => break,
+                    WRITING => std::hint::spin_loop(),
+                    OCCUPIED => {
+                        let Some(_reader) = slot.acquire_reader(state) else {
+                            continue;
+                        };
+                        if slot.key() == key {
+                            return Some(admit_existing(slot, limit, tick));
+                        }
+                        break;
+                    }
+                    _ => unreachable!("slot status uses two bits"),
+                }
+            }
+        }
+        None
+    }
+
+    fn try_acquire_reserved(
+        &self,
+        key: PeerRateKey,
+        limit: usize,
+        tick: u32,
+        start: usize,
+    ) -> NacellePeerRateLimitResult {
+        for offset in 0..self.slots.len().min(MAX_PROBES) {
+            let slot = &self.slots[(start + offset) % self.slots.len()];
+            let mut probe_next = false;
+            for _ in 0..MAX_SLOT_RETRIES {
+                let state = slot.state.load(Ordering::Acquire);
+                match status(state) {
                     EMPTY => {
                         if !self.reserve_entry() {
+                            probe_next = true;
                             break;
                         }
                         let writing = writer_state(state);
                         if slot
                             .state
-                            .compare_exchange_weak(
-                                state,
-                                writing,
-                                Ordering::AcqRel,
-                                Ordering::Acquire,
-                            )
+                            .compare_exchange(state, writing, Ordering::AcqRel, Ordering::Acquire)
                             .is_ok()
                         {
                             slot.initialize(key, tick);
@@ -204,39 +275,50 @@ impl NacellePeerRateLimiter {
                     }
                     WRITING => std::hint::spin_loop(),
                     OCCUPIED => {
+                        let Some(reader) = slot.acquire_reader(state) else {
+                            continue;
+                        };
                         if slot.key() == key {
-                            let Some(_reader) = slot.acquire_reader(state) else {
-                                continue;
-                            };
                             return admit_existing(slot, limit, tick);
                         }
-                        if readers(state) == 0
-                            && expired(slot.last_seen.load(Ordering::Acquire), tick)
-                        {
-                            let writing = writer_state(state);
-                            if slot
-                                .state
-                                .compare_exchange_weak(
-                                    state,
-                                    writing,
-                                    Ordering::AcqRel,
-                                    Ordering::Acquire,
-                                )
-                                .is_ok()
-                            {
-                                slot.initialize(key, tick);
-                                slot.publish(writing);
-                                return NacellePeerRateLimitResult::Allowed;
-                            }
-                        } else {
+                        let reusable = expired(slot.last_seen.load(Ordering::Acquire), tick);
+                        drop(reader);
+                        if !reusable {
+                            probe_next = true;
                             break;
+                        }
+                        if readers(state) != 0 {
+                            continue;
+                        }
+                        let writing = writer_state(state);
+                        if slot
+                            .state
+                            .compare_exchange(state, writing, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            slot.initialize(key, tick);
+                            slot.publish(writing);
+                            return NacellePeerRateLimitResult::Allowed;
                         }
                     }
                     _ => unreachable!("slot status uses two bits"),
                 }
             }
+            // If this slot kept changing, it may contain `key`. Probing past an
+            // inconclusive slot could install a duplicate and exceed the limit.
+            if !probe_next {
+                return NacellePeerRateLimitResult::TableFull;
+            }
         }
         NacellePeerRateLimitResult::TableFull
+    }
+
+    fn try_reserve_key(&self, key: u64) -> Option<KeyReservation<'_>> {
+        let reservation = &self.key_reservations[(key as usize) % self.key_reservations.len()];
+        reservation
+            .compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| KeyReservation { reservation })
     }
 
     fn reserve_entry(&self) -> bool {
@@ -393,6 +475,38 @@ mod tests {
             limiter.try_acquire_at(second, 1, RETENTION_SECONDS + 1),
             NacellePeerRateLimitResult::Allowed
         );
+        assert_eq!(limiter.active_entries.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn expired_slot_is_not_replaced_while_a_reader_is_active() {
+        let limiter = NacellePeerRateLimiter::new(1);
+        let first = "127.0.0.1".parse().expect("valid peer");
+        let second = "127.0.0.2".parse().expect("valid peer");
+
+        assert_eq!(
+            limiter.try_acquire_at(first, 1, 1),
+            NacellePeerRateLimitResult::Allowed
+        );
+
+        let first_key = PeerRateKey::from(first);
+        let first_slot =
+            &limiter.slots[(limiter.hasher.hash_one(first_key) as usize) % limiter.slots.len()];
+        let state = first_slot.state.load(Ordering::Acquire);
+        let reader = first_slot
+            .acquire_reader(state)
+            .expect("initialized peer slot should acquire a reader");
+
+        assert_eq!(
+            limiter.try_acquire_at(second, 1, RETENTION_SECONDS + 1),
+            NacellePeerRateLimitResult::TableFull
+        );
+
+        drop(reader);
+        assert_eq!(
+            limiter.try_acquire_at(second, 1, RETENTION_SECONDS + 1),
+            NacellePeerRateLimitResult::Allowed
+        );
     }
 
     #[test]
@@ -413,26 +527,29 @@ mod tests {
 
     #[test]
     fn concurrent_admission_does_not_exceed_the_limit() {
-        let limiter = Arc::new(NacellePeerRateLimiter::new(8));
-        let barrier = Arc::new(Barrier::new(9));
-        let peer = "127.0.0.1".parse().expect("valid peer");
-        let mut threads = Vec::new();
+        let rounds = if cfg!(miri) { 1 } else { 100 };
+        for _ in 0..rounds {
+            let limiter = Arc::new(NacellePeerRateLimiter::new(8));
+            let barrier = Arc::new(Barrier::new(9));
+            let peer = "127.0.0.1".parse().expect("valid peer");
+            let mut threads = Vec::new();
 
-        for _ in 0..8 {
-            let limiter = limiter.clone();
-            let barrier = barrier.clone();
-            threads.push(std::thread::spawn(move || {
-                barrier.wait();
-                limiter.try_acquire_at(peer, 3, 1)
-            }));
+            for _ in 0..8 {
+                let limiter = limiter.clone();
+                let barrier = barrier.clone();
+                threads.push(std::thread::spawn(move || {
+                    barrier.wait();
+                    limiter.try_acquire_at(peer, 3, 1)
+                }));
+            }
+            barrier.wait();
+
+            let allowed = threads
+                .into_iter()
+                .map(|thread| thread.join().expect("rate-limit thread should join"))
+                .filter(|result| *result == NacellePeerRateLimitResult::Allowed)
+                .count();
+            assert_eq!(allowed, 3);
         }
-        barrier.wait();
-
-        let allowed = threads
-            .into_iter()
-            .map(|thread| thread.join().expect("rate-limit thread should join"))
-            .filter(|result| *result == NacellePeerRateLimitResult::Allowed)
-            .count();
-        assert_eq!(allowed, 3);
     }
 }

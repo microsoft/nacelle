@@ -1168,7 +1168,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_grants_and_direct_allocations_share_one_atomic_ceiling() {
-        const ROUNDS: usize = 250;
+        const ROUNDS: usize = if cfg!(miri) { 1 } else { 250 };
         const LIMIT: usize = 2;
 
         for _ in 0..ROUNDS {
@@ -1300,7 +1300,9 @@ mod tests {
     fn per_peer_connection_open_rate_rejects_churn_after_drop() {
         let peer = "127.0.0.1".parse().expect("valid ip");
         let state = NacelleRuntimeState::new(
-            NacelleLimits::default().with_max_connection_opens_per_peer_per_second(1),
+            NacelleLimits::default()
+                .with_max_connection_opens_per_peer_per_second(1)
+                .with_connection_rate_limit_table_capacity(1),
         );
 
         let connection = state
