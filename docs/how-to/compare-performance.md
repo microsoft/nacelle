@@ -68,12 +68,17 @@ revision receives an isolated Cargo target directory; only Criterion baseline
 data is copied into the candidate target before comparison, preventing build
 artifacts from being reused across worktrees.
 
-Capture all Criterion suites for a release tag or commit:
+Capture all Criterion suites for the current commit, a release tag, or another
+commit:
 
 ```powershell
+./scripts/capture-performance-baseline.ps1
 ./scripts/capture-performance-baseline.ps1 -Reference v0.3.0
 ./scripts/capture-performance-baseline.ps1 -Reference 00747f3
 ```
+
+With no parameters, `HEAD` is captured in a detached worktree. Uncommitted
+working-tree changes are intentionally excluded from that baseline.
 
 Compare the current working tree with a captured baseline:
 

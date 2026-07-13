@@ -1,6 +1,9 @@
 <#
 .SYNOPSIS
-Captures Criterion baselines for a Git tag or commit.
+Captures Criterion baselines for the current commit, a Git tag, or another commit.
+
+.EXAMPLE
+./scripts/capture-performance-baseline.ps1
 
 .EXAMPLE
 ./scripts/capture-performance-baseline.ps1 -Reference v0.3.0
@@ -9,7 +12,7 @@ Captures Criterion baselines for a Git tag or commit.
 ./scripts/capture-performance-baseline.ps1 -Reference 00747f3 -Suite critical-paths,telemetry
 #>
 param(
-    [Parameter(Mandatory)][string] $Reference,
+    [string] $Reference = "HEAD",
     [ValidateSet("all", "codec", "critical-paths", "telemetry", "response-delivery")]
     [string[]] $Suite = @("all"),
     [string] $OutputDirectory = "target/performance-comparisons",
