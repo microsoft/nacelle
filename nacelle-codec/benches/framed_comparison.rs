@@ -11,6 +11,7 @@ use futures_core::Stream;
 #[cfg(feature = "buffer-rotation")]
 use nacelle_codec::RotatingMessageReader;
 use nacelle_codec::{LengthDelimitedDecoder, LengthDelimitedError, MessageDecoder, MessageReader};
+use nacelle_codec::{LengthDelimitedEncoder, MessageEncoder};
 use tokio::io::{AsyncWriteExt, DuplexStream};
 use tokio_util::codec::{Decoder, FramedRead, LengthDelimitedCodec};
 
@@ -208,6 +209,29 @@ fn decode_comparison(c: &mut Criterion) {
     group.finish();
 }
 
+fn encode_comparison(c: &mut Criterion) {
+    let payload = [0xAB; PAYLOAD_LEN];
+    let mut group = c.benchmark_group("encode_64x64_bytes");
+    group.throughput(Throughput::Bytes(
+        u64::try_from(MESSAGE_COUNT * PAYLOAD_LEN).expect("benchmark byte count"),
+    ));
+
+    group.bench_function("nacelle_codec", |b| {
+        b.iter(|| {
+            let mut output = BytesMut::with_capacity(MESSAGE_COUNT * (4 + PAYLOAD_LEN));
+            let mut encoder = LengthDelimitedEncoder::new(MAX_FRAME_LEN);
+            for _ in 0..MESSAGE_COUNT {
+                encoder
+                    .encode(black_box(payload.as_slice()), &mut output)
+                    .expect("benchmark encode");
+            }
+            black_box(output);
+        });
+    });
+
+    group.finish();
+}
+
 fn fragmented_decode_comparison(c: &mut Criterion) {
     let partial_header = [0_u8; 3];
     let mut group = c.benchmark_group("decode_need_more_3_byte_header");
@@ -286,6 +310,7 @@ criterion_group!(
     benches,
     framed_read_comparison,
     decode_comparison,
+    encode_comparison,
     fragmented_decode_comparison,
     buffer_rotation
 );
@@ -294,6 +319,7 @@ criterion_group!(
     benches,
     framed_read_comparison,
     decode_comparison,
+    encode_comparison,
     fragmented_decode_comparison
 );
 criterion_main!(benches);

@@ -70,6 +70,7 @@ impl MessageDecoder for LengthDelimitedDecoder {
     type Message = BytesMut;
     type Error = LengthDelimitedError;
 
+    #[inline]
     fn decode(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         let Some(header) = input.get(..HEADER_LEN) else {
             return Ok(None);
@@ -165,6 +166,7 @@ where
 {
     type Error = LengthDelimitedEncodeError;
 
+    #[inline]
     fn encode(&mut self, message: M, output: &mut BytesMut) -> Result<(), Self::Error> {
         let payload = message.as_ref();
         if payload.len() > self.max_frame_len {

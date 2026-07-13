@@ -181,12 +181,13 @@ detects virtualization or a non-performance CPU governor and refuses to reuse
 an occupied bind address. Use `-SkipBuild` only when the release binaries
 already match the current source.
 
-The codec target compares direct decoding with `MessageReader::decode_buffered`,
-measures incomplete-header calls, and separates the no-op buffer-rotation check
-from replacing an empty 256 KiB buffer. The TCP target measures per-connection
-decoder construction and compares direct reference-protocol decoding with the
-buffered 64-request head/body drain used by the connection loop. Treat the
-rotation replacement result as allocation cost, not per-request overhead.
+The codec target measures length-delimited encoding, compares direct decoding
+with `MessageReader::decode_buffered`, measures incomplete-header calls, and
+separates the no-op buffer-rotation check from replacing an empty 256 KiB
+buffer. The TCP target measures per-connection decoder construction and
+compares direct reference-protocol decoding with the buffered 64-request
+head/body drain used by the connection loop. Treat the rotation replacement
+result as allocation cost, not per-request overhead.
 
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
