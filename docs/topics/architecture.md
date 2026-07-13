@@ -77,10 +77,10 @@ current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
 remain on the accepting worker. Unsupported platforms fail configuration;
 Nacelle does not silently switch runtime topology.
 
-Serial mutable-state listeners currently support plain TCP in shared and
-worker-local runtimes. Rustls, OpenSSL, optional TLS detection, and Unix socket
-serial listener variants are not yet exposed; use shared-state servers for
-those transports.
+Serial mutable-state listeners support plain TCP, required OpenSSL, optional
+OpenSSL detection, and Unix sockets in the shared runtime. Worker-local serial
+listeners support plain TCP and required OpenSSL. Rustls, worker-local optional
+OpenSSL detection, and worker-local Unix socket serial variants are not exposed.
 
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,

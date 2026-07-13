@@ -29,8 +29,6 @@ pub mod runtime {
     pub use crate::host::NacelleHost;
     #[cfg(all(feature = "http", feature = "rustls"))]
     pub use crate::thread_per_core::run_local_http_tls_thread_per_core;
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
-    pub use crate::thread_per_core::run_local_tcp_openssl_thread_per_core;
     #[cfg(all(feature = "tcp", feature = "rustls"))]
     pub use crate::thread_per_core::run_local_tcp_tls_thread_per_core;
     #[cfg(feature = "http")]
@@ -42,6 +40,10 @@ pub mod runtime {
     pub use crate::thread_per_core::{
         RuntimeMode, ThreadPerCoreConfig, ThreadPerCoreLimits, Worker, WorkerContext, WorkerSet,
         bind_reuse_port_listener, run_thread_per_core, run_thread_per_core_with_shutdown,
+    };
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    pub use crate::thread_per_core::{
+        run_local_serial_tcp_openssl_thread_per_core, run_local_tcp_openssl_thread_per_core,
     };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }
