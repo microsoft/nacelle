@@ -294,6 +294,53 @@ where
         self
     }
 
+    #[cfg(all(feature = "tcp", unix))]
+    /// Register a serial Unix-domain socket listener.
+    pub fn serial_unix_socket<P, H, OH, ServerObserver>(
+        self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.serial_unix_socket_with_options(
+            name,
+            path,
+            NacelleUnixSocketOptions::default(),
+            server,
+        )
+    }
+
+    #[cfg(all(feature = "tcp", unix))]
+    /// Register a serial Unix-domain socket listener with socket options.
+    pub fn serial_unix_socket_with_options<P, H, OH, ServerObserver>(
+        mut self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        options: NacelleUnixSocketOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        let path = path.as_ref().to_path_buf();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_serial_unix_socket_with_options(name, path, options, server);
+        }));
+        self
+    }
+
     #[cfg(all(feature = "tcp", feature = "rustls"))]
     /// Register a typed Rustls TCP listener.
     pub fn tcp_tls<P, H, OH, ServerObserver>(
@@ -359,6 +406,61 @@ where
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
             host.enable_tcp_openssl_with_bind_options(name, addr, server, tls_config, bind_options);
+        }));
+        self
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Register a serial OpenSSL TCP listener.
+    pub fn serial_tcp_openssl<P, H, OH, ServerObserver>(
+        self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.serial_tcp_openssl_with_bind_options(
+            name,
+            addr,
+            NacelleTcpBindOptions::default(),
+            server,
+            tls_config,
+        )
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Register a serial OpenSSL TCP listener with bind options.
+    pub fn serial_tcp_openssl_with_bind_options<P, H, OH, ServerObserver>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        bind_options: NacelleTcpBindOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_serial_tcp_openssl_with_bind_options(
+                name,
+                addr,
+                server,
+                tls_config,
+                bind_options,
+            );
         }));
         self
     }
@@ -442,6 +544,65 @@ where
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
             host.enable_tcp_optional_openssl_with_bind_options(
+                name,
+                addr,
+                server,
+                tls_config,
+                bind_options,
+                detection_options,
+            );
+        }));
+        self
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Register a serial listener that accepts plaintext or OpenSSL TCP connections.
+    pub fn serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
+        self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.serial_tcp_optional_openssl_with_options(
+            name,
+            addr,
+            NacelleTcpBindOptions::default(),
+            NacelleTlsDetectionOptions::default(),
+            server,
+            tls_config,
+        )
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Register a serial plaintext-or-OpenSSL TCP listener with edge options.
+    #[allow(clippy::too_many_arguments)]
+    pub fn serial_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
+        mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        bind_options: NacelleTcpBindOptions,
+        detection_options: NacelleTlsDetectionOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        self.listeners.push(Box::new(move |host| {
+            host.enable_serial_tcp_optional_openssl_with_bind_options(
                 name,
                 addr,
                 server,
@@ -729,6 +890,16 @@ mod tests {
             SerialTcpServer::new(TestProtocol, SerialHandler),
         );
         assert_eq!(serial_app.listener_count(), 1);
+
+        #[cfg(unix)]
+        {
+            let serial_unix_app = NacelleApp::new().serial_unix_socket(
+                "serial-unix-test",
+                "/tmp/nacelle-serial-unix-test.sock",
+                SerialTcpServer::new(TestProtocol, SerialHandler),
+            );
+            assert_eq!(serial_unix_app.listener_count(), 1);
+        }
     }
 
     #[cfg(feature = "tcp")]

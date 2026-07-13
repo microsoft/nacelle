@@ -59,6 +59,52 @@ Response delivery policies have a separate end-to-end benchmark:
 cargo bench -p nacelle-tcp --bench response_delivery -- --noplot
 ```
 
+## Compare a tag or commit
+
+The PowerShell comparison scripts keep Criterion data under
+`target/performance-comparisons`, resolve tags to immutable commit hashes, and
+use detached temporary worktrees so the current checkout is not modified.
+
+Capture all Criterion suites for a release tag or commit:
+
+```powershell
+./scripts/capture-performance-baseline.ps1 -Reference v0.3.0
+./scripts/capture-performance-baseline.ps1 -Reference 00747f3
+```
+
+Compare the current working tree with a captured baseline:
+
+```powershell
+./scripts/compare-performance.ps1 -BaselineReference v0.3.0
+```
+
+Compare two committed revisions without checking either one out:
+
+```powershell
+./scripts/compare-performance.ps1 `
+	-BaselineReference v0.3.0 `
+	-CandidateReference 0123456789abcdef
+```
+
+Use `-Suite` to limit both capture and comparison to one or more matching
+suites: `codec`, `critical-paths`, `telemetry`, or `response-delivery`. For
+example:
+
+```powershell
+./scripts/capture-performance-baseline.ps1 `
+	-Reference v0.3.0 `
+	-Suite critical-paths,telemetry
+./scripts/compare-performance.ps1 `
+	-BaselineReference v0.3.0 `
+	-Suite critical-paths,telemetry
+```
+
+Each capture records the resolved commit, Rust toolchain, operating system,
+architecture, CPU information, selected suites, and full benchmark log. Each
+comparison records the same candidate metadata and Criterion's percentage and
+confidence-interval output. Use `-Force` to replace an existing baseline for
+the same resolved commit.
+
 The codec target compares direct decoding with `MessageReader::decode_buffered`,
 measures incomplete-header calls, and separates the no-op buffer-rotation check
 from replacing an empty 256 KiB buffer. The TCP target measures per-connection

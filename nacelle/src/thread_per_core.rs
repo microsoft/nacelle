@@ -821,6 +821,58 @@ where
     })
 }
 
+/// Run one worker-local serial required-OpenSSL listener per configured worker.
+#[cfg(all(feature = "tcp", feature = "openssl"))]
+pub fn run_local_serial_tcp_openssl_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
+    config: LocalTcpRuntimeConfig<Observer>,
+    tls_config: NacelleOpenSslConfig,
+    server_factory: Factory,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
+{
+    if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
+        return Err(NacelleError::ResourceLimit(
+            "thread_per_core_ephemeral_port",
+        ));
+    }
+    let runtime = config.runtime;
+    let shutdown = config.shutdown;
+    let limits = config.limits;
+    let telemetry = config.telemetry;
+    let addr = config.addr;
+    let tcp_options = config.tcp_options;
+    let drain_timeout = config.drain_timeout;
+    run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
+        let listener = bind_reuse_port_listener(addr)?;
+        let server = std::rc::Rc::new(
+            server_factory(context.worker)?
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+        );
+        let tcp_options = tcp_options.clone();
+        let tls_config = tls_config.clone();
+        Ok(async move {
+            nacelle_tcp::runtime::serve_local_serial_tcp_openssl_listener(
+                server,
+                listener,
+                tcp_options,
+                tls_config,
+                context.shutdown,
+                nacelle_core::lifecycle::NacelleDrainDeadline::new(drain_timeout),
+            )
+            .await
+        })
+    })
+}
+
 /// Run one worker-local HTTP/1 listener stack per configured worker.
 #[cfg(feature = "http")]
 pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory>(

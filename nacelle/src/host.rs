@@ -380,6 +380,76 @@ where
         self
     }
 
+    #[cfg(all(feature = "tcp", unix))]
+    pub fn enable_serial_unix_socket<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.enable_serial_unix_socket_with_options(
+            name,
+            path,
+            NacelleUnixSocketOptions::default(),
+            server,
+        )
+    }
+
+    #[cfg(all(feature = "tcp", unix))]
+    pub fn enable_serial_unix_socket_with_options<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+        unix_options: NacelleUnixSocketOptions,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        let path = path.as_ref().to_path_buf();
+        let path_label = path.display().to_string();
+        let telemetry = self.telemetry.clone();
+        let shutdown = self.shutdown.token();
+        let drain_deadline = self.drain_deadline.clone();
+        let server = server
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_listener_label(name.clone());
+        telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
+        self.tasks.spawn(async move {
+            let result =
+                nacelle_tcp::runtime::serve_serial_unix_with_options_and_shutdown_deadline(
+                    std::sync::Arc::new(server),
+                    path,
+                    unix_options,
+                    shutdown,
+                    drain_deadline,
+                )
+                .await;
+            if let Err(error) = &result {
+                telemetry.listener_failed(
+                    NacelleTransport::new("unix_socket"),
+                    &name,
+                    &path_label,
+                    error,
+                );
+            }
+            result
+        });
+        self
+    }
+
     #[cfg(all(feature = "tcp", feature = "rustls"))]
     pub fn enable_tcp_tls<P, H, OH, ServerObserver>(
         &mut self,
@@ -519,6 +589,77 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    pub fn enable_serial_tcp_openssl<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.enable_serial_tcp_openssl_with_bind_options(
+            name,
+            addr,
+            server,
+            tls_config,
+            NacelleTcpBindOptions::default(),
+        )
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    pub fn enable_serial_tcp_openssl_with_bind_options<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+        bind_options: NacelleTcpBindOptions,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        let telemetry = self.telemetry.clone();
+        let shutdown = self.shutdown.token();
+        let drain_deadline = self.drain_deadline.clone();
+        let server = server
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_listener_label(name.clone());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
+        self.tasks.spawn(async move {
+            let result = nacelle_tcp::runtime::serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline(
+                std::sync::Arc::new(server),
+                addr,
+                tls_config,
+                bind_options,
+                shutdown,
+                drain_deadline,
+            )
+            .await;
+            if let Err(error) = &result {
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
+            }
+            result
+        });
+        self
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
     pub fn enable_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -606,6 +747,81 @@ where
                 .await;
             if let Err(error) = &result {
                 telemetry.listener_failed(NacelleTransport::new("tcp"), &name, &addr.to_string(), error);
+            }
+            result
+        });
+        self
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    pub fn enable_serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        self.enable_serial_tcp_optional_openssl_with_bind_options(
+            name,
+            addr,
+            server,
+            tls_config,
+            NacelleTcpBindOptions::default(),
+            NacelleTlsDetectionOptions::default(),
+        )
+    }
+
+    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
+        &mut self,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        server: nacelle_tcp::SerialTcpServer<P, H, OH, ServerObserver>,
+        tls_config: NacelleOpenSslConfig,
+        bind_options: NacelleTcpBindOptions,
+        detection_options: NacelleTlsDetectionOptions,
+    ) -> &mut Self
+    where
+        P: nacelle_tcp::Protocol,
+        P::ConnectionState: Send,
+        H: nacelle_tcp::SerialTcpHandler<P>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        ServerObserver: NacelleTelemetryObserver,
+    {
+        let name = name.into();
+        let telemetry = self.telemetry.clone();
+        let shutdown = self.shutdown.token();
+        let drain_deadline = self.drain_deadline.clone();
+        let server = server
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_listener_label(name.clone());
+        telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
+        self.tasks.spawn(async move {
+            let result = nacelle_tcp::runtime::serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
+                std::sync::Arc::new(server),
+                addr,
+                tls_config,
+                bind_options,
+                detection_options,
+                shutdown,
+                drain_deadline,
+            )
+            .await;
+            if let Err(error) = &result {
+                telemetry.listener_failed(
+                    NacelleTransport::new("tcp"),
+                    &name,
+                    &addr.to_string(),
+                    error,
+                );
             }
             result
         });

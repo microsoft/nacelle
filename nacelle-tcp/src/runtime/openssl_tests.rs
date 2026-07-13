@@ -13,14 +13,22 @@ use nacelle_core::tls::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{
-    DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse,
+    DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
+    SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
 };
+use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::LocalTcpServer;
 use crate::server::TcpServer;
 
-use super::local::serve_local_tcp_openssl_listener;
-use super::openssl::serve_tcp_openssl_listener_with_shutdown_deadline;
-use super::openssl_optional::peeked_bytes_can_be_tls;
+use super::local::{serve_local_serial_tcp_openssl_listener, serve_local_tcp_openssl_listener};
+use super::openssl::{
+    serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline,
+    serve_tcp_openssl_listener_with_shutdown_deadline,
+};
+use super::openssl_optional::{
+    peeked_bytes_can_be_tls,
+    serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline,
+};
 
 #[derive(Debug)]
 struct PlainRequest {
@@ -183,6 +191,165 @@ async fn required_openssl_rejects_plaintext_before_handler() {
         .expect("server should exit");
 }
 
+struct SerialHandler;
+
+impl SerialTcpHandler<PlainProtocol> for SerialHandler {
+    async fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, PlainProtocol>,
+    ) -> Result<TcpHandlerCompletion<PlainProtocol>, NacelleError> {
+        context.respond(TcpResponse::bytes("ok")).await
+    }
+}
+
+#[tokio::test]
+async fn serial_required_openssl_accepts_tls_request() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let config = test_open_ssl_config();
+    let mut connector = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())
+        .expect("connector builder");
+    connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+    let connector = connector.build();
+    let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server_task = tokio::spawn(
+        serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            config,
+            crate::NacelleTcpOptions::default(),
+            token,
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    let ssl = connector
+        .configure()
+        .expect("connector config")
+        .verify_hostname(false)
+        .into_ssl("localhost")
+        .expect("client ssl");
+    let mut client = tokio_openssl::SslStream::new(ssl, stream).expect("ssl stream");
+    std::pin::Pin::new(&mut client)
+        .connect()
+        .await
+        .expect("TLS handshake");
+    client.write_all(b"x").await.expect("request should write");
+    let mut response = [0_u8; 2];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("response should read");
+    assert_eq!(&response, b"ok");
+
+    client.shutdown().await.expect("client shutdown");
+    shutdown.shutdown();
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should stop");
+}
+
+#[tokio::test]
+async fn serial_optional_openssl_preserves_plaintext_request() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server_task = tokio::spawn(
+        serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            test_open_ssl_config(),
+            crate::NacelleTcpOptions::default(),
+            crate::NacelleTlsDetectionOptions::default(),
+            token,
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    client.write_all(b"x").await.expect("request should write");
+    let mut response = [0_u8; 2];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("response should read");
+    assert_eq!(&response, b"ok");
+
+    client.shutdown().await.expect("client shutdown");
+    shutdown.shutdown();
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should stop");
+}
+
+#[tokio::test]
+async fn serial_optional_openssl_accepts_tls_request() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let config = test_open_ssl_config();
+    let mut connector = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())
+        .expect("connector builder");
+    connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+    let connector = connector.build();
+    let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server_task = tokio::spawn(
+        serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            config,
+            crate::NacelleTcpOptions::default(),
+            crate::NacelleTlsDetectionOptions::default(),
+            token,
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let stream = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    let ssl = connector
+        .configure()
+        .expect("connector config")
+        .verify_hostname(false)
+        .into_ssl("localhost")
+        .expect("client ssl");
+    let mut client = tokio_openssl::SslStream::new(ssl, stream).expect("ssl stream");
+    std::pin::Pin::new(&mut client)
+        .connect()
+        .await
+        .expect("TLS handshake");
+    client.write_all(b"x").await.expect("request should write");
+    let mut response = [0_u8; 2];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("response should read");
+    assert_eq!(&response, b"ok");
+
+    client.shutdown().await.expect("client shutdown");
+    shutdown.shutdown();
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should stop");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn local_required_openssl_accepts_tls_request() {
     let local = tokio::task::LocalSet::new();
@@ -234,6 +401,75 @@ async fn local_required_openssl_accepts_tls_request() {
                 .await
                 .expect("response should read");
             assert_eq!(&response, b"ok");
+            client.shutdown().await.expect("client shutdown");
+            shutdown.shutdown();
+            server_task
+                .await
+                .expect("server task should join")
+                .expect("server should stop");
+        })
+        .await;
+}
+
+struct LocalSerialHandler;
+
+impl LocalSerialTcpHandler<PlainProtocol> for LocalSerialHandler {
+    async fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, PlainProtocol>,
+    ) -> Result<TcpHandlerCompletion<PlainProtocol>, NacelleError> {
+        context.respond(TcpResponse::bytes("ok")).await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_serial_required_openssl_accepts_tls_request() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let addr = listener.local_addr().expect("listener should have addr");
+            let config = test_open_ssl_config();
+            let mut connector = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())
+                .expect("connector builder");
+            connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+            let connector = connector.build();
+            let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+            let server =
+                std::rc::Rc::new(LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler));
+            let server_task = tokio::task::spawn_local(serve_local_serial_tcp_openssl_listener(
+                server,
+                listener,
+                crate::NacelleTcpOptions::default(),
+                config,
+                token,
+                NacelleDrainDeadline::new(Duration::from_secs(1)),
+            ));
+
+            let stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("client should connect");
+            let ssl = connector
+                .configure()
+                .expect("connector config")
+                .verify_hostname(false)
+                .into_ssl("localhost")
+                .expect("client ssl");
+            let mut client = tokio_openssl::SslStream::new(ssl, stream).expect("ssl stream");
+            std::pin::Pin::new(&mut client)
+                .connect()
+                .await
+                .expect("TLS handshake");
+            client.write_all(b"x").await.expect("request should write");
+            let mut response = [0_u8; 2];
+            client
+                .read_exact(&mut response)
+                .await
+                .expect("response should read");
+            assert_eq!(&response, b"ok");
+
             client.shutdown().await.expect("client shutdown");
             shutdown.shutdown();
             server_task

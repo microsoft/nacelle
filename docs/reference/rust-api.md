@@ -42,9 +42,13 @@ Start with these public entry points:
 - `nacelle::tcp::{TcpServer, LocalTcpServer}` for `Arc`-backed connection
   state, or `SerialTcpServer` / `LocalSerialTcpServer` for exclusive mutable
   state lent to one serial handler at a time.
-- `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` for worker-local
-  serial TCP. Worker factories run once per worker, so externally bounded pools
-  should be shared deliberately rather than constructed per worker.
+- `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
+  required OpenSSL, optional OpenSSL, and Unix sockets.
+- `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and
+  `run_local_serial_tcp_openssl_thread_per_core(...)` for worker-local serial
+  plain TCP and required OpenSSL. Worker factories run once per worker, so
+  externally bounded pools should be shared deliberately rather than
+  constructed per worker.
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
 - `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
