@@ -31,7 +31,8 @@ pub enum NacellePeerRateLimitResult {
     Allowed,
     /// The peer has exhausted its fixed-window budget.
     RateLimited,
-    /// The bounded peer table has no safely reusable entry.
+    /// The bounded peer table has no safely reusable entry, or an in-progress
+    /// transition did not resolve within the bounded retry budget.
     TableFull,
 }
 
@@ -526,6 +527,28 @@ mod tests {
     }
 
     #[test]
+    fn same_key_reservation_exhaustion_fails_closed() {
+        let limiter = NacellePeerRateLimiter::new(8);
+        let peer = "127.0.0.1".parse().expect("valid peer");
+        let key = PeerRateKey::from(peer);
+        let reservation_key = limiter.hasher.hash_one(key).max(1);
+        let reservation = limiter
+            .try_reserve_key(reservation_key)
+            .expect("test should reserve peer key");
+
+        assert_eq!(
+            limiter.try_acquire_at(peer, 3, 1),
+            NacellePeerRateLimitResult::TableFull
+        );
+
+        drop(reservation);
+        assert_eq!(
+            limiter.try_acquire_at(peer, 3, 1),
+            NacellePeerRateLimitResult::Allowed
+        );
+    }
+
+    #[test]
     fn concurrent_admission_does_not_exceed_the_limit() {
         let rounds = if cfg!(miri) { 1 } else { 100 };
         for _ in 0..rounds {
@@ -544,12 +567,18 @@ mod tests {
             }
             barrier.wait();
 
-            let allowed = threads
+            let results: Vec<_> = threads
                 .into_iter()
                 .map(|thread| thread.join().expect("rate-limit thread should join"))
-                .filter(|result| *result == NacellePeerRateLimitResult::Allowed)
+                .collect();
+            let allowed = results
+                .iter()
+                .filter(|&&result| result == NacellePeerRateLimitResult::Allowed)
                 .count();
-            assert_eq!(allowed, 3);
+            assert!(
+                allowed <= 3,
+                "admitted {allowed} requests, exceeding limit 3: {results:?}"
+            );
         }
     }
 }
