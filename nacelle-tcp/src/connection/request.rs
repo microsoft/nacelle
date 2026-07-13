@@ -401,12 +401,8 @@ where
             return Err(error);
         }
     };
-    let mut request_metrics = TcpRequestMetricsGuard::new(
-        telemetry,
-        metrics_context.cloned(),
-        request_bytes,
-        request_started,
-    );
+    let mut request_metrics =
+        TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
     let outcome = if decoded.body_len <= read_buf.len() {
         let body_started = start_tcp_phase(telemetry_plan.phase_duration);
         let body =
@@ -672,12 +668,8 @@ where
         return Err(NacelleError::ResourceLimit("request_body_bytes"));
     }
     let _request_permit = runtime_state.acquire_request_tracked()?;
-    let mut request_metrics = TcpRequestMetricsGuard::new(
-        telemetry,
-        metrics_context.cloned(),
-        request_bytes,
-        request_started,
-    );
+    let mut request_metrics =
+        TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
 
     let result = if decoded.body_len <= read_buf.len() {
         let body =

@@ -258,7 +258,7 @@ impl StressConsoleMetricExporter {
 #[cfg(feature = "otel")]
 impl PushMetricExporter for StressConsoleMetricExporter {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Err(opentelemetry_sdk::error::OTelSdkError::AlreadyShutdown);
         }
 
@@ -274,7 +274,7 @@ impl PushMetricExporter for StressConsoleMetricExporter {
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.shutdown.store(true, Ordering::Release);
         Ok(())
     }
 

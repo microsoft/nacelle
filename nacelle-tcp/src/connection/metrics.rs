@@ -151,7 +151,7 @@ fn elapsed_since(started: Option<Instant>) -> Duration {
 
 pub(super) struct TcpRequestMetricsGuard<'a, Observer: NacelleTelemetryObserver> {
     telemetry: &'a NacelleTelemetry<Observer>,
-    context: Option<NacelleMetricsContext>,
+    context: Option<&'a NacelleMetricsContext>,
     request_bytes: usize,
     started: Option<Instant>,
     completed: bool,
@@ -163,11 +163,11 @@ where
 {
     pub(super) fn new(
         telemetry: &'a NacelleTelemetry<Observer>,
-        context: Option<NacelleMetricsContext>,
+        context: Option<&'a NacelleMetricsContext>,
         request_bytes: usize,
         started: Option<Instant>,
     ) -> Self {
-        if let Some(context) = &context {
+        if let Some(context) = context {
             telemetry.request_started_with_context(context);
         }
         Self {
@@ -180,7 +180,7 @@ where
     }
 
     pub(super) fn complete(&mut self, status: &'static str, response_bytes: usize) {
-        if let Some(context) = &self.context {
+        if let Some(context) = self.context {
             self.telemetry.request_finished_with_context(
                 context,
                 status,
@@ -199,7 +199,7 @@ where
 {
     fn drop(&mut self) {
         if !self.completed
-            && let Some(context) = &self.context
+            && let Some(context) = self.context
         {
             self.telemetry.request_finished_with_context(
                 context,
