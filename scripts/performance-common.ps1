@@ -1,23 +1,11 @@
 $ErrorActionPreference = "Stop"
 
 $script:NacellePerformanceRepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$script:NacellePerformanceBenchmarks = @(
-    [pscustomobject]@{
-        Name      = "codec"
-        Arguments = @("bench", "-p", "nacelle-codec", "--bench", "framed_comparison", "--all-features")
-    },
-    [pscustomobject]@{
-        Name      = "critical-paths"
-        Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp")
-    },
-    [pscustomobject]@{
-        Name      = "telemetry"
-        Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--all-features")
-    },
-    [pscustomobject]@{
-        Name      = "response-delivery"
-        Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "response_delivery")
-    }
+$script:NacellePerformanceSuiteNames = @(
+    "codec",
+    "critical-paths",
+    "telemetry",
+    "response-delivery"
 )
 
 function Assert-NacellePerformanceCommand {
@@ -70,16 +58,54 @@ function Resolve-NacelleGitReference {
 }
 
 function Get-NacellePerformanceBenchmarks {
-    param([Parameter(Mandatory)][string[]] $Suite)
+    param(
+        [Parameter(Mandatory)][string[]] $Suite,
+        [Parameter(Mandatory)][string] $Workspace
+    )
 
-    if ($Suite -contains "all") {
-        return $script:NacellePerformanceBenchmarks
+    $available = @()
+    if (Test-Path (Join-Path $Workspace "nacelle-codec/benches/framed_comparison.rs")) {
+        $available += [pscustomobject]@{
+            Name      = "codec"
+            Arguments = @("bench", "-p", "nacelle-codec", "--bench", "framed_comparison", "--all-features")
+        }
     }
 
-    $selected = @($script:NacellePerformanceBenchmarks | Where-Object { $Suite -contains $_.Name })
+    if (Test-Path (Join-Path $Workspace "examples/nacelle-examples/benches/critical_paths.rs")) {
+        $available += [pscustomobject]@{
+            Name      = "critical-paths"
+            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp")
+        }
+    }
+    elseif (Test-Path (Join-Path $Workspace "nacelle/benches/critical_paths.rs")) {
+        $available += [pscustomobject]@{
+            Name      = "critical-paths"
+            Arguments = @("bench", "-p", "nacelle", "--bench", "critical_paths", "--features", "bench tcp reference_protocol")
+        }
+    }
+
+    if (Test-Path (Join-Path $Workspace "nacelle-tcp/benches/telemetry_paths.rs")) {
+        $available += [pscustomobject]@{
+            Name      = "telemetry"
+            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--all-features")
+        }
+    }
+
+    if (Test-Path (Join-Path $Workspace "nacelle-tcp/benches/response_delivery.rs")) {
+        $available += [pscustomobject]@{
+            Name      = "response-delivery"
+            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "response_delivery")
+        }
+    }
+
+    if ($Suite -contains "all") {
+        return $available
+    }
+
+    $selected = @($available | Where-Object { $Suite -contains $_.Name })
     if ($selected.Count -ne $Suite.Count) {
-        $known = $script:NacellePerformanceBenchmarks.Name -join ", "
-        throw "Unknown benchmark suite. Available suites: all, $known"
+        $known = @($available.Name) -join ", "
+        throw "One or more requested benchmark suites are unavailable in '$Workspace'. Available suites: $known"
     }
     return $selected
 }
@@ -155,8 +181,8 @@ function Invoke-NacellePerformanceBenchmarks {
         [Parameter(Mandatory)][string] $LogPath
     )
 
-    $benchmarks = Get-NacellePerformanceBenchmarks $Suite
-    $criterionOption = if ($Mode -eq "capture") { "--save-baseline" } else { "--baseline" }
+    $benchmarks = Get-NacellePerformanceBenchmarks -Suite $Suite -Workspace $Workspace
+    $criterionOption = if ($Mode -eq "capture") { "--save-baseline" } else { "--baseline-lenient" }
     $previousTargetDirectory = $env:CARGO_TARGET_DIR
     $previousLocation = Get-Location
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $LogPath)) | Out-Null

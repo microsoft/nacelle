@@ -107,6 +107,15 @@ example:
 	-Suite critical-paths,telemetry
 ```
 
+The default capture runs every suite available at the selected commit. The
+`critical-paths` suite follows its historical move from `nacelle` to
+`nacelle-examples`. The telemetry and response-delivery suites are omitted for
+commits that predate those benchmark targets. When comparison omits `-Suite`,
+it uses exactly the suites recorded by the baseline, so newer-only targets do
+not invalidate an older baseline. Within a shared suite, Criterion compares
+matching benchmark IDs and measures newer IDs without a delta when no baseline
+exists for them.
+
 Each capture records the resolved commit, Rust toolchain, operating system,
 architecture, CPU information, selected suites, and full benchmark log. Each
 comparison records the same candidate metadata and Criterion's percentage and

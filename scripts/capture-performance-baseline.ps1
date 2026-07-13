@@ -33,10 +33,16 @@ $baselineDirectory = Join-Path $outputRoot (Join-Path "baselines" $resolved.Base
 $metadataPath = Join-Path $baselineDirectory "metadata.json"
 $logPath = Join-Path $baselineDirectory "capture.log"
 
-if ((Test-Path $metadataPath) -and -not $Force) {
-    throw "Baseline '$($resolved.BaselineId)' already exists. Use -Force to replace it."
+if ((Test-Path $baselineDirectory) -and -not $Force) {
+    if (Test-Path $metadataPath) {
+        throw "Baseline '$($resolved.BaselineId)' already exists. Use -Force to replace it."
+    }
+    throw "Baseline '$($resolved.BaselineId)' is incomplete. Review its capture.log, then use -Force to replace it."
 }
 
+if ($Force -and (Test-Path $baselineDirectory)) {
+    Remove-Item $baselineDirectory -Recurse -Force
+}
 [System.IO.Directory]::CreateDirectory($baselineDirectory) | Out-Null
 if ($Force) {
     Remove-NacelleCriterionBaseline $targetDirectory $resolved.BaselineId
@@ -57,7 +63,7 @@ try {
         -Reference $Reference `
         -Commit $resolved.Commit `
         -Workspace $worktree `
-        -Suites (Get-NacellePerformanceBenchmarks $Suite).Name
+        -Suites (Get-NacellePerformanceBenchmarks -Suite $Suite -Workspace $worktree).Name
     $metadata["baseline_id"] = $resolved.BaselineId
     $metadata["criterion_target"] = $targetDirectory
     $metadata | ConvertTo-Json -Depth 5 | Set-Content -Path $metadataPath

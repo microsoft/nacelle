@@ -28,12 +28,24 @@ $outputRoot = Resolve-NacellePerformancePath $OutputDirectory
 $baselineDirectory = Join-Path $outputRoot (Join-Path "baselines" $baseline.BaselineId)
 $baselineMetadataPath = Join-Path $baselineDirectory "metadata.json"
 if (-not (Test-Path $baselineMetadataPath)) {
+    $captureLogPath = Join-Path $baselineDirectory "capture.log"
+    if (Test-Path $captureLogPath) {
+        throw "Baseline '$($baseline.BaselineId)' is incomplete. Review '$captureLogPath', then recapture with -Force."
+    }
     throw "Baseline '$($baseline.BaselineId)' has not been captured. Run capture-performance-baseline.ps1 first."
 }
 
 $baselineMetadata = Get-Content $baselineMetadataPath -Raw | ConvertFrom-Json
-$requestedSuites = @(Get-NacellePerformanceBenchmarks $Suite).Name
 $capturedSuites = @($baselineMetadata.suites)
+$suiteWasSpecified = $PSBoundParameters.ContainsKey("Suite")
+if (-not $suiteWasSpecified) {
+    $Suite = $capturedSuites
+}
+$requestedSuites = @($Suite | Where-Object { $_ -ne "all" })
+if ($Suite -contains "all") {
+    $requestedSuites = $capturedSuites
+    $Suite = $capturedSuites
+}
 $missingSuites = @($requestedSuites | Where-Object { $capturedSuites -notcontains $_ })
 if ($missingSuites.Count -gt 0) {
     throw "Baseline '$($baseline.BaselineId)' does not contain: $($missingSuites -join ', ')."
