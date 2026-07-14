@@ -26,7 +26,14 @@ nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
-criterion = { workspace = true }
+actix-codec = { workspace = true }
+criterion = { workspace = true, features = ["async_tokio"] }
+futures-core = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
+
+[[bench]]
+name = "codec_comparison"
+harness = false
 
 [[bench]]
 name = "critical_paths"
@@ -72,3 +79,7 @@ required-features = ["tcp", "tls-self-signed"]
 name = "dual_echo"
 path = "src/bin/dual_echo.rs"
 required-features = ["tcp", "http"]
+
+[[bin]]
+name = "line_codec"
+path = "src/bin/line_codec.rs"
