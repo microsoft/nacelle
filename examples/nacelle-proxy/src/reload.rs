@@ -82,7 +82,13 @@ fn reload_tls_if_changed(
     match (&candidate.certificate, &candidate.private_key) {
         (Some(certificate), Some(private_key)) => service
             .reload_tls(certificate, private_key)
-            .map_err(|error| format!("invalid TLS material: {error}")),
+            .map_err(|error| {
+                let mut message = format!("invalid TLS material: {error}");
+                if let Some(source) = std::error::Error::source(&error) {
+                    message.push_str(&format!(": {source}"));
+                }
+                message
+            }),
         (None, None) => Err("TLS file paths cannot be removed at runtime".to_string()),
         _ => unreachable!("configuration validation requires both TLS files"),
     }
