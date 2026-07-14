@@ -167,7 +167,7 @@ function Copy-NacelleCriterionBaselines {
     if (Test-Path $destination) {
         Remove-Item $destination -Recurse -Force
     }
-    [System.IO.Directory]::CreateDirectory($DestinationTargetDirectory) | Out-Null
+    [System.IO.Directory]::CreateDirectory($destination) | Out-Null
     Copy-Item $source $destination -Recurse
 }
 
