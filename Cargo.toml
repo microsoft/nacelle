@@ -46,7 +46,7 @@ openssl = "0.10.81"
 opentelemetry = "0.32.0"
 opentelemetry_sdk = "0.32.1"
 pem = "3.0.6"
-proptest = "1.11.0"
+proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
 rcgen = "0.14.8"
 rustls = "0.23.41"
 serde = "1.0.228"
