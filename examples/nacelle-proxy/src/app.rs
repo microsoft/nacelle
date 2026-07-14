@@ -11,7 +11,8 @@ use crate::wire::ProxyProtocol;
 use crate::{ProxyError, ProxyService};
 use nacelle::NacelleApp;
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleLimits, NacelleShutdown, NacelleTlsConfig};
+use nacelle::core::{NacelleError, NacelleLimits, NacelleShutdown};
+use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::{NacelleTcpLimits, TcpRequestContext, TcpServer};
 
 const DEFAULT_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.toml");

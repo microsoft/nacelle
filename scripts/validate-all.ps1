@@ -18,8 +18,12 @@ function Invoke-Step {
 Invoke-Step "cargo fmt" { cargo fmt --all -- --check }
 Invoke-Step "workspace tests" { cargo test --workspace --all-targets }
 Invoke-Step "workspace clippy" { cargo clippy --workspace --all-targets -- -D warnings }
-Invoke-Step "nacelle-core full tests" { cargo test -p nacelle-core --features "tls-self-signed,otel" --all-targets }
-Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features "tls-self-signed,otel" --all-targets -- -D warnings }
+Invoke-Step "nacelle-core full tests" { cargo test -p nacelle-core --features "tls,otel" --all-targets }
+Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features "tls,otel" --all-targets -- -D warnings }
+Invoke-Step "nacelle-rustls full tests" { cargo test -p nacelle-rustls --all-features --all-targets }
+Invoke-Step "nacelle-rustls full clippy" { cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings }
+Invoke-Step "nacelle-openssl tests" { cargo test -p nacelle-openssl --all-targets }
+Invoke-Step "nacelle-openssl clippy" { cargo clippy -p nacelle-openssl --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp tests" { cargo test -p nacelle-tcp --all-targets }
 Invoke-Step "nacelle-tcp clippy" { cargo clippy -p nacelle-tcp --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp tls tests" { cargo test -p nacelle-tcp --features tls-self-signed --all-targets }
@@ -60,9 +64,9 @@ if ($LASTEXITCODE -eq 0) {
     throw "rustls is selected by the tcp,openssl feature set"
 }
 
-cargo tree --workspace --no-default-features -i rustls *> $null
+cargo tree -p nacelle --no-default-features -i rustls *> $null
 if ($LASTEXITCODE -eq 0) {
-    throw "rustls is selected by the workspace no-default feature set"
+    throw "rustls is selected by the nacelle no-default feature set"
 }
 
 if (Get-Command cargo-audit -ErrorAction SilentlyContinue) {

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use nacelle::core::NacelleTlsConfig;
+use nacelle::rustls::NacelleTlsConfig;
 use serde::Deserialize;
 
 use crate::ProxyError;

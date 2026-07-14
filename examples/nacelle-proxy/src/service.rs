@@ -3,7 +3,7 @@
 use std::sync::{Arc, RwLock};
 
 use bytes::BytesMut;
-use nacelle::core::NacelleTlsConfig;
+use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::{TcpHandlerCompletion, TcpRequestContext, TcpResponse};
 
 use crate::ProxyError;

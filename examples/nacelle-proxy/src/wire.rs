@@ -54,17 +54,15 @@ impl ReferenceProtocolClient {
         opcode: u64,
         body: &[u8],
     ) -> Result<Bytes, ProxyError> {
-        let connect = tokio::time::timeout(
-            self.connect_timeout,
-            TcpStream::connect(self.backend_addr),
-        )
-        .await
-        .map_err(|_| {
-            ProxyError::upstream_connect(
-                self.backend_addr,
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"),
-            )
-        })?;
+        let connect =
+            tokio::time::timeout(self.connect_timeout, TcpStream::connect(self.backend_addr))
+                .await
+                .map_err(|_| {
+                    ProxyError::upstream_connect(
+                        self.backend_addr,
+                        std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"),
+                    )
+                })?;
         let mut stream =
             connect.map_err(|error| ProxyError::upstream_connect(self.backend_addr, error))?;
 

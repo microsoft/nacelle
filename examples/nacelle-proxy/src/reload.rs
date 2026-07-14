@@ -1,5 +1,6 @@
 //! Runtime configuration watching and last-known-good reload policy.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,7 +86,7 @@ fn reload_tls_if_changed(
             .map_err(|error| {
                 let mut message = format!("invalid TLS material: {error}");
                 if let Some(source) = std::error::Error::source(&error) {
-                    message.push_str(&format!(": {source}"));
+                    write!(&mut message, ": {source}").expect("writing to String cannot fail");
                 }
                 message
             }),

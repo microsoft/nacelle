@@ -15,15 +15,17 @@ function Invoke-Step {
 
 Invoke-Step "cargo fmt" { cargo fmt --all -- --check }
 Invoke-Step "workspace clippy" { cargo clippy --workspace --all-targets -- -D warnings }
-Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features tls-self-signed, otel --all-targets -- -D warnings }
+Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features "tls,otel" --all-targets -- -D warnings }
+Invoke-Step "nacelle-rustls full clippy" { cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings }
+Invoke-Step "nacelle-openssl clippy" { cargo clippy -p nacelle-openssl --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp clippy" { cargo clippy -p nacelle-tcp --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp tls clippy" { cargo clippy -p nacelle-tcp --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "nacelle-http full clippy" { cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
 Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
-Invoke-Step "nacelle full clippy" { cargo clippy -p nacelle --features http, otel --all-targets -- -D warnings }
+Invoke-Step "nacelle full clippy" { cargo clippy -p nacelle --features "http,otel" --all-targets -- -D warnings }
 Invoke-Step "nacelle tcp-only clippy" { cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings }
-Invoke-Step "nacelle all-feature clippy" { cargo clippy -p nacelle --features http, otel, tls-self-signed --all-targets -- -D warnings }
+Invoke-Step "nacelle all-feature clippy" { cargo clippy -p nacelle --features "http,otel,tls-self-signed" --all-targets -- -D warnings }
 
 cargo tree -i serde_yaml *> $null
 if ($LASTEXITCODE -eq 0) {
@@ -35,14 +37,14 @@ if ($LASTEXITCODE -eq 0) {
     throw "unsafe-libyaml is still present"
 }
 
-cargo tree -p nacelle --no-default-features --features tcp, openssl -i rustls *> $null
+cargo tree -p nacelle --no-default-features --features "tcp,openssl" -i rustls *> $null
 if ($LASTEXITCODE -eq 0) {
     throw "rustls is selected by the tcp,openssl feature set"
 }
 
-cargo tree --workspace --no-default-features -i rustls *> $null
+cargo tree -p nacelle --no-default-features -i rustls *> $null
 if ($LASTEXITCODE -eq 0) {
-    throw "rustls is selected by the workspace no-default feature set"
+    throw "rustls is selected by the nacelle no-default feature set"
 }
 
 if (Get-Command cargo-audit -ErrorAction SilentlyContinue) {
