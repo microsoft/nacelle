@@ -12,9 +12,9 @@ use std::thread;
 #[cfg(feature = "otel")]
 use std::time::Duration;
 
-#[cfg(feature = "tls-self-signed")]
-use nacelle::core::NacelleTlsConfig;
 use nacelle::core::{NacelleError, NacelleTelemetry};
+#[cfg(feature = "tls-self-signed")]
+use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::{TcpHandler, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::make_tcp_socket;

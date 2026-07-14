@@ -6,9 +6,8 @@ use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::{NacelleTelemetryObserver, NacelleTransport};
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
 
@@ -131,7 +130,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     };
-                let connection = connection.with_tls(NacelleConnectionTlsMeta::new("rustls"));
+                let connection =
+                    connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
                 server
                     .serve_io_without_connection_limit(stream, connection)
                     .await

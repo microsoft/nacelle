@@ -4,7 +4,9 @@ Nacelle is organized as a small core plus protocol-specific transport crates.
 
 ## Crate Layout
 
-- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and TLS primitives.
+- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and provider-neutral TLS metadata.
+- `nacelle-openssl`: OpenSSL configuration reload and negotiated metadata extraction.
+- `nacelle-rustls`: Rustls configuration reload, certificate parsing, SNI policy, and negotiated metadata extraction.
 - `nacelle-tcp`: TCP/Unix socket server, protocol trait, connection loop, and listener runtime.
 - `nacelle-http`: Hyper HTTP/1 server, HTTP request policy, and HTTP TLS listener integration.
 - `nacelle`: convenience crate with `core`, `codec`, `tcp`, `http`, and
@@ -32,11 +34,12 @@ concrete typed servers together with
 telemetry, shutdown, and supervision. `nacelle::runtime::NacelleHost` remains
 available for services that need manual listener control.
 
-TLS lives in `nacelle-core` because the configuration and provider metadata are
-shared. `tls` is provider-neutral. `rustls` enables the Rustls provider used by
-HTTP and TCP. `openssl` enables the OpenSSL provider for TCP without
-selecting Rustls. Both providers feed `NacelleTlsProvider` and per-connection
-TLS metadata.
+Provider-neutral TLS identity and per-connection metadata live in `nacelle-core`.
+Concrete configuration, certificate handling, reload policy, and negotiated
+metadata extraction live in `nacelle-rustls` and `nacelle-openssl`. Transport
+crates retain listener lifecycle and async I/O adaptation so provider crates do
+not depend back on TCP or HTTP. The `nacelle` facade preserves the `rustls`,
+`openssl`, and `tls-self-signed` feature names and exposes provider namespaces.
 
 ## Request Flow
 

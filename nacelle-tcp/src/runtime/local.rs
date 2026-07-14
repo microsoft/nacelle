@@ -3,15 +3,13 @@ use std::rc::Rc;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
-#[cfg(feature = "rustls")]
-use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::{
     NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
 };
 #[cfg(feature = "openssl")]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
@@ -253,8 +251,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     };
-                    let connection =
-                        connection.with_tls(NacelleConnectionTlsMeta::new("rustls"));
+                    let connection = connection
+                        .with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
                     serve_local_stream_without_connection_limit(
                         stream,
                         server.protocol(),
@@ -355,7 +353,7 @@ where
                         }
                     }
                     let connection = connection.with_tls(
-                        crate::runtime::openssl::openssl_tls_meta(stream.ssl()),
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
                     serve_local_stream_without_connection_limit(
                         stream,
@@ -456,7 +454,7 @@ where
                         }
                     }
                     let connection = connection.with_tls(
-                        crate::runtime::openssl::openssl_tls_meta(stream.ssl()),
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
                     serve_local_serial_stream_without_connection_limit(
                         stream,
@@ -585,7 +583,7 @@ where
                         }
                     }
                     let connection = connection.with_tls(
-                        crate::runtime::openssl::openssl_tls_meta(stream.ssl()),
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
                     serve_local_serial_stream_without_connection_limit(
                         stream,
@@ -775,7 +773,7 @@ mod tests {
                 let addr = listener.local_addr().expect("address");
                 let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
                 let certificate =
-                    nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+                    nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
                         .expect("certificate")
                         .remove(0);
                 let mut roots = rustls::RootCertStore::empty();

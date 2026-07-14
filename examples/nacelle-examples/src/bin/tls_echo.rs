@@ -1,7 +1,8 @@
 use bytes::BytesMut;
 use nacelle::NacelleApp;
+use nacelle::core::NacelleError;
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleTlsConfig};
+use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 

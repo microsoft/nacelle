@@ -1,0 +1,25 @@
+[package]
+name = "nacelle-rustls"
+version = "0.3.0-beta.3"
+edition = "2024"
+rust-version.workspace = true
+description = "Rustls configuration and metadata integration for Nacelle."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords = ["rustls", "tls", "networking", "async"]
+categories = ["asynchronous", "network-programming", "cryptography"]
+
+[features]
+default = []
+self-signed = ["dep:rcgen"]
+
+[dependencies]
+nacelle-core = { workspace = true, features = ["tls"] }
+pem = { workspace = true }
+rcgen = { workspace = true, optional = true }
+rustls = { workspace = true }
+
+[lints]
+workspace = true

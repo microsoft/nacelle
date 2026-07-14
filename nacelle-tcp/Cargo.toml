@@ -15,16 +15,18 @@ categories = ["asynchronous", "network-programming"]
 default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
 tls = []
-rustls = ["tls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/rustls"]
-openssl = ["tls", "dep:openssl", "dep:tokio-openssl", "nacelle-core/openssl"]
-openssl-vendored = ["openssl", "openssl/vendored", "nacelle-core/openssl-vendored"]
-tls-self-signed = ["rustls", "nacelle-core/tls-self-signed"]
+rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
+openssl = ["tls", "dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl", "nacelle-core/tls"]
+openssl-vendored = ["openssl", "openssl/vendored", "nacelle-openssl/vendored"]
+tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 otel = ["dep:opentelemetry", "nacelle-core/otel"]
 
 [dependencies]
 bytes = { workspace = true }
 nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
+nacelle-openssl = { workspace = true, optional = true }
+nacelle-rustls = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }

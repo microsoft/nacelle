@@ -10,9 +10,9 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 #[cfg(all(feature = "openssl", feature = "tcp"))]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(feature = "rustls", any(feature = "tcp", feature = "http")))]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 
 #[cfg(feature = "http")]
 use nacelle_http::{

@@ -14,8 +14,8 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 tls = []
-rustls = ["tls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/rustls"]
-tls-self-signed = ["rustls", "nacelle-core/tls-self-signed"]
+rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
+tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -25,6 +25,7 @@ http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["server", "tokio"] }
 nacelle-core = { workspace = true }
+nacelle-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { workspace = true, optional = true }

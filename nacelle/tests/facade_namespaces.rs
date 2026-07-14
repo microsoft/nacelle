@@ -59,3 +59,17 @@ fn tcp_capability_namespace_is_available() {
 fn http_capability_namespace_is_available() {
     let _ = nacelle::http::NacelleHttpLimits::default();
 }
+
+#[cfg(feature = "openssl")]
+#[test]
+fn openssl_capability_namespace_is_available() {
+    let _ = std::any::type_name::<nacelle::openssl::NacelleOpenSslConfig>();
+    let _ = std::any::type_name::<nacelle::NacelleOpenSslConfig>();
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn rustls_capability_namespace_is_available() {
+    let _ = std::any::type_name::<nacelle::rustls::NacelleTlsConfig>();
+    let _ = std::any::type_name::<nacelle::NacelleTlsConfig>();
+}

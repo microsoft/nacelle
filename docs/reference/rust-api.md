@@ -21,8 +21,11 @@ target/doc/nacelle/index.html
 Start with these public entry points:
 
 - `nacelle::prelude::*` for common application imports.
-- `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`, and
-  `nacelle::runtime` for capability-oriented imports.
+- `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`,
+  `nacelle::openssl`, `nacelle::rustls`, and `nacelle::runtime` for
+  capability-oriented imports.
+- `nacelle::openssl::NacelleOpenSslConfig` and
+  `nacelle::rustls::NacelleTlsConfig` for concrete provider configuration.
 - `nacelle::advanced::runtime` for raw executor and transport listener helpers
   when app/host composition is not sufficient.
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)` for the

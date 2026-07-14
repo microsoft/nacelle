@@ -1,0 +1,23 @@
+[package]
+name = "nacelle-openssl"
+version = "0.3.0-beta.3"
+edition = "2024"
+rust-version.workspace = true
+description = "OpenSSL configuration and metadata integration for Nacelle."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords = ["openssl", "tls", "networking", "async"]
+categories = ["asynchronous", "network-programming", "cryptography"]
+
+[features]
+default = []
+vendored = ["openssl/vendored"]
+
+[dependencies]
+nacelle-core = { workspace = true, features = ["tls"] }
+openssl = { workspace = true }
+
+[lints]
+workspace = true

@@ -9,7 +9,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::NacelleDrainDeadline;
 use nacelle_core::pipeline::local_handler_fn;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{

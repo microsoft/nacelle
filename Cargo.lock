@@ -736,6 +736,8 @@ dependencies = [
  "nacelle-codec",
  "nacelle-core",
  "nacelle-http",
+ "nacelle-openssl",
+ "nacelle-rustls",
  "nacelle-tcp",
  "socket2",
  "tokio",
@@ -759,11 +761,7 @@ version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "futures-core",
- "openssl",
  "opentelemetry",
- "pem",
- "rcgen",
- "rustls",
  "tokio",
  "tokio-util",
  "tracing",
@@ -795,10 +793,19 @@ dependencies = [
  "hyper",
  "hyper-util",
  "nacelle-core",
+ "nacelle-rustls",
  "rustls",
  "tokio",
  "tokio-rustls",
  "tracing",
+]
+
+[[package]]
+name = "nacelle-openssl"
+version = "0.3.0-beta.3"
+dependencies = [
+ "nacelle-core",
+ "openssl",
 ]
 
 [[package]]
@@ -810,6 +817,16 @@ dependencies = [
  "nacelle-core",
  "nacelle-tcp",
  "proptest",
+]
+
+[[package]]
+name = "nacelle-rustls"
+version = "0.3.0-beta.3"
+dependencies = [
+ "nacelle-core",
+ "pem",
+ "rcgen",
+ "rustls",
 ]
 
 [[package]]
@@ -861,6 +878,8 @@ dependencies = [
  "criterion",
  "nacelle-codec",
  "nacelle-core",
+ "nacelle-openssl",
+ "nacelle-rustls",
  "openssl",
  "opentelemetry",
  "rustls",
