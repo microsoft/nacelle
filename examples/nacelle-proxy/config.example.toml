@@ -1,0 +1,26 @@
+listen_addr = "127.0.0.1:8443"
+backend_addr = "127.0.0.1:8080"
+connect_timeout_ms = 3000
+# One deadline covers the upstream request write and all response frames.
+upstream_io_timeout_ms = 30000
+
+# This teaching proxy fully buffers request and response bodies. These bounds
+# are startup-only except for max_upstream_response_bytes.
+max_request_body_bytes = 1048576
+max_response_body_bytes = 1048576
+max_upstream_response_bytes = 1048576
+
+# Startup-only Nacelle admission and memory-accounting limits.
+max_connections = 64
+max_in_flight_requests = 32
+max_connections_per_peer = 16
+# This covers Nacelle-managed allocations, not total process RSS or the
+# proxy-owned upstream response buffer.
+max_memory_bytes = 134217728
+handler_timeout_ms = 60000
+
+# With the default tls-self-signed feature, omitting both paths creates an
+# ephemeral local-development identity. With only the tls feature, both paths
+# are required. Paths are resolved relative to this configuration file.
+# certificate_path = "cert.pem"
+# private_key_path = "key.pem"

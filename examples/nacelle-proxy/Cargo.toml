@@ -1,0 +1,53 @@
+[package]
+name = "nacelle-proxy"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+description = "Runtime-reloadable TCP proxy example built with Nacelle."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+default = ["tls-self-signed"]
+tls = ["nacelle/tcp", "nacelle/rustls"]
+tls-self-signed = [
+	"tls",
+	"nacelle/tls-self-signed",
+	"dep:pem",
+	"dep:rustls",
+	"dep:tokio-rustls",
+]
+
+[dependencies]
+bytes = { workspace = true }
+nacelle = { path = "../../nacelle", version = "0.3.0-beta.3", default-features = false }
+nacelle-reference-protocol = { workspace = true }
+pem = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio-rustls = { workspace = true, optional = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+
+[[bench]]
+name = "simple_rtt"
+harness = false
+required-features = ["tls"]
+
+[[bench]]
+name = "protocol_efficiency"
+harness = false
+required-features = ["tls"]
+
+[[bin]]
+name = "nacelle-proxy"
+path = "src/main.rs"
+required-features = ["tls"]
+
+[lints]
+workspace = true

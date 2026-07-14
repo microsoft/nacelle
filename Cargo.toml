@@ -9,6 +9,7 @@ members = [
     "nacelle",
     "examples/nacelle-examples",
     "examples/nacelle-reference-protocol",
+    "examples/nacelle-proxy",
     "examples/nacelle-stress-common",
     "examples/nacelle-stress-test",
     "examples/nacelle-stress-server",
