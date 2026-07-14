@@ -801,7 +801,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "core_affinity",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-codec"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "criterion",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-core"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "futures-core",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-http"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "futures-core",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-common"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "nacelle",
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-server"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "libmimalloc-sys",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-test"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "mimalloc",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-tcp"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "bytes",
  "criterion",

@@ -21,12 +21,12 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # Internal crates
-nacelle = { path = "nacelle", version = "0.3.0-beta.2" }
-nacelle-codec = { path = "nacelle-codec", version = "0.3.0-beta.2" }
-nacelle-core = { path = "nacelle-core", version = "0.3.0-beta.2" }
-nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-beta.2" }
-nacelle-http = { path = "nacelle-http", version = "0.3.0-beta.2" }
-nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-beta.2" }
+nacelle = { path = "nacelle", version = "0.3.0-beta.3" }
+nacelle-codec = { path = "nacelle-codec", version = "0.3.0-beta.3" }
+nacelle-core = { path = "nacelle-core", version = "0.3.0-beta.3" }
+nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-beta.3" }
+nacelle-http = { path = "nacelle-http", version = "0.3.0-beta.3" }
+nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-beta.3" }
 nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
 
 # External dependencies

@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-http"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 edition = "2024"
 rust-version.workspace = true
 description = "Hyper HTTP/1 transport and HTTP edge policy runtime for Nacelle streaming handlers."
