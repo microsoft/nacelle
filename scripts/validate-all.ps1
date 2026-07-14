@@ -8,8 +8,10 @@ function Invoke-Step {
 
     Write-Host "==> $Name"
     & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Name failed with exit code $LASTEXITCODE"
+    $commandSucceeded = $?
+    $exitCode = $LASTEXITCODE
+    if (-not $commandSucceeded -or $exitCode -ne 0) {
+        throw "$Name failed with exit code $exitCode"
     }
 }
 
