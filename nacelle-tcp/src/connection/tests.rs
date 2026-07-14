@@ -1223,6 +1223,22 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
     }
 }
 
+struct DrainSerialHandler {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl SerialTcpHandler<SerialCounterProtocol> for DrainSerialHandler {
+    async fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, SerialCounterProtocol>,
+    ) -> Result<crate::protocol::TcpHandlerCompletion<SerialCounterProtocol>, NacelleError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        context.respond(TcpResponse::bytes("ok")).await
+    }
+}
+
 #[tokio::test]
 async fn serial_state_mutation_is_ordered_and_not_reentrant() {
     let (mut client, server_io) = tokio::io::duplex(64);
@@ -1638,6 +1654,13 @@ async fn shared_serial_listener_serves_and_drains_connection_permits() {
     let mut client = tokio::net::TcpStream::connect(addr)
         .await
         .expect("client should connect");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime_state.active_connections() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection should become active");
     client.write_all(&[0]).await.expect("request should write");
     let mut response = [0_u8; 1];
     client
@@ -1654,6 +1677,136 @@ async fn shared_serial_listener_serves_and_drains_connection_permits() {
         .expect("listener task should join")
         .expect("listener should drain cleanly");
     assert_eq!(runtime_state.active_connections(), 0);
+}
+
+#[tokio::test]
+async fn graceful_drain_delivers_completed_coalesced_response() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let runtime_state = NacelleRuntimeState::default();
+    let observer = NacelleInMemoryObserver::new();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = Arc::new(
+        SerialTcpServer::new(
+            SerialCounterProtocol,
+            DrainSerialHandler {
+                started: started.clone(),
+                release: release.clone(),
+            },
+        )
+        .with_tcp_config(
+            NacelleTcpConfig::default()
+                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        )
+        .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
+        .with_runtime_state(runtime_state.clone()),
+    );
+    let shutdown = NacelleShutdown::new();
+    let server_task = tokio::spawn(
+        crate::runtime::serve_serial_tcp_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            crate::options::NacelleTcpOptions::default(),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    client.write_all(&[0]).await.expect("request should write");
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("handler should start");
+    shutdown.shutdown();
+    release.notify_one();
+
+    let mut response = [0_u8; 2];
+    client
+        .read_exact(&mut response)
+        .await
+        .expect("completed response should drain");
+    assert_eq!(&response, b"ok");
+    drop(client);
+    server_task
+        .await
+        .expect("listener task should join")
+        .expect("listener should drain cleanly");
+    assert_eq!(runtime_state.active_connections(), 0);
+    let events = observer.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == NacelleTelemetryEventKind::DrainCompleted)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind != NacelleTelemetryEventKind::DrainTimedOut)
+    );
+}
+
+#[tokio::test]
+async fn forced_drain_deadline_aborts_idle_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let runtime_state = NacelleRuntimeState::default();
+    let observer = NacelleInMemoryObserver::new();
+    let server = Arc::new(
+        SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+            .with_tcp_config(
+                NacelleTcpConfig::default()
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
+            .with_runtime_state(runtime_state.clone()),
+    );
+    let shutdown = NacelleShutdown::new();
+    let server_task = tokio::spawn(
+        crate::runtime::serve_serial_tcp_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            crate::options::NacelleTcpOptions::default(),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::ZERO),
+        ),
+    );
+
+    let client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while runtime_state.active_connections() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection should become active");
+    shutdown.shutdown();
+    server_task
+        .await
+        .expect("listener task should join")
+        .expect("listener should abort after deadline");
+    drop(client);
+
+    assert_eq!(runtime_state.active_connections(), 0);
+    let events = observer.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == NacelleTelemetryEventKind::DrainTimedOut)
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == NacelleTelemetryEventKind::ConnectionsAborted)
+    );
 }
 
 #[tokio::test]

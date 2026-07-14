@@ -12,9 +12,9 @@ use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use nacelle_core::error::NacelleError;
 use nacelle_core::telemetry::NacelleTelemetryObserver;
 #[cfg(feature = "openssl")]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 
 use super::TcpServer;
 

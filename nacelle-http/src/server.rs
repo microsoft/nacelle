@@ -26,15 +26,13 @@ use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponder};
 use nacelle_core::request::NacelleConnectionMeta;
-#[cfg(feature = "rustls")]
-use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::{
     NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
     NoopObserver,
 };
-#[cfg(feature = "rustls")]
-use nacelle_core::tls::NacelleTlsConfig;
 use nacelle_core::{NacellePeerRateLimitResult, NacellePeerRateLimiter};
+#[cfg(feature = "rustls")]
+use nacelle_rustls::NacelleTlsConfig;
 
 use crate::pipeline::{
     HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
@@ -441,7 +439,7 @@ where
                             }
                         };
                         let connection =
-                            connection.with_tls(rustls_tls_meta(stream.get_ref().1));
+                            connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
                         run_local_http_connection(server, stream, connection, connection_permit)
                             .await
                     });
@@ -838,7 +836,7 @@ where
                                 return Err(NacelleError::Timeout("tls_handshake"));
                             }
                         };
-                        let connection = connection.with_tls(rustls_tls_meta(tls_stream.get_ref().1));
+                        let connection = connection.with_tls(nacelle_rustls::connection_tls_meta(tls_stream.get_ref().1));
                         run_http_connection(
                             server,
                             tls_stream,
@@ -1120,21 +1118,6 @@ fn peer_rate_rejection_reason(result: NacellePeerRateLimitResult) -> &'static st
         NacellePeerRateLimitResult::RateLimited => "peer_rate",
         NacellePeerRateLimitResult::TableFull => "peer_rate_table_full",
     }
-}
-
-#[cfg(feature = "rustls")]
-fn rustls_tls_meta(connection: &rustls::ServerConnection) -> NacelleConnectionTlsMeta {
-    let mut metadata = NacelleConnectionTlsMeta::new("rustls");
-    if let Some(protocol) = connection.protocol_version() {
-        metadata = metadata.with_protocol(format!("{protocol:?}"));
-    }
-    if let Some(cipher_suite) = connection.negotiated_cipher_suite() {
-        metadata = metadata.with_cipher_suite(format!("{:?}", cipher_suite.suite()));
-    }
-    if let Some(server_name) = connection.server_name() {
-        metadata = metadata.with_server_name(server_name);
-    }
-    metadata
 }
 
 struct HttpAccessLog<'a> {
@@ -1445,7 +1428,7 @@ mod tests {
                 let addr = listener.local_addr().expect("address");
                 let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
                 let certificate =
-                    nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+                    nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
                         .expect("certificate")
                         .remove(0);
                 let mut roots = rustls::RootCertStore::empty();
@@ -2165,10 +2148,10 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        let generated = nacelle_core::tls::NacelleTlsConfig::self_signed(["localhost"])
-            .expect("self-signed tls");
+        let generated =
+            nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed tls");
         let certificate =
-            nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
                 .expect("certificate should parse")
                 .remove(0);
         let mut roots = rustls::RootCertStore::empty();
@@ -2238,17 +2221,16 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        let generated =
-            nacelle_core::tls::NacelleTlsConfig::self_signed(["localhost", "wrong.local"])
-                .expect("self-signed tls");
-        let tls_config = nacelle_core::tls::NacelleTlsConfig::from_pem_with_allowed_server_names(
+        let generated = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost", "wrong.local"])
+            .expect("self-signed tls");
+        let tls_config = nacelle_rustls::NacelleTlsConfig::from_pem_with_allowed_server_names(
             generated.certificate_pem.as_bytes(),
             generated.private_key_pem.as_bytes(),
             ["localhost"],
         )
         .expect("SNI allowlist config should build");
         let certificate =
-            nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
                 .expect("certificate should parse")
                 .remove(0);
         let mut roots = rustls::RootCertStore::empty();

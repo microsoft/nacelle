@@ -10,9 +10,9 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 #[cfg(all(feature = "openssl", feature = "tcp"))]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(feature = "rustls", any(feature = "tcp", feature = "http")))]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 
 #[cfg(feature = "http")]
 use nacelle_http::{
@@ -20,6 +20,8 @@ use nacelle_http::{
 };
 #[cfg(feature = "tcp")]
 use nacelle_tcp::options::NacelleTcpOptions;
+#[cfg(all(feature = "openssl", feature = "tcp"))]
+use nacelle_tcp::options::NacelleTlsDetectionOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::protocol::{LocalTcpHandler, LocalTcpOneWayHandler, Protocol};
 #[cfg(feature = "tcp")]
@@ -120,6 +122,7 @@ impl WorkerSet {
 pub struct ThreadPerCoreConfig {
     workers: WorkerSet,
     pin_workers: bool,
+    max_threads: Option<usize>,
 }
 
 /// Resource accounting policy selected once for a thread-per-core runtime.
@@ -203,7 +206,22 @@ impl ThreadPerCoreConfig {
         Self {
             workers,
             pin_workers: false,
+            max_threads: None,
         }
+    }
+
+    /// Limit the number of worker threads after worker selection.
+    ///
+    /// The limit applies equally to worker sets created with [`WorkerSet::all`],
+    /// [`WorkerSet::first`], or [`WorkerSet::explicit`] and preserves selection
+    /// order. A limit larger than the selected set leaves that set unchanged.
+    pub fn with_max_threads(mut self, max_threads: usize) -> Result<Self, NacelleError> {
+        if max_threads == 0 {
+            return Err(NacelleError::ResourceLimit("worker_count"));
+        }
+        self.workers.core_ids.truncate(max_threads);
+        self.max_threads = Some(max_threads);
+        Ok(self)
     }
 
     /// Enable or disable CPU affinity for worker threads.
@@ -215,6 +233,11 @@ impl ThreadPerCoreConfig {
     /// Selected workers.
     pub const fn workers(&self) -> &WorkerSet {
         &self.workers
+    }
+
+    /// Configured worker-thread limit, if one was applied.
+    pub const fn max_threads(&self) -> Option<usize> {
+        self.max_threads
     }
 
     /// Whether workers are pinned before their pipeline factory runs.
@@ -873,6 +896,68 @@ where
     })
 }
 
+/// Run one worker-local serial plaintext-or-OpenSSL listener per configured worker.
+#[cfg(all(feature = "tcp", feature = "openssl"))]
+pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
+    P,
+    H,
+    OH,
+    Observer,
+    ServerObserver,
+    Factory,
+>(
+    config: LocalTcpRuntimeConfig<Observer>,
+    tls_config: NacelleOpenSslConfig,
+    detection_options: NacelleTlsDetectionOptions,
+    server_factory: Factory,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
+    ServerObserver: NacelleTelemetryObserver,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+        + Clone
+        + Send
+        + 'static,
+{
+    if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
+        return Err(NacelleError::ResourceLimit(
+            "thread_per_core_ephemeral_port",
+        ));
+    }
+    let runtime = config.runtime;
+    let shutdown = config.shutdown;
+    let limits = config.limits;
+    let telemetry = config.telemetry;
+    let addr = config.addr;
+    let tcp_options = config.tcp_options;
+    let drain_timeout = config.drain_timeout;
+    run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
+        let listener = bind_reuse_port_listener(addr)?;
+        let server = std::rc::Rc::new(
+            server_factory(context.worker)?
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+        );
+        let tcp_options = tcp_options.clone();
+        let tls_config = tls_config.clone();
+        let detection_options = detection_options.clone();
+        Ok(async move {
+            nacelle_tcp::runtime::serve_local_serial_tcp_optional_openssl_listener(
+                server,
+                listener,
+                tcp_options,
+                tls_config,
+                detection_options,
+                context.shutdown,
+                nacelle_core::lifecycle::NacelleDrainDeadline::new(drain_timeout),
+            )
+            .await
+        })
+    })
+}
+
 /// Run one worker-local HTTP/1 listener stack per configured worker.
 #[cfg(feature = "http")]
 pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory>(
@@ -1031,6 +1116,73 @@ mod tests {
         let selected: Vec<_> = workers.workers().map(|worker| worker.core_id).collect();
 
         assert_eq!(selected, [available[1].id, available[0].id]);
+    }
+
+    #[test]
+    fn thread_limit_caps_every_worker_selection_model() {
+        let available = core_affinity::get_core_ids().expect("logical CPUs should be discoverable");
+        if available.len() < 2 {
+            return;
+        }
+
+        let all = ThreadPerCoreConfig::new(WorkerSet::all().expect("all workers"))
+            .with_max_threads(1)
+            .expect("valid thread limit");
+        let first = ThreadPerCoreConfig::new(WorkerSet::first(2).expect("first workers"))
+            .with_max_threads(1)
+            .expect("valid thread limit");
+        let explicit = ThreadPerCoreConfig::new(
+            WorkerSet::explicit([available[1].id, available[0].id]).expect("explicit workers"),
+        )
+        .with_max_threads(1)
+        .expect("valid thread limit");
+
+        assert_eq!(all.workers().len(), 1);
+        assert_eq!(first.workers().len(), 1);
+        assert_eq!(explicit.workers().len(), 1);
+        assert_eq!(explicit.workers().core_ids, [available[1].id]);
+        assert_eq!(explicit.max_threads(), Some(1));
+    }
+
+    #[test]
+    fn thread_limit_rejects_zero_and_allows_larger_limit() {
+        let workers = WorkerSet::first(1).expect("one worker should be available");
+        assert!(matches!(
+            ThreadPerCoreConfig::new(workers.clone()).with_max_threads(0),
+            Err(NacelleError::ResourceLimit("worker_count"))
+        ));
+
+        let config = ThreadPerCoreConfig::new(workers)
+            .with_max_threads(usize::MAX)
+            .expect("large thread limit");
+        assert_eq!(config.workers().len(), 1);
+        assert_eq!(config.max_threads(), Some(usize::MAX));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn thread_limit_caps_runtime_worker_creation() {
+        let available = core_affinity::get_core_ids().expect("logical CPUs should be discoverable");
+        if available.len() < 2 {
+            return;
+        }
+        let workers = WorkerSet::explicit([available[0].id, available[1].id])
+            .expect("two workers should be valid");
+        let config = ThreadPerCoreConfig::new(workers)
+            .with_max_threads(1)
+            .expect("valid thread limit");
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        run_thread_per_core(config, {
+            let started = started.clone();
+            move |_context| {
+                started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(async { Ok(()) })
+            }
+        })
+        .expect("capped runtime should complete");
+
+        assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

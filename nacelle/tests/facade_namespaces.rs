@@ -44,15 +44,32 @@ fn tcp_capability_namespace_is_available() {
 
     // Importing the generic runner is the compile assertion; there is no
     // meaningful function item until a concrete protocol family is supplied.
-    #[cfg(feature = "openssl")]
-    #[allow(unused_imports)]
-    use nacelle::runtime::run_local_serial_tcp_openssl_thread_per_core;
     #[allow(unused_imports)]
     use nacelle::runtime::run_local_serial_tcp_thread_per_core;
+    #[cfg(feature = "openssl")]
+    #[allow(unused_imports)]
+    use nacelle::runtime::{
+        run_local_serial_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_optional_openssl_thread_per_core,
+    };
 }
 
 #[cfg(feature = "http")]
 #[test]
 fn http_capability_namespace_is_available() {
     let _ = nacelle::http::NacelleHttpLimits::default();
+}
+
+#[cfg(feature = "openssl")]
+#[test]
+fn openssl_capability_namespace_is_available() {
+    let _ = std::any::type_name::<nacelle::openssl::NacelleOpenSslConfig>();
+    let _ = std::any::type_name::<nacelle::NacelleOpenSslConfig>();
+}
+
+#[cfg(feature = "rustls")]
+#[test]
+fn rustls_capability_namespace_is_available() {
+    let _ = std::any::type_name::<nacelle::rustls::NacelleTlsConfig>();
+    let _ = std::any::type_name::<nacelle::NacelleTlsConfig>();
 }

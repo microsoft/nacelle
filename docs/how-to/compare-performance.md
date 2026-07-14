@@ -280,6 +280,57 @@ amortization plus one transactional buffer-growth case, not network throughput.
 Keep immediate delivery for latency-first workloads unless a matched workload
 shows a benefit.
 
+### Response coalescing depth and persistent-pool controls
+
+The `response_delivery` benchmark also provides two policy-matched workload
+families at pipeline depths 1, 8, and 32:
+
+- `same_socket`: one persistent in-memory connection and one request window
+- `pool`: eight persistent in-memory connections, each processing eight request
+	windows; the next window becomes readable only after the previous response
+	window is delivered
+
+Both families compare `Immediate` with `CoalesceBuffered` on the same server,
+decoder, handler, response shape, runtime, and transport. Every response is 32
+bytes. The benchmark asserts total write count and largest write size on every
+iteration. Response-buffer capacity is 2 KiB, so these cases remain inside the
+base connection allocation and do not exercise overflow growth.
+
+Run them with:
+
+```bash
+cargo bench -p nacelle-tcp --bench response_delivery --all-features
+```
+
+A local confidence run based on commit `9be59a0` with a modified worktree used
+Rust 1.95.0 on Linux 6.6.87.2 WSL2 and an Intel Xeon Platinum 8370C virtualized
+topology (one socket, eight visible cores, two threads per core). Times are
+Criterion 95% confidence intervals from that one host.
+
+| Same-socket depth | Policy | Time | Writes | Largest batch | Median delta |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Immediate | 5.569-5.699 us | 1 | 32 B | baseline |
+| 1 | CoalesceBuffered | 5.536-5.641 us | 1 | 32 B | 1.1% lower |
+| 8 | Immediate | 8.497-8.577 us | 8 | 32 B | baseline |
+| 8 | CoalesceBuffered | 7.593-7.758 us | 1 | 256 B | 10.2% lower |
+| 32 | Immediate | 17.834-17.944 us | 32 | 32 B | baseline |
+| 32 | CoalesceBuffered | 14.344-14.436 us | 1 | 1,024 B | 19.6% lower |
+
+| Pool depth | Policy | Time | Total writes | Largest batch | Median delta |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | Immediate | 51.695-52.949 us | 64 | 32 B | baseline |
+| 1 | CoalesceBuffered | 50.578-50.891 us | 64 | 32 B | 2.8% lower |
+| 8 | Immediate | 229.82-230.90 us | 512 | 32 B | baseline |
+| 8 | CoalesceBuffered | 176.78-177.72 us | 64 | 256 B | 23.1% lower |
+| 32 | Immediate | 837.09-851.92 us | 2,048 | 32 B | baseline |
+| 32 | CoalesceBuffered | 608.71-614.00 us | 64 | 1,024 B | 27.6% lower |
+
+Depth 1 remains the latency control: both policies perform one write per
+window, and their intervals are close. At depths 8 and 32, coalescing reduces
+one response window to one write and lowers elapsed time in this synthetic
+adapter workload. These results demonstrate write-path amortization, not socket
+syscall cost, network throughput, allocator counts, or production latency.
+
 Suggested RPS comparison:
 
 ```bash

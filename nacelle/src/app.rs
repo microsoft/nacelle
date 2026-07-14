@@ -13,9 +13,9 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopOb
 use crate::host::NacelleHost;
 
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 #[cfg(all(feature = "tcp", feature = "openssl"))]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]

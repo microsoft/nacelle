@@ -3,15 +3,13 @@ use std::rc::Rc;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
-#[cfg(feature = "rustls")]
-use nacelle_core::request::NacelleConnectionTlsMeta;
 use nacelle_core::telemetry::{
     NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
 };
 #[cfg(feature = "openssl")]
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
-use nacelle_core::tls::NacelleTlsConfig;
+use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
@@ -19,12 +17,17 @@ use crate::connection::{
     serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
 };
 use crate::options::NacelleTcpOptions;
+#[cfg(feature = "openssl")]
+use crate::options::NacelleTlsDetectionOptions;
 use crate::protocol::{
     LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler,
     Protocol,
 };
 use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
+
+#[cfg(feature = "openssl")]
+use super::openssl_optional::detect_tls_handshake;
 
 /// Serve one worker-local TCP listener until shared shutdown is requested.
 ///
@@ -248,8 +251,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     };
-                    let connection =
-                        connection.with_tls(NacelleConnectionTlsMeta::new("rustls"));
+                    let connection = connection
+                        .with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
                     serve_local_stream_without_connection_limit(
                         stream,
                         server.protocol(),
@@ -350,7 +353,7 @@ where
                         }
                     }
                     let connection = connection.with_tls(
-                        crate::runtime::openssl::openssl_tls_meta(stream.ssl()),
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
                     serve_local_stream_without_connection_limit(
                         stream,
@@ -451,7 +454,136 @@ where
                         }
                     }
                     let connection = connection.with_tls(
-                        crate::runtime::openssl::openssl_tls_meta(stream.ssl()),
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
+                    );
+                    serve_local_serial_stream_without_connection_limit(
+                        stream,
+                        server.protocol(),
+                        server.handler(),
+                        server.one_way_handler(),
+                        server.config(),
+                        server.telemetry(),
+                        server.runtime_state(),
+                        server.tcp_limits(),
+                        connection,
+                    )
+                    .await
+                });
+            }
+        }
+    }
+
+    server.telemetry().shutdown_event(
+        NacelleTelemetryEventKind::ListenerStoppedAccepting,
+        transport,
+    );
+    drain_local_connections(
+        connections,
+        drain_deadline.get(),
+        server.telemetry(),
+        transport,
+    )
+    .await;
+    Ok(())
+}
+
+/// Serve one worker-local serial plaintext-or-OpenSSL listener until shutdown.
+#[cfg(feature = "openssl")]
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, OH, Observer>(
+    server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
+    listener: tokio::net::TcpListener,
+    tcp_options: NacelleTcpOptions,
+    tls_config: NacelleOpenSslConfig,
+    detection_options: NacelleTlsDetectionOptions,
+    mut shutdown: NacelleShutdownToken,
+    drain_deadline: NacelleDrainDeadline,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    Observer: NacelleTelemetryObserver,
+{
+    let transport = NacelleTransport::new("tcp");
+    let local_addr = listener.local_addr().ok();
+    let handshake_timeout = tls_config.handshake_timeout();
+    let mut connections = tokio::task::JoinSet::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+                continue;
+            }
+            accepted = listener.accept() => {
+                let (stream, peer_addr) = accepted?;
+                tcp_options.apply_to_stream(&stream)?;
+                let connection_permit = match server
+                    .runtime_state()
+                    .acquire_connection_for_peer(peer_addr.ip())
+                {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        server.telemetry().connection_rejected(
+                            transport,
+                            connection_rejection_reason(&error),
+                        );
+                        continue;
+                    }
+                };
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let acceptor = tls_config.acceptor();
+                let detection_timeout = detection_options.timeout;
+                let server = server.clone();
+                connections.spawn_local(async move {
+                    let _connection_permit = connection_permit;
+                    let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
+                        Ok(is_tls) => is_tls,
+                        Err(error) => {
+                            if matches!(error, NacelleError::Timeout(_)) {
+                                server.telemetry().timeout(transport, "tls_detect");
+                            }
+                            return Err(error);
+                        }
+                    };
+
+                    if !is_tls {
+                        return serve_local_serial_stream_without_connection_limit(
+                            stream,
+                            server.protocol(),
+                            server.handler(),
+                            server.one_way_handler(),
+                            server.config(),
+                            server.telemetry(),
+                            server.runtime_state(),
+                            server.tcp_limits(),
+                            connection,
+                        )
+                        .await;
+                    }
+
+                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                        .map_err(NacelleError::protocol)?;
+                    match tokio::time::timeout(
+                        handshake_timeout,
+                        std::pin::Pin::new(&mut stream).accept(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                        Err(_) => {
+                            server.telemetry().timeout(transport, "tls_handshake");
+                            return Err(NacelleError::Timeout("tls_handshake"));
+                        }
+                    }
+                    let connection = connection.with_tls(
+                        nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
                     serve_local_serial_stream_without_connection_limit(
                         stream,
@@ -641,7 +773,7 @@ mod tests {
                 let addr = listener.local_addr().expect("address");
                 let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
                 let certificate =
-                    nacelle_core::tls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+                    nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
                         .expect("certificate")
                         .remove(0);
                 let mut roots = rustls::RootCertStore::empty();

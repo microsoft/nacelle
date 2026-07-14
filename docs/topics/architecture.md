@@ -4,7 +4,9 @@ Nacelle is organized as a small core plus protocol-specific transport crates.
 
 ## Crate Layout
 
-- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and TLS primitives.
+- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and provider-neutral TLS metadata.
+- `nacelle-openssl`: OpenSSL configuration reload and negotiated metadata extraction.
+- `nacelle-rustls`: Rustls configuration reload, certificate parsing, SNI policy, and negotiated metadata extraction.
 - `nacelle-tcp`: TCP/Unix socket server, protocol trait, connection loop, and listener runtime.
 - `nacelle-http`: Hyper HTTP/1 server, HTTP request policy, and HTTP TLS listener integration.
 - `nacelle`: convenience crate with `core`, `codec`, `tcp`, `http`, and
@@ -32,11 +34,12 @@ concrete typed servers together with
 telemetry, shutdown, and supervision. `nacelle::runtime::NacelleHost` remains
 available for services that need manual listener control.
 
-TLS lives in `nacelle-core` because the configuration and provider metadata are
-shared. `tls` is provider-neutral. `rustls` enables the Rustls provider used by
-HTTP and TCP. `openssl` enables the OpenSSL provider for TCP without
-selecting Rustls. Both providers feed `NacelleTlsProvider` and per-connection
-TLS metadata.
+Provider-neutral TLS identity and per-connection metadata live in `nacelle-core`.
+Concrete configuration, certificate handling, reload policy, and negotiated
+metadata extraction live in `nacelle-rustls` and `nacelle-openssl`. Transport
+crates retain listener lifecycle and async I/O adaptation so provider crates do
+not depend back on TCP or HTTP. The `nacelle` facade preserves the `rustls`,
+`openssl`, and `tls-self-signed` feature names and exposes provider namespaces.
 
 ## Request Flow
 
@@ -71,7 +74,7 @@ in either request path.
 
 The shared multi-thread Tokio runtime remains the default. Experimental
 thread-per-core execution is explicit and currently supports TCP, HTTP, Rustls
-TCP/HTTPS, and required OpenSSL TCP on Linux. Each selected worker owns a
+TCP/HTTPS, required OpenSSL TCP, and optional plaintext/OpenSSL TCP on Linux. Each selected worker owns a
 current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
 `LocalHandler` pipeline. Accepted streams, handshakes, and connection tasks
 remain on the accepting worker. Unsupported platforms fail configuration;
@@ -79,8 +82,12 @@ Nacelle does not silently switch runtime topology.
 
 Serial mutable-state listeners support plain TCP, required OpenSSL, optional
 OpenSSL detection, and Unix sockets in the shared runtime. Worker-local serial
-listeners support plain TCP and required OpenSSL. Rustls, worker-local optional
-OpenSSL detection, and worker-local Unix socket serial variants are not exposed.
+listeners support plain TCP, required OpenSSL, and optional OpenSSL detection.
+Rustls serial and worker-local Unix socket serial variants are not exposed.
+
+`ThreadPerCoreConfig::with_max_threads(...)` caps the selected worker set after
+automatic or explicit selection and before any worker thread is created. It
+does not configure the caller-owned shared Tokio runtime.
 
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,

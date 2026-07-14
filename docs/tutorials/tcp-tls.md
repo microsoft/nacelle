@@ -5,7 +5,8 @@ certificate immediately. It implies the `rustls` provider.
 
 ```rust
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleTlsConfig};
+use nacelle::core::NacelleError;
+use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 

@@ -161,12 +161,16 @@ OpenSSL builds need native OpenSSL development files unless you enable
 ## Workspace Layout
 
 - `nacelle-core` contains shared typed pipeline, body, resource limit,
-    lifecycle, telemetry, and TLS primitives.
+    lifecycle, telemetry, and provider-neutral TLS metadata.
+- `nacelle-openssl` contains reloadable OpenSSL configuration and negotiated
+    connection metadata extraction.
+- `nacelle-rustls` contains reloadable Rustls configuration, certificate
+    parsing, SNI policy, self-signed test support, and connection metadata extraction.
 - `nacelle-tcp` contains the TCP transport, protocol runtime, and TCP limits.
 - `nacelle-http` contains the Hyper HTTP/1 transport, HTTP limits, and HTTP edge
     policy.
-- `nacelle` is the convenience crate with `core`, `codec`, `tcp`, `http`, and
-    `runtime` capability namespaces.
+- `nacelle` is the convenience crate with `core`, `codec`, `tcp`, `http`,
+    `openssl`, `rustls`, and `runtime` capability namespaces.
 - `examples/nacelle-examples` owns unpublished runnable examples and benchmarks.
 - `examples/nacelle-reference-protocol` is an unpublished protocol fixture used
     by examples, tests, benchmarks, and stress tools.

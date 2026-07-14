@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use openssl::ssl::{NameType, Ssl, SslRef};
+use openssl::ssl::Ssl;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
 use crate::protocol::{
@@ -13,11 +13,11 @@ use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
+use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleMetricsContext, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
 };
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
@@ -301,7 +301,8 @@ where
                         return Err(NacelleError::Timeout("tls_handshake"));
                     }
                 }
-                let connection = connection.with_tls(openssl_tls_meta(stream.ssl()));
+                let connection =
+                    connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                 server
                     .serve_io_without_connection_limit(stream, connection)
                     .await
@@ -610,7 +611,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     }
-                    let connection = connection.with_tls(openssl_tls_meta(stream.ssl()));
+                    let connection =
+                        connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                     server
                         .serve_io_without_connection_limit(stream, connection)
                         .await
@@ -657,22 +659,4 @@ where
         drain_deadline,
     )
     .await
-}
-
-pub(super) fn openssl_tls_meta(ssl: &SslRef) -> NacelleConnectionTlsMeta {
-    let mut meta = NacelleConnectionTlsMeta::new("openssl").with_protocol(ssl.version_str());
-    if let Some(cipher) = ssl.current_cipher() {
-        meta = meta.with_cipher_suite(cipher.name());
-        let bits = cipher.bits();
-        if let Ok(secret_bits) = u16::try_from(bits.secret) {
-            meta = meta.with_cipher_bits(secret_bits);
-        }
-        if let Ok(algorithm_bits) = u16::try_from(bits.algorithm) {
-            meta = meta.with_cipher_algorithm_bits(algorithm_bits);
-        }
-    }
-    if let Some(server_name) = ssl.servername(NameType::HOST_NAME) {
-        meta = meta.with_server_name(server_name);
-    }
-    meta
 }

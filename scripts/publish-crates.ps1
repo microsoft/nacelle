@@ -146,21 +146,25 @@ if (-not $SkipValidation) {
 }
 
 $release = [ordered]@{
-    "nacelle-codec" = Get-PackageVersion -Name "nacelle-codec"
-    "nacelle-core"  = Get-PackageVersion -Name "nacelle-core"
-    "nacelle-tcp"   = Get-PackageVersion -Name "nacelle-tcp"
-    "nacelle-http"  = Get-PackageVersion -Name "nacelle-http"
-    "nacelle"       = Get-PackageVersion -Name "nacelle"
+    "nacelle-codec"   = Get-PackageVersion -Name "nacelle-codec"
+    "nacelle-core"    = Get-PackageVersion -Name "nacelle-core"
+    "nacelle-openssl" = Get-PackageVersion -Name "nacelle-openssl"
+    "nacelle-rustls"  = Get-PackageVersion -Name "nacelle-rustls"
+    "nacelle-tcp"     = Get-PackageVersion -Name "nacelle-tcp"
+    "nacelle-http"    = Get-PackageVersion -Name "nacelle-http"
+    "nacelle"         = Get-PackageVersion -Name "nacelle"
 }
 
 if (-not $Publish) {
     Invoke-CargoPublish -Name "nacelle-codec" -Version $release["nacelle-codec"]
     Invoke-CargoPublish -Name "nacelle-core" -Version $release["nacelle-core"]
+    Invoke-CargoPackageList -Name "nacelle-openssl"
+    Invoke-CargoPackageList -Name "nacelle-rustls"
     Invoke-CargoPackageList -Name "nacelle-tcp"
     Invoke-CargoPackageList -Name "nacelle-http"
     Invoke-CargoPackageList -Name "nacelle"
     Write-Host "==> Dry run verified nacelle-codec and nacelle-core."
-    Write-Host "==> Package payloads validated for nacelle-tcp, nacelle-http, and nacelle."
+    Write-Host "==> Package payloads validated for provider, transport, and facade crates."
     Write-Host "==> Cargo can fully verify dependent crates after their $($release['nacelle-core']) internal dependencies reach crates.io."
     Write-Host "==> Run with -Publish to publish in dependency order."
     return
@@ -171,6 +175,11 @@ Wait-CrateVersion -Name "nacelle-codec" -Version $release["nacelle-codec"]
 
 Invoke-CargoPublish -Name "nacelle-core" -Version $release["nacelle-core"]
 Wait-CrateVersion -Name "nacelle-core" -Version $release["nacelle-core"]
+
+Invoke-CargoPublish -Name "nacelle-openssl" -Version $release["nacelle-openssl"]
+Invoke-CargoPublish -Name "nacelle-rustls" -Version $release["nacelle-rustls"]
+Wait-CrateVersion -Name "nacelle-openssl" -Version $release["nacelle-openssl"]
+Wait-CrateVersion -Name "nacelle-rustls" -Version $release["nacelle-rustls"]
 
 Invoke-CargoPublish -Name "nacelle-tcp" -Version $release["nacelle-tcp"]
 Invoke-CargoPublish -Name "nacelle-http" -Version $release["nacelle-http"]

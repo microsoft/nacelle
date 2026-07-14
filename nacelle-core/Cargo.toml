@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-core"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 edition = "2024"
 rust-version.workspace = true
 description = "Shared pipeline, body, limits, lifecycle, telemetry, and TLS primitives for Nacelle."
@@ -15,20 +15,12 @@ categories = ["asynchronous", "network-programming"]
 default = []
 error-hints = []
 tls = []
-rustls = ["tls", "dep:pem", "dep:rustls"]
-openssl = ["tls", "dep:openssl"]
-openssl-vendored = ["openssl", "openssl/vendored"]
-tls-self-signed = ["rustls", "dep:rcgen"]
 otel = ["dep:opentelemetry"]
 
 [dependencies]
 bytes = { workspace = true }
 futures-core = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
-openssl = { workspace = true, optional = true }
-pem = { workspace = true, optional = true }
-rcgen = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

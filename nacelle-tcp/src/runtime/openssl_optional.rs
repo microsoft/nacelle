@@ -17,13 +17,12 @@ use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
 };
-use nacelle_core::tls::NacelleOpenSslConfig;
+use nacelle_openssl::NacelleOpenSslConfig;
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
     record_connection_rejection,
 };
-use super::openssl::openssl_tls_meta;
 
 pub async fn serve_tcp_optional_openssl<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
@@ -317,7 +316,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     }
-                    let connection = connection.with_tls(openssl_tls_meta(stream.ssl()));
+                    let connection =
+                        connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                     server.serve_io_without_connection_limit(stream, connection).await
                 });
             }
@@ -665,7 +665,8 @@ where
                             return Err(NacelleError::Timeout("tls_handshake"));
                         }
                     }
-                    let connection = connection.with_tls(openssl_tls_meta(stream.ssl()));
+                    let connection =
+                        connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                     server
                         .serve_io_without_connection_limit(stream, connection)
                         .await
@@ -688,7 +689,7 @@ where
     Ok(())
 }
 
-async fn detect_tls_handshake(
+pub(super) async fn detect_tls_handshake(
     stream: &tokio::net::TcpStream,
     timeout: Duration,
 ) -> Result<bool, NacelleError> {

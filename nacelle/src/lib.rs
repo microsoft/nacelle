@@ -17,6 +17,12 @@ pub use nacelle_core as core;
 /// HTTP transport APIs.
 #[cfg(feature = "http")]
 pub use nacelle_http as http;
+/// OpenSSL configuration and metadata APIs.
+#[cfg(feature = "openssl")]
+pub use nacelle_openssl as openssl;
+/// Rustls configuration and metadata APIs.
+#[cfg(feature = "rustls")]
+pub use nacelle_rustls as rustls;
 /// TCP and Unix socket transport APIs.
 #[cfg(feature = "tcp")]
 pub use nacelle_tcp as tcp;
@@ -43,7 +49,9 @@ pub mod runtime {
     };
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     pub use crate::thread_per_core::{
-        run_local_serial_tcp_openssl_thread_per_core, run_local_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_optional_openssl_thread_per_core,
+        run_local_tcp_openssl_thread_per_core,
     };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }
@@ -57,6 +65,12 @@ pub mod advanced {
     }
 }
 pub use app::NacelleApp;
+#[cfg(feature = "openssl")]
+pub use nacelle_openssl::NacelleOpenSslConfig;
+#[cfg(feature = "tls-self-signed")]
+pub use nacelle_rustls::NacelleGeneratedTlsConfig;
+#[cfg(feature = "rustls")]
+pub use nacelle_rustls::NacelleTlsConfig;
 pub mod prelude {
     pub use crate::NacelleApp;
     pub use nacelle_core::{NacelleBody, NacelleError};

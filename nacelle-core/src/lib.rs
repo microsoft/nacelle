@@ -8,7 +8,7 @@ pub mod pipeline;
 pub mod request;
 pub mod runtime;
 pub mod telemetry;
-#[cfg(any(feature = "tls", feature = "openssl"))]
+#[cfg(feature = "tls")]
 pub mod tls;
 
 pub use error::{BoxError, NacelleError};
@@ -25,11 +25,5 @@ pub use telemetry::{
     NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
     NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
-#[cfg(feature = "tls-self-signed")]
-pub use tls::NacelleGeneratedTlsConfig;
-#[cfg(feature = "openssl")]
-pub use tls::NacelleOpenSslConfig;
-#[cfg(feature = "rustls")]
-pub use tls::NacelleTlsConfig;
-#[cfg(any(feature = "tls", feature = "openssl"))]
+#[cfg(feature = "tls")]
 pub use tls::NacelleTlsProvider;

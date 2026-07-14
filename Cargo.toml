@@ -2,6 +2,8 @@
 members = [
     "nacelle-codec",
     "nacelle-core",
+    "nacelle-openssl",
+    "nacelle-rustls",
     "nacelle-tcp",
     "nacelle-http",
     "nacelle",
@@ -21,12 +23,14 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # Internal crates
-nacelle = { path = "nacelle", version = "0.3.0-beta.2" }
-nacelle-codec = { path = "nacelle-codec", version = "0.3.0-beta.2" }
-nacelle-core = { path = "nacelle-core", version = "0.3.0-beta.2" }
-nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-beta.2" }
-nacelle-http = { path = "nacelle-http", version = "0.3.0-beta.2" }
-nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-beta.2" }
+nacelle = { path = "nacelle", version = "0.3.0-beta.3" }
+nacelle-codec = { path = "nacelle-codec", version = "0.3.0-beta.3" }
+nacelle-core = { path = "nacelle-core", version = "0.3.0-beta.3" }
+nacelle-openssl = { path = "nacelle-openssl", version = "0.3.0-beta.3" }
+nacelle-rustls = { path = "nacelle-rustls", version = "0.3.0-beta.3" }
+nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-beta.3" }
+nacelle-http = { path = "nacelle-http", version = "0.3.0-beta.3" }
+nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-beta.3" }
 nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
 
 # External dependencies
@@ -46,7 +50,7 @@ openssl = "0.10.81"
 opentelemetry = "0.32.0"
 opentelemetry_sdk = "0.32.1"
 pem = "3.0.6"
-proptest = "1.11.0"
+proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
 rcgen = "0.14.8"
 rustls = "0.23.41"
 serde = "1.0.228"

@@ -1,6 +1,6 @@
 [package]
 name = "nacelle"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 edition = "2024"
 rust-version.workspace = true
 description = "Convenience crate for Nacelle streaming handlers and transport APIs."
@@ -18,10 +18,10 @@ buffer-rotation = ["nacelle-tcp?/buffer-rotation"]
 error-hints = ["nacelle-core/error-hints"]
 http = ["dep:nacelle-http"]
 tls = ["nacelle-core/tls", "nacelle-http?/tls", "nacelle-tcp?/tls"]
-rustls = ["tls", "nacelle-core/rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
-openssl = ["tls", "nacelle-core/openssl", "nacelle-tcp?/openssl"]
-openssl-vendored = ["openssl", "nacelle-core/openssl-vendored", "nacelle-tcp?/openssl-vendored"]
-tls-self-signed = ["rustls", "nacelle-core/tls-self-signed", "nacelle-http?/tls-self-signed", "nacelle-tcp?/tls-self-signed"]
+rustls = ["tls", "dep:nacelle-rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
+openssl = ["tls", "dep:nacelle-openssl", "nacelle-tcp?/openssl"]
+openssl-vendored = ["openssl", "nacelle-openssl/vendored", "nacelle-tcp?/openssl-vendored"]
+tls-self-signed = ["rustls", "nacelle-rustls/self-signed", "nacelle-http?/tls-self-signed", "nacelle-tcp?/tls-self-signed"]
 otel = ["nacelle-core/otel", "nacelle-tcp?/otel"]
 bench = []
 fuzzing = []
@@ -32,6 +32,8 @@ core_affinity = { workspace = true }
 nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
 nacelle-http = { workspace = true, optional = true }
+nacelle-openssl = { workspace = true, optional = true }
+nacelle-rustls = { workspace = true, optional = true }
 nacelle-tcp = { workspace = true, optional = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }

@@ -21,8 +21,11 @@ target/doc/nacelle/index.html
 Start with these public entry points:
 
 - `nacelle::prelude::*` for common application imports.
-- `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`, and
-  `nacelle::runtime` for capability-oriented imports.
+- `nacelle::core`, `nacelle::codec`, `nacelle::tcp`, `nacelle::http`,
+  `nacelle::openssl`, `nacelle::rustls`, and `nacelle::runtime` for
+  capability-oriented imports.
+- `nacelle::openssl::NacelleOpenSslConfig` and
+  `nacelle::rustls::NacelleTlsConfig` for concrete provider configuration.
 - `nacelle::advanced::runtime` for raw executor and transport listener helpers
   when app/host composition is not sufficient.
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)` for the
@@ -30,9 +33,13 @@ Start with these public entry points:
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
 - `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
   the `run_local_*_thread_per_core(...)` functions for experimental Linux-only
-  worker-local TCP, HTTP, Rustls, and required OpenSSL execution. This mode
+  worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL execution. This mode
   requires explicit selection and does not silently fall back to the shared
   runtime.
+- `ThreadPerCoreConfig::with_max_threads(...)` to cap the worker threads selected by
+  `WorkerSet::all()`, `WorkerSet::first(...)`, or `WorkerSet::explicit(...)` while preserving
+  selection order. The shared runtime is caller-owned; configure its Tokio thread count on the
+  runtime builder instead.
 - `nacelle::runtime::ThreadPerCoreLimits::Global` for exact process-wide counters, or
   `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
   mode still enforces one shared hard memory ceiling across all workers.
@@ -46,7 +53,9 @@ Start with these public entry points:
   required OpenSSL, optional OpenSSL, and Unix sockets.
 - `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and
   `run_local_serial_tcp_openssl_thread_per_core(...)` for worker-local serial
-  plain TCP and required OpenSSL. Worker factories run once per worker, so
+  plain TCP and required OpenSSL. Use
+  `run_local_serial_tcp_optional_openssl_thread_per_core(...)` when plaintext and OpenSSL must
+  share one worker-local listener. Worker factories run once per worker, so
   externally bounded pools should be shared deliberately rather than
   constructed per worker.
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
