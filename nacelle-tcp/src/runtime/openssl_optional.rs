@@ -688,7 +688,7 @@ where
     Ok(())
 }
 
-async fn detect_tls_handshake(
+pub(super) async fn detect_tls_handshake(
     stream: &tokio::net::TcpStream,
     timeout: Duration,
 ) -> Result<bool, NacelleError> {

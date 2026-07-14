@@ -71,7 +71,7 @@ in either request path.
 
 The shared multi-thread Tokio runtime remains the default. Experimental
 thread-per-core execution is explicit and currently supports TCP, HTTP, Rustls
-TCP/HTTPS, and required OpenSSL TCP on Linux. Each selected worker owns a
+TCP/HTTPS, required OpenSSL TCP, and optional plaintext/OpenSSL TCP on Linux. Each selected worker owns a
 current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
 `LocalHandler` pipeline. Accepted streams, handshakes, and connection tasks
 remain on the accepting worker. Unsupported platforms fail configuration;
@@ -79,8 +79,12 @@ Nacelle does not silently switch runtime topology.
 
 Serial mutable-state listeners support plain TCP, required OpenSSL, optional
 OpenSSL detection, and Unix sockets in the shared runtime. Worker-local serial
-listeners support plain TCP and required OpenSSL. Rustls, worker-local optional
-OpenSSL detection, and worker-local Unix socket serial variants are not exposed.
+listeners support plain TCP, required OpenSSL, and optional OpenSSL detection.
+Rustls serial and worker-local Unix socket serial variants are not exposed.
+
+`ThreadPerCoreConfig::with_max_threads(...)` caps the selected worker set after
+automatic or explicit selection and before any worker thread is created. It
+does not configure the caller-owned shared Tokio runtime.
 
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,

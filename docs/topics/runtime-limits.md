@@ -85,6 +85,11 @@ global or partitioned runtime counters do not partition external client pools or
 backend resources automatically; pass explicitly shared resources into worker
 factories when process-wide budgets must remain global.
 
+Cap Nacelle-owned worker threads after any worker-selection strategy with
+`ThreadPerCoreConfig::with_max_threads(...)`. The effective capped worker count
+must also be used when constructing `ThreadPerCoreLimits::worker(...)`. Shared
+runtime threads belong to the caller's Tokio runtime and are configured there.
+
 Dangerous configurations:
 
 - unbounded connections with large per-connection buffers

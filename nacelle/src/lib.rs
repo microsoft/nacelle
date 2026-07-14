@@ -43,7 +43,9 @@ pub mod runtime {
     };
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     pub use crate::thread_per_core::{
-        run_local_serial_tcp_openssl_thread_per_core, run_local_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_optional_openssl_thread_per_core,
+        run_local_tcp_openssl_thread_per_core,
     };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }
