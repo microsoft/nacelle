@@ -31,7 +31,7 @@ fn main() {
 
     assert!(message.is_none());
     assert_eq!(input.len(), original_len);
-    println!("partial input remains buffered:: {input:?}");
+    println!("partial input remains buffered: {input:?}");
 
     input.extend_from_slice(b"lo\nworld\n");
 
