@@ -8,6 +8,7 @@
 //! setup to isolate each adapter's buffered-message path.
 
 use std::fmt;
+use std::future::Future;
 use std::future::poll_fn;
 use std::hint::black_box;
 use std::pin::Pin;
@@ -29,23 +30,30 @@ const MESSAGE_COUNT: usize = 64;
 const MAX_FRAME_LEN: usize = 8 * 1024;
 const PAYLOAD_LENGTHS: [usize; 2] = [64, 4 * 1024];
 
-#[derive(Debug, Default)]
-struct PrimingByte {
-    emitted: bool,
+#[derive(Debug)]
+struct PreloadedInput {
+    bytes: Option<BytesMut>,
 }
 
-impl AsyncRead for PrimingByte {
+impl PreloadedInput {
+    const fn new(bytes: BytesMut) -> Self {
+        Self { bytes: Some(bytes) }
+    }
+}
+
+impl AsyncRead for PreloadedInput {
     fn poll_read(
         self: Pin<&mut Self>,
         _context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        if this.emitted {
-            return Poll::Pending;
-        }
-        this.emitted = true;
-        buffer.put_slice(&[0]);
+        let bytes = this
+            .bytes
+            .take()
+            .expect("preloaded benchmark unexpectedly polled its transport twice");
+        assert!(buffer.remaining() >= bytes.len());
+        buffer.put_slice(&bytes);
         Poll::Ready(Ok(()))
     }
 }
@@ -291,6 +299,18 @@ where
     }
 }
 
+fn poll_future_now<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    let mut future = std::pin::pin!(future);
+    let mut context = Context::from_waker(Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("preloaded future unexpectedly returned pending"),
+    }
+}
+
 fn framed_read_comparison(criterion: &mut Criterion) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -385,8 +405,9 @@ fn preloaded_read_comparison(criterion: &mut Criterion) {
     for payload_len in PAYLOAD_LENGTHS {
         // Priming adapter state in setup leaves exactly 64 frames for timing.
         let encoded = encoded_message_count(payload_len, MESSAGE_COUNT + 1);
-        let mut group =
-            criterion.benchmark_group(format!("codec_preloaded_read_64x{payload_len}_bytes"));
+        let mut group = criterion.benchmark_group(format!(
+            "codec_preloaded_adapter_read_64x{payload_len}_bytes"
+        ));
         group.throughput(Throughput::Bytes(
             u64::try_from(MESSAGE_COUNT * payload_len).expect("benchmark byte count"),
         ));
@@ -394,16 +415,15 @@ fn preloaded_read_comparison(criterion: &mut Criterion) {
         group.bench_function("nacelle_codec", |bencher| {
             bencher.to_async(&runtime).iter_batched(
                 || {
-                    let mut reader = MessageReader::with_buffer(
-                        PrimingByte::default(),
+                    let mut reader = MessageReader::with_capacity(
+                        PreloadedInput::new(encoded.clone()),
                         NacelleCodec {
                             max_frame_len: MAX_FRAME_LEN,
                         },
-                        encoded.clone(),
+                        encoded.len(),
                     );
                     black_box(
-                        reader
-                            .decode_buffered()
+                        poll_future_now(reader.read_message())
                             .expect("nacelle prime")
                             .expect("nacelle priming message"),
                     );
@@ -426,13 +446,13 @@ fn preloaded_read_comparison(criterion: &mut Criterion) {
         group.bench_function("tokio_util", |bencher| {
             bencher.to_async(&runtime).iter_batched(
                 || {
-                    let mut reader = FramedRead::new(
-                        PrimingByte::default(),
+                    let mut reader = FramedRead::with_capacity(
+                        PreloadedInput::new(encoded.clone()),
                         TokioCodec {
                             max_frame_len: MAX_FRAME_LEN,
                         },
+                        encoded.len(),
                     );
-                    reader.read_buffer_mut().extend_from_slice(&encoded);
                     let priming_message = poll_next_now(&mut reader);
                     black_box(
                         priming_message
@@ -458,11 +478,11 @@ fn preloaded_read_comparison(criterion: &mut Criterion) {
             bencher.to_async(&runtime).iter_batched(
                 || {
                     let mut reader = ActixFramed::from_parts(ActixFramedParts::with_read_buf(
-                        PrimingByte::default(),
+                        PreloadedInput::new(encoded.clone()),
                         ActixCodec {
                             max_frame_len: MAX_FRAME_LEN,
                         },
-                        encoded.clone(),
+                        BytesMut::with_capacity(encoded.len()),
                     ));
                     let priming_message = poll_next_now(&mut reader);
                     black_box(
