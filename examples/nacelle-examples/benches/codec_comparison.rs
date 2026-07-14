@@ -8,20 +8,38 @@
 use std::fmt;
 use std::future::poll_fn;
 use std::hint::black_box;
+use std::io;
 use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
-use actix_codec::{Decoder as ActixDecoder, Encoder as ActixEncoder, Framed as ActixFramed};
+use actix_codec::{
+    Decoder as ActixDecoder, Encoder as ActixEncoder, Framed as ActixFramed,
+    FramedParts as ActixFramedParts,
+};
 use bytes::{Buf, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_core::Stream;
 use nacelle::codec::{MessageDecoder, MessageEncoder, MessageReader};
-use tokio::io::{AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio_util::codec::{Decoder as TokioDecoder, Encoder as TokioEncoder, FramedRead};
 
 const HEADER_LEN: usize = 4;
 const MESSAGE_COUNT: usize = 64;
 const MAX_FRAME_LEN: usize = 8 * 1024;
 const PAYLOAD_LENGTHS: [usize; 2] = [64, 4 * 1024];
+
+#[derive(Debug, Clone, Copy)]
+struct ImmediateEof;
+
+impl AsyncRead for ImmediateEof {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+        _buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FrameError {
@@ -175,12 +193,16 @@ impl<'message> ActixEncoder<&'message [u8]> for ActixCodec {
 }
 
 fn encoded_messages(payload_len: usize) -> BytesMut {
-    let mut encoded = BytesMut::with_capacity(MESSAGE_COUNT * (HEADER_LEN + payload_len));
+    encoded_message_count(payload_len, MESSAGE_COUNT)
+}
+
+fn encoded_message_count(payload_len: usize, message_count: usize) -> BytesMut {
+    let mut encoded = BytesMut::with_capacity(message_count * (HEADER_LEN + payload_len));
     let mut codec = NacelleCodec {
         max_frame_len: MAX_FRAME_LEN,
     };
     let payload = vec![0xAB; payload_len];
-    for _ in 0..MESSAGE_COUNT {
+    for _ in 0..message_count {
         MessageEncoder::encode(&mut codec, payload.as_slice(), &mut encoded)
             .expect("benchmark fixture should encode");
     }
@@ -247,6 +269,17 @@ async fn loaded_duplex(encoded: &[u8]) -> DuplexStream {
         .expect("benchmark fixture write");
     sender.shutdown().await.expect("benchmark fixture shutdown");
     receiver
+}
+
+fn poll_next_now<S>(stream: &mut S) -> Option<S::Item>
+where
+    S: Stream + Unpin,
+{
+    let mut context = Context::from_waker(Waker::noop());
+    match Pin::new(stream).poll_next(&mut context) {
+        Poll::Ready(item) => item,
+        Poll::Pending => panic!("preloaded stream unexpectedly returned pending"),
+    }
 }
 
 fn framed_read_comparison(criterion: &mut Criterion) {
@@ -330,6 +363,117 @@ fn framed_read_comparison(criterion: &mut Criterion) {
                         .is_none()
                 );
             });
+        });
+        group.finish();
+    }
+}
+
+fn preloaded_read_comparison(criterion: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("benchmark runtime");
+
+    for payload_len in PAYLOAD_LENGTHS {
+        let encoded = encoded_message_count(payload_len, MESSAGE_COUNT + 1);
+        let mut group =
+            criterion.benchmark_group(format!("codec_preloaded_read_64x{payload_len}_bytes"));
+        group.throughput(Throughput::Bytes(
+            u64::try_from(MESSAGE_COUNT * payload_len).expect("benchmark byte count"),
+        ));
+
+        group.bench_function("nacelle_codec", |bencher| {
+            bencher.to_async(&runtime).iter_batched(
+                || {
+                    let mut reader = MessageReader::with_buffer(
+                        ImmediateEof,
+                        NacelleCodec {
+                            max_frame_len: MAX_FRAME_LEN,
+                        },
+                        encoded.clone(),
+                    );
+                    black_box(
+                        reader
+                            .decode_buffered()
+                            .expect("nacelle prime")
+                            .expect("nacelle priming message"),
+                    );
+                    reader
+                },
+                |mut reader| async move {
+                    for _ in 0..MESSAGE_COUNT {
+                        black_box(
+                            reader
+                                .read_message()
+                                .await
+                                .expect("nacelle buffered read")
+                                .expect("nacelle buffered message"),
+                        );
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("tokio_util", |bencher| {
+            bencher.to_async(&runtime).iter_batched(
+                || {
+                    let mut reader = FramedRead::new(
+                        ImmediateEof,
+                        TokioCodec {
+                            max_frame_len: MAX_FRAME_LEN,
+                        },
+                    );
+                    reader.read_buffer_mut().extend_from_slice(&encoded);
+                    let priming_message = poll_next_now(&mut reader);
+                    black_box(
+                        priming_message
+                            .expect("tokio priming message")
+                            .expect("tokio prime"),
+                    );
+                    reader
+                },
+                |mut reader| async move {
+                    for _ in 0..MESSAGE_COUNT {
+                        black_box(
+                            poll_fn(|context| Pin::new(&mut reader).poll_next(context))
+                                .await
+                                .expect("tokio buffered message")
+                                .expect("tokio buffered read"),
+                        );
+                    }
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.bench_function("actix_codec", |bencher| {
+            bencher.to_async(&runtime).iter_batched(
+                || {
+                    let mut reader = ActixFramed::from_parts(ActixFramedParts::with_read_buf(
+                        ImmediateEof,
+                        ActixCodec {
+                            max_frame_len: MAX_FRAME_LEN,
+                        },
+                        encoded.clone(),
+                    ));
+                    let priming_message = poll_next_now(&mut reader);
+                    black_box(
+                        priming_message
+                            .expect("actix priming message")
+                            .expect("actix prime"),
+                    );
+                    reader
+                },
+                |mut reader| async move {
+                    for _ in 0..MESSAGE_COUNT {
+                        black_box(
+                            poll_fn(|context| Pin::new(&mut reader).poll_next(context))
+                                .await
+                                .expect("actix buffered message")
+                                .expect("actix buffered read"),
+                        );
+                    }
+                },
+                BatchSize::SmallInput,
+            );
         });
         group.finish();
     }
@@ -554,6 +698,7 @@ fn incomplete_decode_comparison(criterion: &mut Criterion) {
 criterion_group!(
     benches,
     framed_read_comparison,
+    preloaded_read_comparison,
     decode_comparison,
     encode_comparison,
     incomplete_decode_comparison
