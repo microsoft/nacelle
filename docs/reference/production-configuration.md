@@ -59,14 +59,15 @@ existing behavior: `TCP_NODELAY` enabled and TCP keepalive disabled.
 APIs that need explicit family behavior.
 
 TCP response delivery defaults to `ResponseWritePolicy::Immediate`.
-`CoalesceBuffered` uses `response_buffer_capacity` as its threshold, while
-`FlushAtBytes(n)` uses `max(n, 1)`. Only complete frames enter the pending batch;
-the runtime flushes before another socket read, before awaiting another
-streaming body chunk, and when the threshold is reached. Pending capacity above
-the connection's base response buffer remains charged to runtime memory until
-flush or failure cleanup. Geometric growth is transactional and requires memory
-headroom for both the old buffer and its complete replacement; a growth attempt
-is rejected before encoding when that temporary allocation cannot be charged.
+`CoalesceBuffered` uses `response_buffer_capacity` as its threshold, while the
+configuration builder normalizes `FlushAtBytes(0)` to `FlushAtBytes(1)`. Only
+complete frames enter the pending batch; the runtime flushes before another
+socket read, before awaiting another streaming body chunk, and when the
+threshold is reached or crossed. Pending capacity above the connection's base
+response buffer remains charged to runtime memory until flush or failure
+cleanup. Geometric growth is transactional and requires memory headroom for
+both the old buffer and its complete replacement; a growth attempt is rejected
+before encoding when that temporary allocation cannot be charged.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, and idle timeouts.
 `NacelleHttpLimits` controls HTTP header read, request body read, response

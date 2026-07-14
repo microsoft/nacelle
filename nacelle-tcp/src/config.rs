@@ -13,7 +13,8 @@ pub enum ResponseWritePolicy {
     /// Write each complete frame immediately.
     #[default]
     Immediate,
-    /// Coalesce already-buffered responses up to `response_buffer_capacity`.
+    /// Coalesce complete frames until pending bytes reach or cross
+    /// `response_buffer_capacity`.
     CoalesceBuffered,
     /// Coalesce complete frames until at least the configured byte threshold.
     FlushAtBytes(usize),
@@ -91,7 +92,12 @@ impl NacelleTcpConfig {
 
     /// Select immediate or bounded coalesced response delivery.
     pub fn with_response_write_policy(mut self, policy: ResponseWritePolicy) -> Self {
-        self.response_write_policy = policy;
+        self.response_write_policy = match policy {
+            ResponseWritePolicy::FlushAtBytes(bytes) => {
+                ResponseWritePolicy::FlushAtBytes(bytes.max(1))
+            }
+            policy => policy,
+        };
         self
     }
 }
@@ -129,7 +135,7 @@ mod tests {
         assert_eq!(config.request_body_channel_capacity, 1);
         assert_eq!(
             config.response_write_policy,
-            ResponseWritePolicy::FlushAtBytes(0)
+            ResponseWritePolicy::FlushAtBytes(1)
         );
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Streaming);
     }
