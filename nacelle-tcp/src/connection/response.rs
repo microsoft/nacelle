@@ -102,12 +102,12 @@ impl ResponseDelivery {
     }
 
     fn reset(&mut self) {
-        self.pending.clear();
         if self.pending.capacity() > self.base_capacity {
-            self.pending = BytesMut::new();
+            drop(std::mem::take(&mut self.pending));
             self.overflow_allocations = None;
             self.pending = BytesMut::with_capacity(self.base_capacity);
         } else {
+            self.pending.clear();
             self.overflow_allocations = None;
         }
     }
