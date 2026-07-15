@@ -63,7 +63,7 @@ async fn pump_incoming_body<Observer>(
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-    #[cfg_attr(not(feature = "exp-memory-limits"), allow(unused_mut))] mut tx: TrackedBodySender,
+    mut tx: TrackedBodySender,
 ) where
     Observer: NacelleTelemetryObserver,
 {
@@ -75,7 +75,6 @@ async fn pump_incoming_body<Observer>(
             .await;
         return;
     }
-    #[cfg(feature = "exp-memory-limits")]
     if let Some(bytes) = body_len_hint {
         match runtime_state
             .allocate_memory_with_timeout(bytes, runtime_state.limits().memory_allocation_timeout)

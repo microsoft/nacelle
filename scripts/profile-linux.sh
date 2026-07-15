@@ -155,16 +155,14 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
         PROFILE_RUSTFLAGS+=" "
     fi
     PROFILE_RUSTFLAGS+="-C force-frame-pointers=yes"
-    SERVER_FEATURE_ARGS=(--features exp-memory-limits)
-    CLIENT_FEATURE_ARGS=()
+    BUILD_FEATURE_ARGS=()
     if [[ "$FEATURE_SET" == "minimal" ]]; then
-        SERVER_FEATURE_ARGS+=(--no-default-features)
-        CLIENT_FEATURE_ARGS+=(--no-default-features)
+        BUILD_FEATURE_ARGS+=(--no-default-features)
     fi
     RUSTFLAGS="$PROFILE_RUSTFLAGS" cargo build --profile profiling \
-        -p nacelle-stress-server "${SERVER_FEATURE_ARGS[@]}"
+        -p nacelle-stress-server "${BUILD_FEATURE_ARGS[@]}"
     RUSTFLAGS="$PROFILE_RUSTFLAGS" cargo build --profile profiling \
-        -p nacelle-stress-test "${CLIENT_FEATURE_ARGS[@]}"
+        -p nacelle-stress-test "${BUILD_FEATURE_ARGS[@]}"
 fi
 
 SERVER_BINARY="target/profiling/nacelle-stress-server"

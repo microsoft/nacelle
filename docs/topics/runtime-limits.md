@@ -9,7 +9,7 @@ Key budgets include:
 - in-flight requests
 - streaming body tasks
 - optional per-peer connections
-- experimental memory budget allocations (`exp-memory-limits`)
+- memory budget allocations
 - request and response body size
 - core handler timeout
 - TCP read, write, and idle timeouts through `NacelleTcpLimits`
@@ -26,11 +26,9 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Memory allocation budgeting is
-compiled out unless the non-default `exp-memory-limits` feature is enabled.
-Without that feature there is no shared memory state, allocation waiting,
-allocation guard, or `nacelle.memory.used_bytes` gauge. Request and response
-body-size limits remain enforced independently.
+and transport timeouts are bounded by default. Memory allocation budgeting is opt-in: the default
+`max_memory_bytes` is `usize::MAX`, which disables Nacelle memory-budget
+enforcement until you set an explicit byte limit.
 
 Recommended presets:
 
@@ -54,13 +52,10 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-When `exp-memory-limits` is enabled and memory limiting is configured with
-`NacelleLimits::with_max_memory_bytes(...)`,
+When memory limiting is enabled with `NacelleLimits::with_max_memory_bytes(...)`,
 Nacelle allocates from that budget for connection buffers and buffered or
 streaming request bodies. The limiter accounts for Nacelle-managed allocations,
 not total process RSS, so keep process or container memory limits in place.
-The feature-enabled default `max_memory_bytes` is `usize::MAX`, so an explicit
-finite limit is still required for enforcement.
 Request body allocations wait in FIFO order when the budget is full. The default
 wait limit is `NacelleLimits::memory_allocation_timeout == Some(5s)`, and can
 be tuned with `with_memory_allocation_timeout(...)` or disabled with

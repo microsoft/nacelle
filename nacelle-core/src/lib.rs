@@ -13,9 +13,9 @@ pub mod tls;
 
 pub use error::{BoxError, NacelleError};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
-pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
-#[cfg(feature = "exp-memory-limits")]
-pub use limits::{NacelleMemoryAllocation, NacelleMemoryBudget};
+pub use limits::{
+    NacelleLimits, NacelleMemoryAllocation, NacelleMemoryBudget, NacelleRuntimeState, TrackedPermit,
+};
 pub use peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };

@@ -14,7 +14,7 @@ pub(super) async fn read_buffered_request_body<R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     body_len: usize,
-    _runtime_state: &NacelleRuntimeState,
+    runtime_state: &NacelleRuntimeState,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<NacelleBody, NacelleError>
 where
@@ -24,9 +24,8 @@ where
         return Ok(NacelleBody::empty());
     }
 
-    #[cfg(feature = "exp-memory-limits")]
-    let allocation = _runtime_state
-        .allocate_memory_with_timeout(body_len, _runtime_state.limits().memory_allocation_timeout)
+    let allocation = runtime_state
+        .allocate_memory_with_timeout(body_len, runtime_state.limits().memory_allocation_timeout)
         .await?;
     let mut body = BytesMut::with_capacity(body_len);
     if !read_buf.is_empty() {
@@ -41,10 +40,7 @@ where
         }
     }
 
-    let body = NacelleBody::from_single_chunk(body.freeze(), body_len);
-    #[cfg(feature = "exp-memory-limits")]
-    let body = body.with_memory_allocation(allocation);
-    Ok(body)
+    Ok(NacelleBody::from_single_chunk(body.freeze(), body_len).with_memory_allocation(allocation))
 }
 
 pub(super) async fn pump_request_body<R>(

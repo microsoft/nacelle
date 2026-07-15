@@ -463,7 +463,6 @@ where
                 .inspect_err(|error| {
                     record_tcp_error(telemetry, metrics_context, "streaming_task", error)
                 })?;
-        #[cfg(feature = "exp-memory-limits")]
         let _streaming_body_allocation = runtime_state
             .allocate_memory_with_timeout(
                 decoded.body_len,
@@ -681,7 +680,6 @@ where
         execute_one_way(handler, request, body, runtime_state, connection_context).await
     } else {
         let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
-        #[cfg(feature = "exp-memory-limits")]
         let _streaming_body_allocation = runtime_state
             .allocate_memory_with_timeout(
                 decoded.body_len,

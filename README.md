@@ -86,10 +86,10 @@ cargo run -p nacelle-examples --bin app_core -- 127.0.0.1:8080 127.0.0.1:8081
 cargo run -p nacelle-examples --no-default-features --features http --bin http_echo -- 127.0.0.1:8080
 
 # HTTP memory budget guard demo
-cargo run -p nacelle-examples --no-default-features --features http,exp-memory-limits --bin memory_guard
+cargo run -p nacelle-examples --no-default-features --features http --bin memory_guard
 
 # TCP memory budget guard demo with the reference protocol
-cargo run -p nacelle-examples --features exp-memory-limits --bin tcp_memory_guard
+cargo run -p nacelle-examples --bin tcp_memory_guard
 
 # HTTPS echo with an ephemeral self-signed certificate
 cargo run -p nacelle-examples --no-default-features --features http,tls-self-signed --bin tls_http_echo -- 127.0.0.1:8443
@@ -136,9 +136,6 @@ nacelle = { version = "0.3", features = ["http"] }
 # TCP diagnostic phase histograms; still requires runtime activation
 nacelle = { version = "0.3", features = ["phase-timing"] }
 
-# Experimental process memory accounting and allocation waiting
-nacelle = { version = "0.3", features = ["exp-memory-limits"] }
-
 # Include setup hints in NacelleError Display output
 nacelle = { version = "0.3", features = ["error-hints"] }
 
@@ -160,7 +157,6 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
-| `exp-memory-limits` | Compile experimental Nacelle-managed memory accounting, allocation waiting, and the memory gauge. Disabled by default. |
 
 Nacelle emits metrics through the [`metrics`](https://crates.io/crates/metrics)
 facade and does not select an exporter. Install the recorder chosen by your
@@ -209,10 +205,9 @@ proxy IPs, Host/method/URI/header limits, access logging, and per-peer caps. For
 high connection counts, tune TCP read and response buffer capacities before
 raising `max_connections`.
 
-Nacelle does not compile memory accounting into default builds. Enable
-`exp-memory-limits`, then set `NacelleLimits::with_max_memory_bytes(...)` to use
-the experimental allocation budget for a measured deployment or test profile.
-Request and response body-size limits remain available without this feature.
+Nacelle does not enforce a runtime memory cap by default. Set
+`NacelleLimits::with_max_memory_bytes(...)` only when you want to opt into
+Nacelle's memory allocation budget for a measured deployment or test profile.
 
 Self-signed certificates are intended for local tests and auto-deploy flows, not
 as a public-edge certificate strategy.
@@ -222,7 +217,7 @@ as a public-edge certificate strategy.
 Run a short plain TCP smoke profile:
 
 ```bash
-cargo run --release --package nacelle-stress-server --features exp-memory-limits -- \
+cargo run --release --package nacelle-stress-server -- \
     --config examples/nacelle-stress-server/configs/tcp.toml
 
 # In another shell:

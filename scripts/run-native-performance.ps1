@@ -538,7 +538,7 @@ if ($LASTEXITCODE -ne 0) {
 Set-Location $RepoRoot
 if (-not $SkipBuild) {
     Write-Host "==> Building native release stress binaries"
-    & cargo build --release -p nacelle-stress-server -p nacelle-stress-test --features nacelle-stress-server/exp-memory-limits
+    & cargo build --release -p nacelle-stress-server -p nacelle-stress-test
     if ($LASTEXITCODE -ne 0) {
         throw "Release build failed with exit code $LASTEXITCODE."
     }

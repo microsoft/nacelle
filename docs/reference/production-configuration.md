@@ -4,9 +4,9 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Experimental memory allocation
-budgeting is compiled out unless `exp-memory-limits` is enabled. Body-size
-limits remain active without it.
+and transport timeouts are bounded by default. Memory allocation budgeting is opt-in: set
+`max_memory_bytes` only after measuring that the limiter behaves correctly for
+your service.
 
 Recommended presets:
 
@@ -33,12 +33,10 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-Enable `exp-memory-limits`, then set
-`NacelleLimits::with_max_memory_bytes(...)` when you want Nacelle to enforce the
-calculated budget. Without the feature, Nacelle compiles out memory accounting,
-allocation waiting, and the memory gauge while continuing to enforce
-connection, request, body-size, and transport timeout limits. Leave total
-memory governance to the application, runtime, process supervisor, or container.
+Set `NacelleLimits::with_max_memory_bytes(...)` when you want Nacelle to enforce
+the calculated budget. Without an explicit memory limit, Nacelle still enforces
+connection/request/body limits and transport-owned timeouts but leaves total memory governance to the
+application, runtime, process supervisor, or container.
 When the memory budget is full, request body allocations wait in FIFO order and
 time out after `NacelleLimits::memory_allocation_timeout` (`5s` by default).
 Tune this with `with_memory_allocation_timeout(...)`, or call

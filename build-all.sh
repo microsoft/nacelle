@@ -14,7 +14,7 @@ echo "    copied nacelle-stress-test"
 
 echo ""
 echo "==> Building nacelle-stress-server"
-cargo build --release --package nacelle-stress-server --features exp-memory-limits
+cargo build --release --package nacelle-stress-server
 cp target/release/nacelle-stress-server "$ARTIFACTS/"
 echo "    copied nacelle-stress-server"
 

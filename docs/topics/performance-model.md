@@ -22,7 +22,7 @@ mode, configuration, workload, and client revision.
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp exp-memory-limits"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 The `runtime_limits` benchmark group covers connection/request permit

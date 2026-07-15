@@ -115,8 +115,7 @@ Write-Host "==> Building nacelle-stress-server ($profile)"
 Invoke-Cargo -Args (@(
     "build"
 ) + $cargoProfileArg + @(
-    "--package", "nacelle-stress-server",
-    "--features", "exp-memory-limits"
+    "--package", "nacelle-stress-server"
 ))
 
 $serverExe = Join-Path $RepoRoot "target\$profile\nacelle-stress-server.exe"

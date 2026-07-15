@@ -64,14 +64,9 @@ impl NacelleError {
             Self::ResourceLimit("streaming_tasks") => {
                 Some("raise NacelleLimits::max_streaming_tasks or use buffered request bodies")
             }
-            #[cfg(feature = "exp-memory-limits")]
-            Self::ResourceLimit("memory" | "memory_bytes") => {
+            Self::ResourceLimit("memory") => {
                 Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
             }
-            #[cfg(not(feature = "exp-memory-limits"))]
-            Self::ResourceLimit("memory" | "memory_bytes") => Some(
-                "lower buffer/body sizes; Nacelle memory accounting requires exp-memory-limits",
-            ),
             Self::ResourceLimit("request_body_bytes") => {
                 Some("raise NacelleLimits::max_request_body_bytes or lower client payload sizes")
             }

@@ -30,20 +30,20 @@ that context is not a comparable baseline.
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp exp-memory-limits"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 For the codec/TCP integration specifically, run both Criterion targets:
 
 ```bash
 cargo bench -p nacelle-codec --bench framed_comparison --all-features
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp exp-memory-limits"
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp"
 ```
 
 The telemetry group can be run independently:
 
 ```bash
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp exp-memory-limits" -- telemetry --noplot
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
 ```
 
 The TCP crate also measures one complete connection plus one request through the

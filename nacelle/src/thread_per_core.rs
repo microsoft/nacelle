@@ -128,9 +128,9 @@ pub struct ThreadPerCoreConfig {
 /// Resource accounting policy selected once for a thread-per-core runtime.
 #[derive(Debug, Clone)]
 pub enum ThreadPerCoreLimits {
-    /// Existing process-wide runtime state shared by workers.
+    /// Existing process-wide counters and memory accounting shared by workers.
     Global(NacelleRuntimeState),
-    /// Worker-local counters and, when enabled, one shared memory ceiling.
+    /// Worker-local counters with one shared process-wide hard memory ceiling.
     Worker(Vec<NacelleRuntimeState>),
 }
 
@@ -144,9 +144,9 @@ impl ThreadPerCoreLimits {
     ///
     /// Finite connection, request, streaming, and per-peer capacities are split
     /// by quotient and remainder in configured worker order. Body limits and
-    /// timeout policy remain identical on every worker. With the
-    /// `exp-memory-limits` feature, memory is not partitioned: all states share
-    /// `limits.max_memory_bytes` as a hard process-wide ceiling.
+    /// timeout policy remain identical on every worker. Memory is not
+    /// partitioned: all states share `limits.max_memory_bytes` as a hard
+    /// process-wide ceiling.
     pub fn worker(limits: NacelleLimits, worker_count: usize) -> Result<Self, NacelleError> {
         if worker_count == 0 {
             return Err(NacelleError::ResourceLimit("worker_count"));
@@ -1186,13 +1186,12 @@ mod tests {
     }
 
     #[test]
-    fn worker_limits_partition_capacity_and_optionally_share_memory() {
+    fn worker_limits_partition_capacity_and_share_hard_memory_ceiling() {
         let limits = NacelleLimits::default()
             .with_max_connections(5)
             .with_max_in_flight_requests(7)
-            .with_max_streaming_tasks(4);
-        #[cfg(feature = "exp-memory-limits")]
-        let limits = limits.with_max_memory_bytes(10);
+            .with_max_streaming_tasks(4)
+            .with_max_memory_bytes(10);
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("worker limits should build");
         let first = policy
             .state_for(Worker {
@@ -1219,19 +1218,14 @@ mod tests {
         assert_eq!(first.active_requests(), 1);
         assert_eq!(second.active_requests(), 1);
 
-        #[cfg(feature = "exp-memory-limits")]
         let first_memory = first.allocate_memory(6).expect("first memory allocation");
-        #[cfg(feature = "exp-memory-limits")]
         assert!(matches!(
             second.allocate_memory(5),
             Err(NacelleError::ResourceLimit("memory_bytes"))
         ));
-        #[cfg(feature = "exp-memory-limits")]
         assert_eq!(first.memory_used_bytes(), 6);
-        #[cfg(feature = "exp-memory-limits")]
         assert_eq!(second.memory_used_bytes(), 6);
 
-        #[cfg(feature = "exp-memory-limits")]
         drop(first_memory);
         drop(first_request);
         drop(second_request);

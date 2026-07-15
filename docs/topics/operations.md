@@ -140,5 +140,5 @@ rather than embedded in the metric name:
 Run microbenchmarks before and after hot-path changes:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp exp-memory-limits"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```

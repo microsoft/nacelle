@@ -12,7 +12,6 @@ publish = false
 [features]
 default = ["tls-self-signed"]
 tls = ["nacelle/tcp", "nacelle/rustls"]
-exp-memory-limits = ["nacelle/exp-memory-limits"]
 tls-self-signed = [
 	"tls",
 	"nacelle/tls-self-signed",

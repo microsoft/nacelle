@@ -90,7 +90,7 @@ if [[ "$CONFIG_PATH" != "config.toml" && "$CONFIG_PATH" != "./config.toml" ]]; t
 fi
 
 # Start server in background
-cargo run --release --package nacelle-stress-server --features exp-memory-limits -- "${SERVER_ARGS[@]}" &
+cargo run --release --package nacelle-stress-server -- "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null' EXIT
 

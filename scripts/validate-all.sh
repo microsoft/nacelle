@@ -6,26 +6,22 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p nacelle-core --features tls --all-targets
 cargo clippy -p nacelle-core --features tls --all-targets -- -D warnings
-cargo test -p nacelle-core --features exp-memory-limits --all-targets
 cargo test -p nacelle-rustls --all-features --all-targets
 cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings
 cargo test -p nacelle-openssl --all-targets
 cargo clippy -p nacelle-openssl --all-targets -- -D warnings
 cargo test -p nacelle-tcp --all-targets
 cargo clippy -p nacelle-tcp --all-targets -- -D warnings
-cargo test -p nacelle-tcp --features exp-memory-limits --all-targets
 cargo test -p nacelle-tcp --features tls-self-signed --all-targets
 cargo clippy -p nacelle-tcp --features tls-self-signed --all-targets -- -D warnings
 cargo test -p nacelle-http --features tls-self-signed --all-targets
 cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings
-cargo test -p nacelle-http --features exp-memory-limits --all-targets
 cargo test -p nacelle-reference-protocol --all-targets
 cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings
 cargo check -p nacelle-examples --all-features --all-targets
 cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings
 cargo test -p nacelle --features http --all-targets
 cargo clippy -p nacelle --features http --all-targets -- -D warnings
-cargo test -p nacelle --features http,exp-memory-limits --all-targets
 cargo test -p nacelle --no-default-features --features http --all-targets
 cargo test -p nacelle --no-default-features --features tls --all-targets
 cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings
@@ -38,7 +34,6 @@ cargo test -p nacelle-stress-test --all-targets
 cargo test -p nacelle-stress-test --no-default-features --all-targets
 cargo test -p nacelle-stress-server --all-targets
 cargo test -p nacelle-stress-server --no-default-features --all-targets
-cargo test -p nacelle-stress-server --features exp-memory-limits --all-targets
 cargo tree -i serde_yaml >/dev/null 2>&1 && {
   echo "serde_yaml is still present" >&2
   exit 1

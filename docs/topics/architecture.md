@@ -145,10 +145,9 @@ Telemetry is deliberately low-cardinality. Reasons are static strings such as
 `connections`, `request_body_bytes`, or `http_body_read`.
 
 Nacelle emits through the backend-neutral `metrics` facade and does not own an
-exporter. Runtime state caches gauge handles and updates them at existing
-acquire/release transitions. With `exp-memory-limits`, the shared memory budget
-also caches and updates its gauge. `NacelleTelemetry` owns lifecycle, request,
-phase, error, and byte metrics for all transports. Transports that can
+exporter. Runtime state and shared memory budgets cache gauge handles and update
+them at existing acquire/release transitions. `NacelleTelemetry` owns lifecycle,
+request, phase, error, and byte metrics for all transports. Transports that can
 provide extra low-cardinality detail attach a `NacelleMetricsContext` with
 listener, protocol, transport, and TLS labels. Applications must install their
 recorder before constructing these values so cached handles bind to it; without

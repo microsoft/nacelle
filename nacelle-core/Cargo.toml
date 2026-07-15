@@ -16,7 +16,6 @@ default = []
 error-hints = []
 tls = []
 phase-timing = []
-exp-memory-limits = []
 
 [dependencies]
 bytes = { workspace = true }
