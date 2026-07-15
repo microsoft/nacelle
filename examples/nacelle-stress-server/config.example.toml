@@ -1,6 +1,7 @@
 bind = "127.0.0.1:7878"
 server_threads = 8
 response_bytes = 64
+response_write_mode = "immediate"
 read_buffer_capacity = 65536
 response_buffer_capacity = 16384
 request_body_chunk_size = 16384

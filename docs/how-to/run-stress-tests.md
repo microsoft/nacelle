@@ -67,3 +67,24 @@ CI-friendly scenarios should stay short and deterministic:
 - graceful shutdown under load
 
 Heavy RPS and soak tests should run manually or nightly on dedicated Linux hosts.
+
+For response-delivery comparisons, the stress server accepts
+`--response-write-mode immediate` (the default) or
+`--response-write-mode coalesce-buffered`. The same setting can be placed in a
+server config as `response_write_mode`. Coalescing drains complete requests
+already present in the socket read buffer and flushes before awaiting more
+input, so it does not leave a single response waiting for a later request. It
+is intended for measured pipelined workloads; keep immediate delivery for
+latency-first or unmeasured workloads.
+
+The Linux profiling helper records this setting and also exposes shared versus
+serial handler dispatch for controlled diagnostics:
+
+```bash
+./scripts/profile-linux.sh \
+  --tool baseline \
+  --handler-mode shared \
+  --response-write-mode coalesce-buffered \
+  --pipeline 8 \
+  --runs 3
+```

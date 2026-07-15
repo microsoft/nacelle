@@ -9,9 +9,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState};
+use nacelle::core::telemetry::{NacelleTelemetryObserver, NoopObserver};
+use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry};
 use nacelle::tcp::{
-    NacelleTcpConfig, NacelleTcpLimits, TcpHandler, TcpRequestContext, TcpResponse, TcpServer,
+    NacelleTcpConfig, NacelleTcpLimits, NoOneWayHandler, ResponseWritePolicy, SerialTcpHandler,
+    SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpRequestContext, TcpResponse,
+    TcpServer,
 };
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;
@@ -19,12 +22,74 @@ use serde::Deserialize;
 
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum HandlerMode {
+    #[default]
+    Shared,
+    Serial,
+}
+
+impl FromStr for HandlerMode {
+    type Err = std::io::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "shared" => Ok(Self::Shared),
+            "serial" => Ok(Self::Serial),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid handler mode {value:?}; expected shared or serial"),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResponseWriteMode {
+    #[default]
+    Immediate,
+    CoalesceBuffered,
+}
+
+impl FromStr for ResponseWriteMode {
+    type Err = std::io::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "immediate" => Ok(Self::Immediate),
+            "coalesce-buffered" => Ok(Self::CoalesceBuffered),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid response write mode {value:?}; expected immediate or coalesce-buffered"
+                ),
+            )),
+        }
+    }
+}
+
+impl From<ResponseWriteMode> for ResponseWritePolicy {
+    fn from(mode: ResponseWriteMode) -> Self {
+        match mode {
+            ResponseWriteMode::Immediate => Self::Immediate,
+            ResponseWriteMode::CoalesceBuffered => Self::CoalesceBuffered,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub config_sources: Vec<String>,
     pub bind: SocketAddr,
     pub server_threads: usize,
+    pub handler_mode: HandlerMode,
+    pub handler_timeout_disabled: bool,
+    pub memory_allocation_timeout_disabled: bool,
+    pub tcp_timeouts_disabled: bool,
     pub response_bytes: usize,
+    pub response_write_mode: ResponseWriteMode,
     pub read_buffer_capacity: usize,
     pub response_buffer_capacity: usize,
     pub request_body_chunk_size: usize,
@@ -44,7 +109,12 @@ impl Default for ServerConfig {
             server_threads: std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1),
+            handler_mode: HandlerMode::Shared,
+            handler_timeout_disabled: false,
+            memory_allocation_timeout_disabled: false,
+            tcp_timeouts_disabled: false,
             response_bytes: 64,
+            response_write_mode: ResponseWriteMode::Immediate,
             read_buffer_capacity: 64 * 1024,
             response_buffer_capacity: 16 * 1024,
             request_body_chunk_size: 16 * 1024,
@@ -63,7 +133,9 @@ impl Default for ServerConfig {
 struct ServerConfigFile {
     bind: Option<SocketAddr>,
     server_threads: Option<usize>,
+    handler_mode: Option<HandlerMode>,
     response_bytes: Option<usize>,
+    response_write_mode: Option<ResponseWriteMode>,
     read_buffer_capacity: Option<usize>,
     response_buffer_capacity: Option<usize>,
     request_body_chunk_size: Option<usize>,
@@ -117,8 +189,14 @@ impl ServerConfig {
         if let Some(server_threads) = file.server_threads {
             self.server_threads = server_threads;
         }
+        if let Some(handler_mode) = file.handler_mode {
+            self.handler_mode = handler_mode;
+        }
         if let Some(response_bytes) = file.response_bytes {
             self.response_bytes = response_bytes;
+        }
+        if let Some(response_write_mode) = file.response_write_mode {
+            self.response_write_mode = response_write_mode;
         }
         if let Some(read_buffer_capacity) = file.read_buffer_capacity {
             self.read_buffer_capacity = read_buffer_capacity;
@@ -190,6 +268,25 @@ impl ServerConfig {
             self.tcp_limits.idle_timeout = Some(Duration::from_millis(idle_timeout_ms));
         }
     }
+
+    fn disable_handler_timeout(&mut self) {
+        self.handler_timeout_disabled = true;
+        self.limits.handler_timeout = None;
+    }
+
+    fn disable_tcp_timeouts(&mut self) {
+        self.tcp_timeouts_disabled = true;
+        self.tcp_limits.read_timeout = None;
+        self.tcp_limits.write_timeout = None;
+        self.tcp_limits.idle_timeout = None;
+    }
+
+    fn disable_timeouts(&mut self) {
+        self.disable_handler_timeout();
+        self.memory_allocation_timeout_disabled = true;
+        self.limits.memory_allocation_timeout = None;
+        self.disable_tcp_timeouts();
+    }
 }
 
 /// mimalloc v2 option constants not yet exposed by `libmimalloc-sys`.
@@ -229,27 +326,109 @@ pub fn configure_allocator(low_memory: bool) {
     );
 }
 
+#[derive(Clone)]
+pub struct SerialEchoHandler {
+    response_payload: Bytes,
+}
+
+impl SerialTcpHandler<LengthDelimitedProtocol> for SerialEchoHandler {
+    fn call<'connection>(
+        &'connection self,
+        mut context: SerialTcpRequestContext<'connection, LengthDelimitedProtocol>,
+    ) -> impl Future<
+        Output = Result<nacelle::tcp::TcpHandlerCompletion<LengthDelimitedProtocol>, NacelleError>,
+    > + Send
+    + 'connection {
+        let response_payload = self.response_payload.clone();
+        async move {
+            let opcode = context.request().head.opcode;
+            while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                let _ = chunk?;
+            }
+            if opcode != STRESS_OPCODE {
+                return Err(NacelleError::handler(std::io::Error::other(format!(
+                    "unknown opcode {}",
+                    opcode
+                ))));
+            }
+            context.respond(TcpResponse::bytes(response_payload)).await
+        }
+    }
+}
+
+pub enum StressServer<H, Observer = NoopObserver> {
+    Shared(
+        TcpServer<LengthDelimitedProtocol, H, NoOneWayHandler<LengthDelimitedProtocol>, Observer>,
+    ),
+    Serial(
+        SerialTcpServer<
+            LengthDelimitedProtocol,
+            SerialEchoHandler,
+            NoOneWayHandler<LengthDelimitedProtocol>,
+            Observer,
+        >,
+    ),
+}
+
+impl<H, Observer> Clone for StressServer<H, Observer>
+where
+    H: TcpHandler<LengthDelimitedProtocol>,
+    Observer: NacelleTelemetryObserver,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Shared(server) => Self::Shared(server.clone()),
+            Self::Serial(server) => Self::Serial(server.clone()),
+        }
+    }
+}
+
+impl<H, Observer> StressServer<H, Observer>
+where
+    H: TcpHandler<LengthDelimitedProtocol>,
+    Observer: NacelleTelemetryObserver,
+{
+    pub fn with_telemetry<Next>(self, telemetry: NacelleTelemetry<Next>) -> StressServer<H, Next>
+    where
+        Next: NacelleTelemetryObserver,
+    {
+        match self {
+            Self::Shared(server) => StressServer::Shared(server.with_telemetry(telemetry)),
+            Self::Serial(server) => StressServer::Serial(server.with_telemetry(telemetry)),
+        }
+    }
+
+    pub async fn serve_io<IO>(&self, io: IO) -> Result<(), NacelleError>
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        match self {
+            Self::Shared(server) => server.serve_io(io).await,
+            Self::Serial(server) => server.serve_io(io).await,
+        }
+    }
+}
+
 pub fn build_server(
     config: &ServerConfig,
-) -> Result<
-    TcpServer<LengthDelimitedProtocol, impl TcpHandler<LengthDelimitedProtocol>>,
-    NacelleError,
-> {
+) -> Result<StressServer<impl TcpHandler<LengthDelimitedProtocol>>, NacelleError> {
     let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
-    TcpServer::<LengthDelimitedProtocol>::builder()
+    let tcp_config = NacelleTcpConfig::default()
+        .with_read_buffer_capacity(config.read_buffer_capacity)
+        .with_response_buffer_capacity(config.response_buffer_capacity)
+        .with_request_body_chunk_size(config.request_body_chunk_size)
+        .with_request_body_channel_capacity(config.request_body_channel_capacity)
+        .with_response_write_policy(config.response_write_mode.into());
+    let runtime_state = NacelleRuntimeState::new(config.limits.clone());
+    let shared_response_payload = response_payload.clone();
+    let shared_server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
-        .tcp_config(
-            NacelleTcpConfig::default()
-                .with_read_buffer_capacity(config.read_buffer_capacity)
-                .with_response_buffer_capacity(config.response_buffer_capacity)
-                .with_request_body_chunk_size(config.request_body_chunk_size)
-                .with_request_body_channel_capacity(config.request_body_channel_capacity),
-        )
-        .runtime_state(NacelleRuntimeState::new(config.limits.clone()))
+        .tcp_config(tcp_config.clone())
+        .runtime_state(runtime_state.clone())
         .tcp_limits(config.tcp_limits)
         .handler(handler_fn(
             move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
-                let response_payload = response_payload.clone();
+                let response_payload = shared_response_payload.clone();
                 async move {
                     let opcode = context.request().head.opcode;
                     while let Some(chunk) = context.request_mut().body.next_chunk().await {
@@ -265,7 +444,19 @@ pub fn build_server(
                 }
             },
         ))
-        .build()
+        .build()?;
+    match config.handler_mode {
+        HandlerMode::Shared => Ok(StressServer::Shared(shared_server)),
+        HandlerMode::Serial => Ok(StressServer::Serial(
+            SerialTcpServer::new(
+                LengthDelimitedProtocol,
+                SerialEchoHandler { response_payload },
+            )
+            .with_tcp_config(tcp_config)
+            .with_runtime_state(runtime_state)
+            .with_tcp_limits(config.tcp_limits),
+        )),
+    }
 }
 
 pub fn parse_args(
@@ -311,8 +502,23 @@ fn parse_args_with_default_config(
             "--server-threads" => {
                 config.server_threads = parse_value(&arg, args.next())?;
             }
+            "--handler-mode" => {
+                config.handler_mode = parse_value(&arg, args.next())?;
+            }
+            "--disable-timeouts" => {
+                config.disable_timeouts();
+            }
+            "--disable-handler-timeout" => {
+                config.disable_handler_timeout();
+            }
+            "--disable-tcp-timeouts" => {
+                config.disable_tcp_timeouts();
+            }
             "--response-bytes" => {
                 config.response_bytes = parse_value(&arg, args.next())?;
+            }
+            "--response-write-mode" => {
+                config.response_write_mode = parse_value(&arg, args.next())?;
             }
             "--read-buffer" => {
                 config.read_buffer_capacity = parse_value(&arg, args.next())?;
@@ -362,7 +568,18 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
     println!("  bind: {}", config.bind);
     println!("  server_threads: {}", config.server_threads);
     println!("  actual_server_threads: {actual_server_threads}");
+    println!("  handler_mode: {:?}", config.handler_mode);
+    println!(
+        "  handler_timeout_disabled: {}",
+        config.handler_timeout_disabled
+    );
+    println!(
+        "  memory_allocation_timeout_disabled: {}",
+        config.memory_allocation_timeout_disabled
+    );
+    println!("  tcp_timeouts_disabled: {}", config.tcp_timeouts_disabled);
     println!("  response_bytes: {}", config.response_bytes);
+    println!("  response_write_mode: {:?}", config.response_write_mode);
     println!("  read_buffer_capacity: {}", config.read_buffer_capacity);
     println!(
         "  response_buffer_capacity: {}",
@@ -417,6 +634,10 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
     println!(
         "    handler_timeout_ms: {}",
         format_duration_ms(config.limits.handler_timeout)
+    );
+    println!(
+        "    memory_allocation_timeout_ms: {}",
+        format_duration_ms(config.limits.memory_allocation_timeout)
     );
     println!("  tcp_limits:");
     println!(
@@ -505,7 +726,13 @@ pub fn print_help(runtime: &str) {
            --bind <addr>                             Listen address (default 127.0.0.1:7878)\n\
            --config <path>                           Load TOML config before applying CLI flags\n\
            --server-threads <count>                  Threads (default: logical CPUs)\n\
+           --handler-mode <shared|serial>            Connection-state handler mode (default: shared)\n\
+           --disable-timeouts                        Disable handler, allocation, read, write, and idle\n\
+                                                     timeouts for diagnostic comparisons only.\n\
+           --disable-handler-timeout                 Disable only the handler timeout for diagnostics.\n\
+           --disable-tcp-timeouts                    Disable only read, write, and idle timeouts for diagnostics.\n\
            --response-bytes <bytes>                  Response payload bytes per request (default 64)\n\
+           --response-write-mode <mode>              immediate (default) or coalesce-buffered\n\
            --read-buffer <bytes>                     Read buffer capacity (default 65536)\n\
            --response-buffer <bytes>                 Response encode buffer capacity (default 16384)\n\
            --request-body-chunk-size <bytes>         Request body chunk size (default 16384)\n\
@@ -548,7 +775,9 @@ mod tests {
         let toml = r#"
 bind = "127.0.0.1:9000"
 server_threads = 4
+handler_mode = "serial"
 response_bytes = 256
+response_write_mode = "coalesce-buffered"
 read_buffer_capacity = 4096
 response_buffer_capacity = 2048
 request_body_chunk_size = 1024
@@ -579,7 +808,12 @@ idle_timeout_ms = 120000
 
         assert_eq!(config.bind, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.server_threads, 4);
+        assert_eq!(config.handler_mode, HandlerMode::Serial);
         assert_eq!(config.response_bytes, 256);
+        assert_eq!(
+            config.response_write_mode,
+            ResponseWriteMode::CoalesceBuffered
+        );
         assert_eq!(config.read_buffer_capacity, 4096);
         assert_eq!(config.response_buffer_capacity, 2048);
         assert_eq!(config.request_body_chunk_size, 1024);
@@ -611,6 +845,82 @@ idle_timeout_ms = 120000
             config.tcp_limits.idle_timeout,
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[test]
+    fn cli_selects_serial_handler_mode() {
+        let config = parse_args_with_default_config(
+            ["--handler-mode".to_string(), "serial".to_string()],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(config.handler_mode, HandlerMode::Serial);
+    }
+
+    #[test]
+    fn cli_selects_coalesced_response_writes() {
+        let config = parse_args_with_default_config(
+            [
+                "--response-write-mode".to_string(),
+                "coalesce-buffered".to_string(),
+            ],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.response_write_mode,
+            ResponseWriteMode::CoalesceBuffered
+        );
+    }
+
+    #[test]
+    fn cli_disables_all_timeouts_after_config_files() {
+        let config = parse_args_with_default_config(
+            ["--disable-timeouts".to_string()],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .unwrap();
+
+        assert!(config.handler_timeout_disabled);
+        assert!(config.memory_allocation_timeout_disabled);
+        assert!(config.tcp_timeouts_disabled);
+        assert_eq!(config.limits.memory_allocation_timeout, None);
+        assert_eq!(config.limits.handler_timeout, None);
+        assert_eq!(config.tcp_limits.read_timeout, None);
+        assert_eq!(config.tcp_limits.write_timeout, None);
+        assert_eq!(config.tcp_limits.idle_timeout, None);
+    }
+
+    #[test]
+    fn cli_disables_handler_and_tcp_timeouts_independently() {
+        let handler_only = parse_args_with_default_config(
+            ["--disable-handler-timeout".to_string()],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .unwrap();
+        assert!(handler_only.handler_timeout_disabled);
+        assert!(!handler_only.tcp_timeouts_disabled);
+        assert_eq!(handler_only.limits.handler_timeout, None);
+        assert!(handler_only.tcp_limits.read_timeout.is_some());
+
+        let tcp_only = parse_args_with_default_config(
+            ["--disable-tcp-timeouts".to_string()],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .unwrap();
+        assert!(!tcp_only.handler_timeout_disabled);
+        assert!(tcp_only.tcp_timeouts_disabled);
+        assert!(tcp_only.limits.handler_timeout.is_some());
+        assert_eq!(tcp_only.tcp_limits.read_timeout, None);
+        assert_eq!(tcp_only.tcp_limits.write_timeout, None);
+        assert_eq!(tcp_only.tcp_limits.idle_timeout, None);
     }
 
     #[test]

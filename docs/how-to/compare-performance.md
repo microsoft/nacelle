@@ -233,6 +233,48 @@ records `cycles:u` at 999 Hz with frame-pointer call graphs. Heaptrack launches
 the server directly so allocator interception survives process startup, then
 applies any requested CPU affinity to all server threads.
 
+The helper can compare handler ownership and response delivery without
+changing their safe defaults:
+
+```bash
+./scripts/profile-linux.sh --tool perf --handler-mode serial
+./scripts/profile-linux.sh \
+	--tool baseline \
+	--response-write-mode coalesce-buffered \
+	--pipeline 8 \
+	--runs 3
+```
+
+### July 2026 Linux response-delivery diagnostic
+
+The following results are local confidence checks from an Intel Xeon Silver
+4214 host with 24 physical cores, Linux 6.8, and Rust 1.95.0. The profiling
+build used the system allocator, no TLS, no OpenTelemetry, eight pinned server
+workers, 256 persistent connections, 256-byte request bodies, 64-byte response
+bodies, and all timeout defaults enabled. Server and client CPU sets were
+disjoint. Each matrix cell used a five-second warm-up and three measured
+ten-second runs; pipeline depths 1 and 8 also received ABBA interleaved checks.
+
+| Pipeline | Immediate median | Coalesced median | Local delta |
+| ---: | ---: | ---: | ---: |
+| 1 | 614,661 req/s | 624,258 req/s | inconclusive; ABBA was -1.0% |
+| 8 | 763,646 req/s | 1,081,277 req/s | +41.6% |
+| 32 | 724,094 req/s | 1,256,126 req/s | +73.5% |
+
+All clients completed without reported failures. The pipeline-8 ABBA check
+measured 764,854-774,894 req/s for immediate delivery and
+1,072,662-1,075,516 req/s for coalesced delivery. Matched perf captures lost no
+samples; coalescing reduced `write_all_tracked_with_timeout` self share from
+4.33% to 1.39%, `ResponseDelivery::write_pending` from 4.14% to 1.68%, and TCP
+write polling from 1.59% to 0.46%. The connection loop always flushes after it
+drains the requests already decoded from the current read buffer and before it
+awaits another socket read.
+
+These loopback saturation results support coalescing as an explicit option for
+highly pipelined workloads, not as a universal default. Pipeline-1 performance
+showed no repeatable benefit, and target-network latency, response sizes,
+backpressure, TLS, and telemetry require separate measurements.
+
 ## Phase 7 local confidence checks
 
 The following measurements are local confidence checks, not portable release

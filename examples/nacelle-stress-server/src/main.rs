@@ -4,7 +4,7 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[path = "shared.rs"]
 mod shared;
-use shared::{build_server, configure_allocator, parse_args, print_config};
+use shared::{StressServer, build_server, configure_allocator, parse_args, print_config};
 
 use std::net::SocketAddr;
 #[cfg(feature = "otel")]
@@ -13,10 +13,11 @@ use std::thread;
 #[cfg(feature = "otel")]
 use std::time::Duration;
 
+use nacelle::core::telemetry::NacelleTelemetryObserver;
 use nacelle::core::{NacelleError, NacelleTelemetry};
 #[cfg(feature = "tls-self-signed")]
 use nacelle::rustls::NacelleTlsConfig;
-use nacelle::tcp::{TcpHandler, TcpServer};
+use nacelle::tcp::TcpHandler;
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::make_tcp_socket;
 #[cfg(feature = "otel")]
@@ -70,14 +71,15 @@ fn make_server_socket(
 // Service
 // ---------------------------------------------------------------------------
 
-async fn run_server<H>(
+async fn run_server<H, Observer>(
     listener: TcpListener,
-    server: TcpServer<LengthDelimitedProtocol, H>,
+    server: StressServer<H, Observer>,
     tls_config: Option<StressTlsConfig>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), NacelleError>
 where
     H: TcpHandler<LengthDelimitedProtocol>,
+    Observer: NacelleTelemetryObserver,
 {
     loop {
         tokio::select! {
@@ -100,13 +102,14 @@ where
     Ok(())
 }
 
-async fn serve_accepted_stream<H>(
-    server: TcpServer<LengthDelimitedProtocol, H>,
+async fn serve_accepted_stream<H, Observer>(
+    server: StressServer<H, Observer>,
     stream: TcpStream,
     tls_config: Option<StressTlsConfig>,
 ) -> Result<(), NacelleError>
 where
     H: TcpHandler<LengthDelimitedProtocol>,
+    Observer: NacelleTelemetryObserver,
 {
     #[cfg(feature = "tls-self-signed")]
     if let Some(tls_config) = tls_config {
@@ -128,14 +131,15 @@ where
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn spawn_server_thread<H>(
+fn spawn_server_thread<H, Observer>(
     listener: TcpListener,
-    server: TcpServer<LengthDelimitedProtocol, H>,
+    server: StressServer<H, Observer>,
     tls_config: Option<StressTlsConfig>,
     shutdown: watch::Receiver<bool>,
 ) -> thread::JoinHandle<Result<(), NacelleError>>
 where
     H: TcpHandler<LengthDelimitedProtocol>,
+    Observer: NacelleTelemetryObserver,
 {
     thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()

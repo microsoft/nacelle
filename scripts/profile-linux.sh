@@ -5,6 +5,11 @@ TOOL="perf"
 CONFIG="examples/nacelle-stress-server/configs/tcp.toml"
 BIND="127.0.0.1:17878"
 SERVER_THREADS="8"
+HANDLER_MODE="shared"
+DISABLE_TIMEOUTS="false"
+DISABLE_HANDLER_TIMEOUT="false"
+DISABLE_TCP_TIMEOUTS="false"
+RESPONSE_WRITE_MODE="immediate"
 CONNECTIONS="256"
 PIPELINE="8"
 WARMUP_SECS="5"
@@ -25,6 +30,11 @@ Options:
   --config PATH
   --bind ADDR
   --server-threads N
+    --handler-mode shared|serial
+    --disable-timeouts
+    --disable-handler-timeout
+    --disable-tcp-timeouts
+    --response-write-mode immediate|coalesce-buffered
   --connections N
   --pipeline N
   --warmup-secs N
@@ -45,6 +55,11 @@ while [[ $# -gt 0 ]]; do
         --config) CONFIG="$2"; shift 2 ;;
         --bind) BIND="$2"; shift 2 ;;
         --server-threads) SERVER_THREADS="$2"; shift 2 ;;
+        --handler-mode) HANDLER_MODE="$2"; shift 2 ;;
+        --disable-timeouts) DISABLE_TIMEOUTS="true"; shift ;;
+        --disable-handler-timeout) DISABLE_HANDLER_TIMEOUT="true"; shift ;;
+        --disable-tcp-timeouts) DISABLE_TCP_TIMEOUTS="true"; shift ;;
+        --response-write-mode) RESPONSE_WRITE_MODE="$2"; shift 2 ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
         --pipeline) PIPELINE="$2"; shift 2 ;;
         --warmup-secs) WARMUP_SECS="$2"; shift 2 ;;
@@ -73,6 +88,16 @@ case "$TOOL" in
         command -v heaptrack_print >/dev/null || { echo "heaptrack_print is required" >&2; exit 1; }
         ;;
     *) echo "--tool must be baseline, perf, or heaptrack" >&2; exit 2 ;;
+esac
+
+case "$HANDLER_MODE" in
+    shared|serial) ;;
+    *) echo "--handler-mode must be shared or serial" >&2; exit 2 ;;
+esac
+
+case "$RESPONSE_WRITE_MODE" in
+    immediate|coalesce-buffered) ;;
+    *) echo "--response-write-mode must be immediate or coalesce-buffered" >&2; exit 2 ;;
 esac
 
 if [[ -n "$SERVER_CPUS" || -n "$CLIENT_CPUS" ]]; then
@@ -127,6 +152,11 @@ fi
     echo "config=$CONFIG"
     echo "bind=$BIND"
     echo "server_threads=$SERVER_THREADS"
+    echo "handler_mode=$HANDLER_MODE"
+    echo "disable_timeouts=$DISABLE_TIMEOUTS"
+    echo "disable_handler_timeout=$DISABLE_HANDLER_TIMEOUT"
+    echo "disable_tcp_timeouts=$DISABLE_TCP_TIMEOUTS"
+    echo "response_write_mode=$RESPONSE_WRITE_MODE"
     echo "connections=$CONNECTIONS"
     echo "pipeline=$PIPELINE"
     echo "warmup_secs=$WARMUP_SECS"
@@ -146,6 +176,22 @@ fi
 
 SERVER_PID=""
 PROFILER_PID=""
+SERVER_ARGS=(
+    --config "$CONFIG"
+    --bind "$BIND"
+    --server-threads "$SERVER_THREADS"
+    --handler-mode "$HANDLER_MODE"
+    --response-write-mode "$RESPONSE_WRITE_MODE"
+)
+if [[ "$DISABLE_TIMEOUTS" == "true" ]]; then
+    SERVER_ARGS+=(--disable-timeouts)
+fi
+if [[ "$DISABLE_HANDLER_TIMEOUT" == "true" ]]; then
+    SERVER_ARGS+=(--disable-handler-timeout)
+fi
+if [[ "$DISABLE_TCP_TIMEOUTS" == "true" ]]; then
+    SERVER_ARGS+=(--disable-tcp-timeouts)
+fi
 
 stop_process() {
     local pid="$1"
@@ -185,9 +231,7 @@ start_server() {
     local server_log="$1"
     local command=(
         "$SERVER_BINARY"
-        --config "$CONFIG"
-        --bind "$BIND"
-        --server-threads "$SERVER_THREADS"
+        "${SERVER_ARGS[@]}"
     )
     if [[ -n "$SERVER_CPUS" ]]; then
         command=(taskset -c "$SERVER_CPUS" "${command[@]}")
@@ -257,8 +301,7 @@ case "$TOOL" in
             > "$OUTPUT_DIRECTORY/perf-report-inclusive.txt"
         ;;
     heaptrack)
-        heaptrack -o "$OUTPUT_DIRECTORY/heaptrack" "$SERVER_BINARY" \
-            --config "$CONFIG" --bind "$BIND" --server-threads "$SERVER_THREADS" \
+        heaptrack -o "$OUTPUT_DIRECTORY/heaptrack" "$SERVER_BINARY" "${SERVER_ARGS[@]}" \
             > "$OUTPUT_DIRECTORY/server.log" 2>&1 &
         PROFILER_PID=$!
         SERVER_PID="$(wait_for_listener "$PROFILER_PID")" || {
