@@ -5,11 +5,13 @@ TOOL="perf"
 CONFIG="examples/nacelle-stress-server/configs/tcp.toml"
 BIND="127.0.0.1:17878"
 SERVER_THREADS="8"
+FEATURE_SET="minimal"
 HANDLER_MODE="shared"
 DISABLE_TIMEOUTS="false"
 DISABLE_HANDLER_TIMEOUT="false"
 DISABLE_TCP_TIMEOUTS="false"
 RESPONSE_WRITE_MODE="immediate"
+TLS_INSECURE="false"
 CONNECTIONS="256"
 PIPELINE="8"
 WARMUP_SECS="5"
@@ -30,11 +32,13 @@ Options:
   --config PATH
   --bind ADDR
   --server-threads N
+    --feature-set minimal|default
     --handler-mode shared|serial
     --disable-timeouts
     --disable-handler-timeout
     --disable-tcp-timeouts
     --response-write-mode immediate|coalesce-buffered
+    --tls-insecure
   --connections N
   --pipeline N
   --warmup-secs N
@@ -55,11 +59,13 @@ while [[ $# -gt 0 ]]; do
         --config) CONFIG="$2"; shift 2 ;;
         --bind) BIND="$2"; shift 2 ;;
         --server-threads) SERVER_THREADS="$2"; shift 2 ;;
+        --feature-set) FEATURE_SET="$2"; shift 2 ;;
         --handler-mode) HANDLER_MODE="$2"; shift 2 ;;
         --disable-timeouts) DISABLE_TIMEOUTS="true"; shift ;;
         --disable-handler-timeout) DISABLE_HANDLER_TIMEOUT="true"; shift ;;
         --disable-tcp-timeouts) DISABLE_TCP_TIMEOUTS="true"; shift ;;
         --response-write-mode) RESPONSE_WRITE_MODE="$2"; shift 2 ;;
+        --tls-insecure) TLS_INSECURE="true"; shift ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
         --pipeline) PIPELINE="$2"; shift 2 ;;
         --warmup-secs) WARMUP_SECS="$2"; shift 2 ;;
@@ -95,10 +101,24 @@ case "$HANDLER_MODE" in
     *) echo "--handler-mode must be shared or serial" >&2; exit 2 ;;
 esac
 
+case "$FEATURE_SET" in
+    minimal|default) ;;
+    *) echo "--feature-set must be minimal or default" >&2; exit 2 ;;
+esac
+
 case "$RESPONSE_WRITE_MODE" in
     immediate|coalesce-buffered) ;;
     *) echo "--response-write-mode must be immediate or coalesce-buffered" >&2; exit 2 ;;
 esac
+
+if [[ "$TLS_INSECURE" == "true" && "$FEATURE_SET" != "default" ]]; then
+    echo "--tls-insecure requires --feature-set default so the client includes Rustls" >&2
+    exit 2
+fi
+if [[ "$TOOL" == "heaptrack" && "$FEATURE_SET" == "default" ]]; then
+    echo "Heaptrack cannot observe the default mimalloc allocator; use --feature-set minimal" >&2
+    exit 2
+fi
 
 if [[ -n "$SERVER_CPUS" || -n "$CLIENT_CPUS" ]]; then
     command -v taskset >/dev/null || { echo "taskset is required for CPU pinning" >&2; exit 1; }
@@ -128,10 +148,14 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
         PROFILE_RUSTFLAGS+=" "
     fi
     PROFILE_RUSTFLAGS+="-C force-frame-pointers=yes"
+    BUILD_FEATURE_ARGS=()
+    if [[ "$FEATURE_SET" == "minimal" ]]; then
+        BUILD_FEATURE_ARGS+=(--no-default-features)
+    fi
     RUSTFLAGS="$PROFILE_RUSTFLAGS" cargo build --profile profiling \
-        -p nacelle-stress-server --no-default-features
+        -p nacelle-stress-server "${BUILD_FEATURE_ARGS[@]}"
     RUSTFLAGS="$PROFILE_RUSTFLAGS" cargo build --profile profiling \
-        -p nacelle-stress-test --no-default-features
+        -p nacelle-stress-test "${BUILD_FEATURE_ARGS[@]}"
 fi
 
 SERVER_BINARY="target/profiling/nacelle-stress-server"
@@ -152,11 +176,13 @@ fi
     echo "config=$CONFIG"
     echo "bind=$BIND"
     echo "server_threads=$SERVER_THREADS"
+    echo "feature_set=$FEATURE_SET"
     echo "handler_mode=$HANDLER_MODE"
     echo "disable_timeouts=$DISABLE_TIMEOUTS"
     echo "disable_handler_timeout=$DISABLE_HANDLER_TIMEOUT"
     echo "disable_tcp_timeouts=$DISABLE_TCP_TIMEOUTS"
     echo "response_write_mode=$RESPONSE_WRITE_MODE"
+    echo "tls_insecure=$TLS_INSECURE"
     echo "connections=$CONNECTIONS"
     echo "pipeline=$PIPELINE"
     echo "warmup_secs=$WARMUP_SECS"
@@ -255,6 +281,9 @@ run_client() {
         --duration-secs "$duration"
         --payload-bytes "$PAYLOAD_BYTES"
     )
+    if [[ "$TLS_INSECURE" == "true" ]]; then
+        command+=(--tls-insecure)
+    fi
     if [[ -n "$CLIENT_CPUS" ]]; then
         command=(taskset -c "$CLIENT_CPUS" "${command[@]}")
     fi

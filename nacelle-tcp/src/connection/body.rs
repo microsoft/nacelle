@@ -34,8 +34,7 @@ where
     }
 
     while body.len() < body_len {
-        let bytes_read =
-            read_buf_with_timeout(reader, &mut body, tcp_limits, "request_body_read").await?;
+        let bytes_read = read_buf_with_timeout(reader, &mut body, tcp_limits).await?;
         if bytes_read == 0 {
             return Err(NacelleError::UnexpectedEof);
         }
@@ -72,14 +71,7 @@ where
     while remaining > 0 {
         let next_len = remaining.min(config.request_body_chunk_size);
         let mut chunk = BytesMut::with_capacity(next_len);
-        let bytes_read = match read_buf_with_timeout(
-            reader,
-            &mut chunk,
-            tcp_limits,
-            "request_body_read",
-        )
-        .await
-        {
+        let bytes_read = match read_buf_with_timeout(reader, &mut chunk, tcp_limits).await {
             Ok(bytes_read) => bytes_read,
             Err(error) => {
                 if receiver_open {

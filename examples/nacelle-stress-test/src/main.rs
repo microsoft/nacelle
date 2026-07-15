@@ -157,6 +157,9 @@ where
                 as u64;
         inflight.push_back((request_id, Instant::now()));
     }
+    if !inflight.is_empty() {
+        writer.flush().await?;
+    }
 
     while !inflight.is_empty() {
         let response = read_response(&mut reader, &mut read_buf).await?;
@@ -179,6 +182,7 @@ where
                 write_request_frame(&mut writer, request_id, STRESS_OPCODE, &mut request_frame)
                     .await? as u64;
             inflight.push_back((request_id, Instant::now()));
+            writer.flush().await?;
         }
     }
 

@@ -8,7 +8,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
-use super::io::write_all_tracked_with_timeout;
+use super::io::{flush_with_timeout, write_all_tracked_with_timeout};
 use super::metrics::{TcpTelemetryPlan, finish_tcp_phase, record_tcp_error, start_tcp_phase};
 
 #[derive(Debug)]
@@ -249,23 +249,35 @@ impl ResponseDelivery {
         W: AsyncWrite + Unpin,
         Observer: NacelleTelemetryObserver,
     {
-        if self.pending.is_empty() {
+        let delivered_bytes = if self.pending.is_empty() {
             self.reset();
-            return Ok(0);
-        }
-        self.write_pending(
-            writer,
-            tcp_limits,
-            telemetry,
-            metrics_context,
-            telemetry_plan,
-        )
-        .await
-        .map_err(|(error, written)| ResponseDeliveryError {
-            error,
-            delivered_bytes: written,
-            kind: ResponseDeliveryErrorKind::Write,
-        })
+            0
+        } else {
+            self.write_pending(
+                writer,
+                tcp_limits,
+                telemetry,
+                metrics_context,
+                telemetry_plan,
+            )
+            .await
+            .map_err(|(error, written)| ResponseDeliveryError {
+                error,
+                delivered_bytes: written,
+                kind: ResponseDeliveryErrorKind::Write,
+            })?
+        };
+        flush_with_timeout(writer, tcp_limits)
+            .await
+            .map_err(|error| {
+                record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+                ResponseDeliveryError {
+                    error,
+                    delivered_bytes,
+                    kind: ResponseDeliveryErrorKind::Write,
+                }
+            })?;
+        Ok(delivered_bytes)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -312,8 +324,7 @@ impl ResponseDelivery {
         Observer: NacelleTelemetryObserver,
     {
         let write_started = start_tcp_phase(telemetry_plan.phase_duration);
-        let result =
-            write_all_tracked_with_timeout(writer, &self.pending, tcp_limits, "tcp_write").await;
+        let result = write_all_tracked_with_timeout(writer, &self.pending, tcp_limits).await;
         finish_tcp_phase(telemetry, metrics_context, "socket_write", write_started);
         if let Err((error, _)) = &result {
             record_tcp_error(telemetry, metrics_context, "socket_write", error);
