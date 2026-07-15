@@ -74,7 +74,7 @@ function Get-NacellePerformanceBenchmarks {
     if (Test-Path (Join-Path $Workspace "examples/nacelle-examples/benches/critical_paths.rs")) {
         $available += [pscustomobject]@{
             Name      = "critical-paths"
-            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp")
+            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp exp-memory-limits")
         }
     }
     elseif (Test-Path (Join-Path $Workspace "nacelle/benches/critical_paths.rs")) {

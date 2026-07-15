@@ -27,7 +27,9 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read_error};
+#[cfg(feature = "exp-memory-limits")]
+use framing::allocate_connection_buffers;
+use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
 use io::shutdown_with_timeout;
 use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_close_reason, tcp_metrics_context};
@@ -199,6 +201,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    #[cfg(feature = "exp-memory-limits")]
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;

@@ -86,6 +86,7 @@ pub struct ServerConfig {
     pub server_threads: usize,
     pub handler_mode: HandlerMode,
     pub handler_timeout_disabled: bool,
+    #[cfg(feature = "exp-memory-limits")]
     pub memory_allocation_timeout_disabled: bool,
     pub tcp_timeouts_disabled: bool,
     pub response_bytes: usize,
@@ -112,6 +113,7 @@ impl Default for ServerConfig {
                 .unwrap_or(1),
             handler_mode: HandlerMode::Shared,
             handler_timeout_disabled: false,
+            #[cfg(feature = "exp-memory-limits")]
             memory_allocation_timeout_disabled: false,
             tcp_timeouts_disabled: false,
             response_bytes: 64,
@@ -158,6 +160,7 @@ struct LimitsConfigFile {
     max_connection_opens_per_peer_per_second: Option<usize>,
     max_in_flight_requests: Option<usize>,
     max_streaming_tasks: Option<usize>,
+    #[cfg(feature = "exp-memory-limits")]
     max_memory_bytes: Option<usize>,
     max_request_body_bytes: Option<usize>,
     max_response_body_bytes: Option<usize>,
@@ -249,6 +252,7 @@ impl ServerConfig {
         if let Some(max_streaming_tasks) = file.max_streaming_tasks {
             self.limits.max_streaming_tasks = max_streaming_tasks.max(1);
         }
+        #[cfg(feature = "exp-memory-limits")]
         if let Some(max_memory_bytes) = file.max_memory_bytes {
             self.limits.max_memory_bytes = max_memory_bytes.max(1);
         }
@@ -289,8 +293,11 @@ impl ServerConfig {
 
     fn disable_timeouts(&mut self) {
         self.disable_handler_timeout();
-        self.memory_allocation_timeout_disabled = true;
-        self.limits.memory_allocation_timeout = None;
+        #[cfg(feature = "exp-memory-limits")]
+        {
+            self.memory_allocation_timeout_disabled = true;
+            self.limits.memory_allocation_timeout = None;
+        }
         self.disable_tcp_timeouts();
     }
 }
@@ -587,6 +594,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "  handler_timeout_disabled: {}",
         config.handler_timeout_disabled
     );
+    #[cfg(feature = "exp-memory-limits")]
     println!(
         "  memory_allocation_timeout_disabled: {}",
         config.memory_allocation_timeout_disabled
@@ -640,6 +648,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "    max_streaming_tasks: {}",
         config.limits.max_streaming_tasks
     );
+    #[cfg(feature = "exp-memory-limits")]
     println!("    max_memory_bytes: {}", config.limits.max_memory_bytes);
     println!(
         "    max_request_body_bytes: {}",
@@ -653,6 +662,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "    handler_timeout_ms: {}",
         format_duration_ms(config.limits.handler_timeout)
     );
+    #[cfg(feature = "exp-memory-limits")]
     println!(
         "    memory_allocation_timeout_ms: {}",
         format_duration_ms(config.limits.memory_allocation_timeout)
@@ -790,6 +800,7 @@ mod tests {
         configure_allocator(true);
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     #[test]
     fn toml_config_applies_limits() {
         let toml = r#"
@@ -928,8 +939,10 @@ idle_timeout_ms = 120000
         .unwrap();
 
         assert!(config.handler_timeout_disabled);
+        #[cfg(feature = "exp-memory-limits")]
         assert!(config.memory_allocation_timeout_disabled);
         assert!(config.tcp_timeouts_disabled);
+        #[cfg(feature = "exp-memory-limits")]
         assert_eq!(config.limits.memory_allocation_timeout, None);
         assert_eq!(config.limits.handler_timeout, None);
         assert_eq!(config.tcp_limits.read_timeout, None);

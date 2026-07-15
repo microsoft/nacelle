@@ -20,6 +20,7 @@ openssl = ["tls", "dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl", "na
 openssl-vendored = ["openssl", "openssl/vendored", "nacelle-openssl/vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 phase-timing = ["nacelle-core/phase-timing"]
+exp-memory-limits = ["nacelle-core/exp-memory-limits"]
 
 [dependencies]
 bytes = { workspace = true }

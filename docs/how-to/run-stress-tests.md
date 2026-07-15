@@ -3,7 +3,7 @@
 Run the server:
 
 ```bash
-cargo run --release --package nacelle-stress-server -- --config examples/nacelle-stress-server/configs/tcp.toml
+cargo run --release --package nacelle-stress-server --features exp-memory-limits -- --config examples/nacelle-stress-server/configs/tcp.toml
 ```
 
 Run a bounded client smoke test:
@@ -18,7 +18,8 @@ when the effective `tls_self_signed` value is true.
 
 The stress client enables its Rustls support by default so `--tls-insecure`
 works with the local self-signed server. For a Rustls-free plain TCP build, run
-both stress binaries with `--no-default-features` and use
+the stress server with `--no-default-features --features exp-memory-limits`, the
+client with `--no-default-features`, and use
 `examples/nacelle-stress-server/configs/tcp.toml`.
 
 Repeatable profiles:
@@ -47,16 +48,16 @@ started/completed counters plus request/response byte counters by default. The
 generic telemetry API groups those switches under `request_metrics`; the stress
 server exposes byte accounting as `byte_metrics = true`.
 Use `--no-byte-metrics` for a lower-overhead recorder run. Use
-`--no-default-features` with the plain TCP config for a system-allocator,
-Rustls-free diagnostic; metrics collection remains active. Add
-`--features mimalloc-allocator` when the baseline must keep mimalloc while
-disabling TLS.
+`--no-default-features --features exp-memory-limits` with the plain TCP config
+for a system-allocator, Rustls-free diagnostic; metrics collection remains
+active. Add `mimalloc-allocator` to the feature list when the baseline must keep
+mimalloc while disabling TLS.
 
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:
 
 ```bash
-cargo run --release -p nacelle-stress-server --features phase-timing -- \
+cargo run --release -p nacelle-stress-server --features phase-timing,exp-memory-limits -- \
   --config examples/nacelle-stress-server/configs/tcp.toml \
   --phase-duration-metrics
 ```
@@ -70,8 +71,9 @@ baseline.
 The Tokio stress server default build includes `tls-self-signed` support. The
 checked-in root `config.toml` enables `tls_self_signed = true`, so the local
 stress client should use `--tls-insecure` with that default config. Use
-`--no-default-features` with `examples/nacelle-stress-server/configs/tcp.toml` when
-you need a Rustls-free plain TCP baseline.
+`--no-default-features --features exp-memory-limits` with
+`examples/nacelle-stress-server/configs/tcp.toml` when you need a Rustls-free
+plain TCP baseline.
 
 CI-friendly scenarios should stay short and deterministic:
 

@@ -23,6 +23,7 @@ openssl = ["tls", "dep:nacelle-openssl", "nacelle-tcp?/openssl"]
 openssl-vendored = ["openssl", "nacelle-openssl/vendored", "nacelle-tcp?/openssl-vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed", "nacelle-http?/tls-self-signed", "nacelle-tcp?/tls-self-signed"]
 phase-timing = ["tcp", "nacelle-tcp/phase-timing"]
+exp-memory-limits = ["nacelle-core/exp-memory-limits", "nacelle-http?/exp-memory-limits", "nacelle-tcp?/exp-memory-limits"]
 bench = []
 fuzzing = []
 

@@ -17,7 +17,7 @@ cargo run -p nacelle-examples --bin echo -- 127.0.0.1:8080
 Start the TLS proxy in another terminal:
 
 ```bash
-cargo run -p nacelle-proxy
+cargo run -p nacelle-proxy --features exp-memory-limits
 ```
 
 The default feature creates an ephemeral self-signed certificate for local
@@ -39,7 +39,7 @@ both PEM paths in a configuration file and use:
 
 ```bash
 cargo run -p nacelle-proxy \
-	--no-default-features --features tls -- path/to/proxy.toml
+	--no-default-features --features tls,exp-memory-limits -- path/to/proxy.toml
 ```
 
 When no path argument is supplied, the binary uses the example configuration
@@ -75,7 +75,9 @@ cycle before the complete pair becomes active.
 ## Resource And Timeout Model
 
 The checked-in profile sets explicit total connections, per-peer connections,
-in-flight requests, body sizes, handler timeout, and Nacelle-managed memory.
+in-flight requests, body sizes, handler timeout, and experimental
+Nacelle-managed memory. Its `max_memory_bytes` key requires the
+`exp-memory-limits` feature used in the commands above.
 `max_memory_bytes` accounts for Nacelle transport allocations; it is not a
 total RSS limit and does not include every allocation made by this example.
 Use a process or container memory limit for a hard deployment boundary.

@@ -1848,6 +1848,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     #[tokio::test]
     async fn http_content_length_body_reserves_memory_until_consumed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1899,6 +1900,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     #[tokio::test]
     async fn http_early_response_cancels_body_pump_and_releases_resources() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1953,6 +1955,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     #[tokio::test]
     async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2551,6 +2554,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     async fn wait_for_memory(
         runtime_state: &nacelle_core::limits::NacelleRuntimeState,
         expected: usize,

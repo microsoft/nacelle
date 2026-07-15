@@ -99,17 +99,17 @@ impl ProxyApp {
         ));
 
         println!("nacelle proxy listening on {listen_addr}");
+        let limits = NacelleLimits::default()
+            .with_max_connections(startup.max_connections)
+            .with_max_in_flight_requests(startup.max_in_flight_requests)
+            .with_max_connections_per_peer(startup.max_connections_per_peer)
+            .with_max_request_body_bytes(startup.max_request_body_bytes)
+            .with_max_response_body_bytes(startup.max_response_body_bytes)
+            .with_handler_timeout(startup.handler_timeout);
+        #[cfg(feature = "exp-memory-limits")]
+        let limits = limits.with_max_memory_bytes(startup.max_memory_bytes);
         let app = NacelleApp::new()
-            .with_limits(
-                NacelleLimits::default()
-                    .with_max_connections(startup.max_connections)
-                    .with_max_in_flight_requests(startup.max_in_flight_requests)
-                    .with_max_connections_per_peer(startup.max_connections_per_peer)
-                    .with_max_memory_bytes(startup.max_memory_bytes)
-                    .with_max_request_body_bytes(startup.max_request_body_bytes)
-                    .with_max_response_body_bytes(startup.max_response_body_bytes)
-                    .with_handler_timeout(startup.handler_timeout),
-            )
+            .with_limits(limits)
             .with_shutdown(shutdown.clone())
             .with_ctrl_c_shutdown()
             .tcp_tls("proxy", listen_addr, server, self.tls_config)

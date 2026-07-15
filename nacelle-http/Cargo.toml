@@ -16,6 +16,7 @@ default = []
 tls = []
 rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
+exp-memory-limits = ["nacelle-core/exp-memory-limits"]
 
 [dependencies]
 bytes = { workspace = true }

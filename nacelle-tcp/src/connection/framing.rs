@@ -7,9 +7,13 @@ use std::task::{Context, Poll};
 #[cfg(feature = "phase-timing")]
 use tokio::io::{AsyncRead, ReadBuf};
 
+#[cfg(feature = "exp-memory-limits")]
 use crate::config::NacelleTcpConfig;
 use nacelle_core::error::NacelleError;
-use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
+#[cfg(feature = "exp-memory-limits")]
+use nacelle_core::limits::NacelleMemoryAllocation;
+#[cfg(feature = "exp-memory-limits")]
+use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::metrics::{finish_tcp_phase, start_tcp_phase};
@@ -77,6 +81,7 @@ where
     }
 }
 
+#[cfg(feature = "exp-memory-limits")]
 pub(super) fn allocate_connection_buffers(
     config: &NacelleTcpConfig,
     runtime_state: &NacelleRuntimeState,

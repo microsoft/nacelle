@@ -11,6 +11,7 @@ use futures_core::Stream;
 use tokio::sync::mpsc;
 
 use crate::error::NacelleError;
+#[cfg(feature = "exp-memory-limits")]
 use crate::limits::NacelleMemoryAllocation;
 use crate::telemetry::NacelleTransport;
 
@@ -191,12 +192,14 @@ enum BodyReceiver {
 
 enum TrackedBodyMessage {
     Chunk(Result<Bytes, NacelleError>),
+    #[cfg(feature = "exp-memory-limits")]
     MemoryAllocation(NacelleMemoryAllocation),
 }
 
 #[doc(hidden)]
 pub struct TrackedBodySender {
     sender: mpsc::Sender<TrackedBodyMessage>,
+    #[cfg(feature = "exp-memory-limits")]
     memory_allocation_sent: bool,
 }
 
@@ -210,12 +213,14 @@ impl TrackedBodySender {
             .await
             .map_err(|error| match error.0 {
                 TrackedBodyMessage::Chunk(chunk) => mpsc::error::SendError(chunk),
+                #[cfg(feature = "exp-memory-limits")]
                 TrackedBodyMessage::MemoryAllocation(_) => {
                     unreachable!("chunk send returned an allocation message")
                 }
             })
     }
 
+    #[cfg(feature = "exp-memory-limits")]
     pub async fn send_memory_allocation(
         &mut self,
         allocation: NacelleMemoryAllocation,
@@ -239,6 +244,7 @@ impl TrackedBodySender {
 pub struct NacelleBody {
     source: NacelleBodySource,
     remaining_bytes: usize,
+    #[cfg(feature = "exp-memory-limits")]
     _memory_allocation: Option<NacelleMemoryAllocation>,
 }
 
@@ -253,6 +259,7 @@ impl NacelleBody {
                 receiver: BodyReceiver::Public(receiver),
             },
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation: None,
         }
     }
@@ -264,6 +271,7 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes: 0,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation: None,
         }
     }
@@ -277,6 +285,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation: None,
         }
     }
@@ -295,6 +304,7 @@ impl NacelleBody {
         (
             TrackedBodySender {
                 sender,
+                #[cfg(feature = "exp-memory-limits")]
                 memory_allocation_sent: false,
             },
             NacelleBody {
@@ -302,6 +312,7 @@ impl NacelleBody {
                     receiver: BodyReceiver::Tracked(receiver),
                 },
                 remaining_bytes,
+                #[cfg(feature = "exp-memory-limits")]
                 _memory_allocation: None,
             },
         )
@@ -312,6 +323,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation: None,
         }
     }
@@ -324,11 +336,13 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation: None,
         }
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "exp-memory-limits")]
     pub fn with_memory_allocation(mut self, allocation: NacelleMemoryAllocation) -> Self {
         self._memory_allocation = Some(allocation);
         self
@@ -348,6 +362,7 @@ impl NacelleBody {
                     Err(Self {
                         source: NacelleBodySource::Buffered { chunks, next_index },
                         remaining_bytes: self.remaining_bytes,
+                        #[cfg(feature = "exp-memory-limits")]
                         _memory_allocation: self._memory_allocation,
                     })
                 }
@@ -355,6 +370,7 @@ impl NacelleBody {
             NacelleBodySource::Streaming { receiver } => Err(Self {
                 source: NacelleBodySource::Streaming { receiver },
                 remaining_bytes: self.remaining_bytes,
+                #[cfg(feature = "exp-memory-limits")]
                 _memory_allocation: self._memory_allocation,
             }),
         }
@@ -368,6 +384,7 @@ impl NacelleBody {
         let Self {
             source,
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation,
         } = self;
         match source {
@@ -382,32 +399,58 @@ impl NacelleBody {
                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                 Some(Ok(chunk))
             }
-            NacelleBodySource::Streaming { receiver } => loop {
-                let message = match receiver {
-                    BodyReceiver::Public(receiver) => {
-                        break match receiver.recv().await {
+            NacelleBodySource::Streaming { receiver } => {
+                #[cfg(feature = "exp-memory-limits")]
+                {
+                    loop {
+                        let message = match receiver {
+                            BodyReceiver::Public(receiver) => {
+                                break match receiver.recv().await {
+                                    Some(Ok(chunk)) => {
+                                        *remaining_bytes =
+                                            remaining_bytes.saturating_sub(chunk.len());
+                                        Some(Ok(chunk))
+                                    }
+                                    other => other,
+                                };
+                            }
+                            BodyReceiver::Tracked(receiver) => receiver.recv().await,
+                        };
+                        match message {
+                            Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                break Some(Ok(chunk));
+                            }
+                            Some(TrackedBodyMessage::Chunk(Err(error))) => break Some(Err(error)),
+                            Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                                debug_assert!(_memory_allocation.is_none());
+                                *_memory_allocation = Some(allocation);
+                            }
+                            None => break None,
+                        }
+                    }
+                }
+                #[cfg(not(feature = "exp-memory-limits"))]
+                {
+                    match receiver {
+                        BodyReceiver::Public(receiver) => match receiver.recv().await {
                             Some(Ok(chunk)) => {
                                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                                 Some(Ok(chunk))
                             }
                             other => other,
-                        };
+                        },
+                        BodyReceiver::Tracked(receiver) => match receiver.recv().await {
+                            Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                Some(Ok(chunk))
+                            }
+                            Some(TrackedBodyMessage::Chunk(Err(error))) => Some(Err(error)),
+                            None => None,
+                        },
                     }
-                    BodyReceiver::Tracked(receiver) => receiver.recv().await,
-                };
-                match message {
-                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
-                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                        break Some(Ok(chunk));
-                    }
-                    Some(TrackedBodyMessage::Chunk(Err(error))) => break Some(Err(error)),
-                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
-                        debug_assert!(_memory_allocation.is_none());
-                        *_memory_allocation = Some(allocation);
-                    }
-                    None => break None,
                 }
-            },
+            }
         }
     }
 }
@@ -419,6 +462,7 @@ impl Stream for NacelleBody {
         let Self {
             source,
             remaining_bytes,
+            #[cfg(feature = "exp-memory-limits")]
             _memory_allocation,
         } = self.get_mut();
         match source {
@@ -437,37 +481,66 @@ impl Stream for NacelleBody {
                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                 Poll::Ready(Some(Ok(chunk)))
             }
-            NacelleBodySource::Streaming { receiver } => loop {
-                let message = match receiver {
-                    BodyReceiver::Public(receiver) => {
-                        break match receiver.poll_recv(cx) {
+            NacelleBodySource::Streaming { receiver } => {
+                #[cfg(feature = "exp-memory-limits")]
+                {
+                    loop {
+                        let message = match receiver {
+                            BodyReceiver::Public(receiver) => {
+                                break match receiver.poll_recv(cx) {
+                                    Poll::Ready(Some(Ok(chunk))) => {
+                                        *remaining_bytes =
+                                            remaining_bytes.saturating_sub(chunk.len());
+                                        Poll::Ready(Some(Ok(chunk)))
+                                    }
+                                    other => other,
+                                };
+                            }
+                            BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
+                                Poll::Ready(message) => message,
+                                Poll::Pending => break Poll::Pending,
+                            },
+                        };
+                        match message {
+                            Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                break Poll::Ready(Some(Ok(chunk)));
+                            }
+                            Some(TrackedBodyMessage::Chunk(Err(error))) => {
+                                break Poll::Ready(Some(Err(error)));
+                            }
+                            Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                                debug_assert!(_memory_allocation.is_none());
+                                *_memory_allocation = Some(allocation);
+                            }
+                            None => break Poll::Ready(None),
+                        }
+                    }
+                }
+                #[cfg(not(feature = "exp-memory-limits"))]
+                {
+                    match receiver {
+                        BodyReceiver::Public(receiver) => match receiver.poll_recv(cx) {
                             Poll::Ready(Some(Ok(chunk))) => {
                                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                                 Poll::Ready(Some(Ok(chunk)))
                             }
                             other => other,
-                        };
+                        },
+                        BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
+                            Poll::Ready(Some(TrackedBodyMessage::Chunk(Ok(chunk)))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                Poll::Ready(Some(Ok(chunk)))
+                            }
+                            Poll::Ready(Some(TrackedBodyMessage::Chunk(Err(error)))) => {
+                                Poll::Ready(Some(Err(error)))
+                            }
+                            Poll::Ready(None) => Poll::Ready(None),
+                            Poll::Pending => Poll::Pending,
+                        },
                     }
-                    BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
-                        Poll::Ready(message) => message,
-                        Poll::Pending => break Poll::Pending,
-                    },
-                };
-                match message {
-                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
-                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                        break Poll::Ready(Some(Ok(chunk)));
-                    }
-                    Some(TrackedBodyMessage::Chunk(Err(error))) => {
-                        break Poll::Ready(Some(Err(error)));
-                    }
-                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
-                        debug_assert!(_memory_allocation.is_none());
-                        *_memory_allocation = Some(allocation);
-                    }
-                    None => break Poll::Ready(None),
                 }
-            },
+            }
         }
     }
 }
@@ -476,6 +549,7 @@ impl Stream for NacelleBody {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "exp-memory-limits")]
     #[tokio::test]
     async fn tracked_streaming_body_holds_memory_until_drop() {
         let runtime_state = crate::limits::NacelleRuntimeState::new(
