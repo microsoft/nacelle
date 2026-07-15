@@ -62,14 +62,14 @@ PowerShell example:
 .\examples\run-stress-test.ps1 -Config examples/nacelle-stress-server/configs/tcp.toml -ServerThreads 48 -Connections 256 -Pipeline 8 -DurationSecs 30 -PayloadBytes 256
 ```
 
-OpenTelemetry metrics are enabled in the default stress server build. That build
-prints a compact OTel console snapshot every 5 seconds and enables request
+The stress server installs a `metrics-util` recorder and prints a compact
+metrics snapshot every 5 seconds. It enables request
 started/completed counters plus request/response byte counters by default. The
 generic telemetry API groups those switches under `request_metrics`; the stress
 server exposes byte accounting as `byte_metrics = true`.
-Use `--no-byte-metrics` for a lower-overhead OTel run, or use
-`--no-default-features` with the plain TCP config when you intentionally want a
-metrics-free peak throughput baseline.
+Use `--no-byte-metrics` for a lower-overhead recorder run. Use
+`--no-default-features` with the plain TCP config for a Rustls-free,
+system-allocator baseline; metrics collection remains active.
 
 The Tokio stress server default build includes `tls-self-signed` support. The
 checked-in root `config.toml` enables `tls_self_signed = true`, so the local

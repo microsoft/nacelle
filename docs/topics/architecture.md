@@ -144,11 +144,14 @@ Task tracking is at the connection boundary, not the per-request hot path.
 Telemetry is deliberately low-cardinality. Reasons are static strings such as
 `connections`, `request_body_bytes`, or `http_body_read`.
 
-With `otel`, runtime gauges are observable instruments backed by runtime-state
-atomics, so collection reads current values without per-request metric writes.
-`NacelleTelemetry` owns lifecycle, request, phase, error, and byte metrics for
-all transports. Transports that can provide extra low-cardinality detail attach
-a `NacelleMetricsContext` with listener, protocol, transport, and TLS labels.
+Nacelle emits through the backend-neutral `metrics` facade and does not own an
+exporter. Runtime state and shared memory budgets cache gauge handles and update
+them at existing acquire/release transitions. `NacelleTelemetry` owns lifecycle,
+request, phase, error, and byte metrics for all transports. Transports that can
+provide extra low-cardinality detail attach a `NacelleMetricsContext` with
+listener, protocol, transport, and TLS labels. Applications must install their
+recorder before constructing these values so cached handles bind to it; without
+a recorder the handles are no-ops.
 
 Request metric switches live under `NacelleTelemetryConfig::request_metrics`.
 Started/completed counters and byte counters are on by default; in-flight

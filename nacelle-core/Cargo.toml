@@ -15,13 +15,15 @@ categories = ["asynchronous", "network-programming"]
 default = []
 error-hints = []
 tls = []
-otel = ["dep:opentelemetry"]
-phase-timing = ["otel"]
+phase-timing = []
 
 [dependencies]
 bytes = { workspace = true }
 futures-core = { workspace = true }
-opentelemetry = { workspace = true, optional = true }
+metrics = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+metrics-util = { workspace = true }

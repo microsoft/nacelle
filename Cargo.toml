@@ -47,9 +47,9 @@ hyper = "1.10.1"
 hyper-util = "0.1.20"
 libmimalloc-sys = "0.1.49"
 mimalloc = "0.1.52"
+metrics = "0.24.6"
+metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
 openssl = "0.10.81"
-opentelemetry = "0.32.0"
-opentelemetry_sdk = "0.32.1"
 pem = "3.0.6"
 proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
 rcgen = "0.14.8"

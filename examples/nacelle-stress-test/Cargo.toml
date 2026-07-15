@@ -21,7 +21,7 @@ name = "nacelle-stress-test"
 path = "src/main.rs"
 
 [dependencies]
-nacelle = { workspace = true, features = ["otel"] }
+nacelle = { workspace = true }
 nacelle-stress-common = { workspace = true }
 bytes = { workspace = true }
 mimalloc = { workspace = true }

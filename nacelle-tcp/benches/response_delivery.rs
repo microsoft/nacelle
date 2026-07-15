@@ -208,7 +208,7 @@ fn server(
                 .with_response_buffer_capacity(response_buffer_capacity)
                 .with_response_write_policy(policy),
         )
-        .telemetry(NacelleTelemetry::default().with_metrics(false))
+        .telemetry(NacelleTelemetry::default())
         .build()
         .expect("benchmark server should build")
 }

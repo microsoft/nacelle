@@ -206,9 +206,7 @@ where
     let connection_state = protocol.connection_state(&connection_info);
     let mut connection_context = handler.new_connection(connection_info, connection_state);
     let telemetry_plan = TcpTelemetryPlan::new(&telemetry);
-    let connection_metrics = telemetry_plan
-        .metrics
-        .then(|| tcp_metrics_context(protocol.deref(), &connection));
+    let connection_metrics = Some(tcp_metrics_context(protocol.deref(), &connection));
     #[cfg(feature = "phase-timing")]
     let reader = framing::InstrumentedReader::new(
         reader,

@@ -1,8 +1,5 @@
-use std::time::Duration;
-
 use std::sync::Arc;
-#[cfg(feature = "otel")]
-use std::sync::Mutex;
+use std::time::Duration;
 
 mod sink;
 pub use sink::{
@@ -10,39 +7,16 @@ pub use sink::{
     NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
 
-#[cfg(feature = "otel")]
-mod attributes;
-#[cfg(feature = "phase-timing")]
-use attributes::phase_attributes;
-#[cfg(feature = "otel")]
-use attributes::{
-    attributes_with_key_value, connection_attributes, error_attributes, request_attributes,
-    shutdown_stage,
-};
-
 #[derive(Clone)]
 pub struct NacelleTelemetry<Observer = NoopObserver> {
     config: NacelleTelemetryConfig,
     observer: Observer,
-    #[cfg(feature = "otel")]
-    metrics: std::sync::Arc<OtelMetrics>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NacelleTelemetryConfig {
-    pub metrics: bool,
     pub request_metrics: NacelleRequestMetricsConfig,
     pub phase_duration_metrics: bool,
-}
-
-impl Default for NacelleTelemetryConfig {
-    fn default() -> Self {
-        Self {
-            metrics: true,
-            request_metrics: NacelleRequestMetricsConfig::default(),
-            phase_duration_metrics: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,14 +52,22 @@ pub struct NacelleMetricsContext {
     pub listener: Arc<str>,
     pub protocol: &'static str,
     pub tls: &'static str,
-    #[cfg(feature = "otel")]
-    connection_attributes: Arc<[opentelemetry::KeyValue]>,
-    #[cfg(feature = "otel")]
-    request_attributes: Arc<[opentelemetry::KeyValue]>,
-    #[cfg(feature = "otel")]
-    request_ok_attributes: Arc<[opentelemetry::KeyValue]>,
-    #[cfg(feature = "otel")]
-    request_error_attributes: Arc<[opentelemetry::KeyValue]>,
+    connection_attributes: Arc<[metrics::Label]>,
+    request_attributes: Arc<[metrics::Label]>,
+    connection_accepted: metrics::Counter,
+    connection_active: metrics::Gauge,
+    request_started: metrics::Counter,
+    request_in_flight: metrics::Gauge,
+    request_completed_ok: metrics::Counter,
+    request_completed_error: metrics::Counter,
+    request_duration_ok: metrics::Histogram,
+    request_duration_error: metrics::Histogram,
+    request_bytes_ok: metrics::Counter,
+    request_bytes_error: metrics::Counter,
+    response_bytes_ok: metrics::Counter,
+    response_bytes_error: metrics::Counter,
+    #[cfg(feature = "phase-timing")]
+    phase_durations: [metrics::Histogram; 6],
 }
 
 impl NacelleMetricsContext {
@@ -95,19 +77,23 @@ impl NacelleMetricsContext {
         protocol: &'static str,
         tls: &'static str,
     ) -> Self {
-        #[cfg(feature = "otel")]
-        let connection_attributes = connection_attributes(transport, &listener, tls);
-        #[cfg(feature = "otel")]
-        let request_attributes = request_attributes(connection_attributes.as_ref(), protocol);
-        #[cfg(feature = "otel")]
-        let request_ok_attributes = attributes_with_key_value(
+        let connection_attributes: Arc<[metrics::Label]> = Arc::from([
+            metrics::Label::new("listener", listener.to_string()),
+            metrics::Label::from_static_parts("transport", transport.as_str()),
+            metrics::Label::from_static_parts("tls", tls),
+        ]);
+        let request_attributes: Arc<[metrics::Label]> = attributes_with_label(
+            connection_attributes.as_ref(),
+            metrics::Label::from_static_parts("protocol", protocol),
+        )
+        .into();
+        let request_ok_attributes = attributes_with_label(
             request_attributes.as_ref(),
-            opentelemetry::KeyValue::new("status", "ok"),
+            metrics::Label::from_static_parts("status", "ok"),
         );
-        #[cfg(feature = "otel")]
-        let request_error_attributes = attributes_with_key_value(
+        let request_error_attributes = attributes_with_label(
             request_attributes.as_ref(),
-            opentelemetry::KeyValue::new("status", "error"),
+            metrics::Label::from_static_parts("status", "error"),
         );
 
         Self {
@@ -115,35 +101,124 @@ impl NacelleMetricsContext {
             listener,
             protocol,
             tls,
-            #[cfg(feature = "otel")]
+            connection_accepted: metrics::counter!(
+                "nacelle.connections.accepted",
+                connection_attributes.to_vec()
+            ),
+            connection_active: metrics::gauge!(
+                "nacelle.connections.in_flight",
+                connection_attributes.to_vec()
+            ),
+            request_started: metrics::counter!(
+                "nacelle.requests.started",
+                request_attributes.to_vec()
+            ),
+            request_in_flight: metrics::gauge!(
+                "nacelle.requests.in_flight",
+                request_attributes.to_vec()
+            ),
+            request_completed_ok: metrics::counter!(
+                "nacelle.requests.completed",
+                request_ok_attributes.to_vec()
+            ),
+            request_completed_error: metrics::counter!(
+                "nacelle.requests.completed",
+                request_error_attributes.to_vec()
+            ),
+            request_duration_ok: metrics::histogram!(
+                "nacelle.request.duration_ms",
+                request_ok_attributes.to_vec()
+            ),
+            request_duration_error: metrics::histogram!(
+                "nacelle.request.duration_ms",
+                request_error_attributes.to_vec()
+            ),
+            request_bytes_ok: metrics::counter!(
+                "nacelle.request.bytes",
+                request_ok_attributes.to_vec()
+            ),
+            request_bytes_error: metrics::counter!(
+                "nacelle.request.bytes",
+                request_error_attributes.to_vec()
+            ),
+            response_bytes_ok: metrics::counter!(
+                "nacelle.response.bytes",
+                request_ok_attributes.to_vec()
+            ),
+            response_bytes_error: metrics::counter!(
+                "nacelle.response.bytes",
+                request_error_attributes.to_vec()
+            ),
+            #[cfg(feature = "phase-timing")]
+            phase_durations: PHASES.map(|phase| {
+                metrics::histogram!(
+                    "nacelle.phase.duration_ms",
+                    attributes_with_label(
+                        request_attributes.as_ref(),
+                        metrics::Label::from_static_parts("phase", phase),
+                    )
+                )
+            }),
             connection_attributes,
-            #[cfg(feature = "otel")]
             request_attributes,
-            #[cfg(feature = "otel")]
-            request_ok_attributes,
-            #[cfg(feature = "otel")]
-            request_error_attributes,
         }
     }
 
-    #[cfg(feature = "otel")]
-    fn connection_attributes(&self) -> &[opentelemetry::KeyValue] {
-        &self.connection_attributes
-    }
-
-    #[cfg(feature = "otel")]
-    fn request_attributes(&self) -> &[opentelemetry::KeyValue] {
-        &self.request_attributes
-    }
-
-    #[cfg(feature = "otel")]
-    fn request_status_attributes(&self, status: &'static str) -> &[opentelemetry::KeyValue] {
+    fn request_completed(&self, status: &'static str) -> &metrics::Counter {
         match status {
-            "ok" => &self.request_ok_attributes,
-            "error" => &self.request_error_attributes,
-            _ => &self.request_attributes,
+            "error" => &self.request_completed_error,
+            _ => &self.request_completed_ok,
         }
     }
+
+    fn request_duration(&self, status: &'static str) -> &metrics::Histogram {
+        match status {
+            "error" => &self.request_duration_error,
+            _ => &self.request_duration_ok,
+        }
+    }
+
+    fn request_bytes(&self, status: &'static str) -> &metrics::Counter {
+        match status {
+            "error" => &self.request_bytes_error,
+            _ => &self.request_bytes_ok,
+        }
+    }
+
+    fn response_bytes(&self, status: &'static str) -> &metrics::Counter {
+        match status {
+            "error" => &self.response_bytes_error,
+            _ => &self.response_bytes_ok,
+        }
+    }
+
+    #[cfg(feature = "phase-timing")]
+    fn phase_duration(&self, phase: &'static str) -> Option<&metrics::Histogram> {
+        PHASES
+            .iter()
+            .position(|candidate| *candidate == phase)
+            .map(|index| &self.phase_durations[index])
+    }
+}
+
+#[cfg(feature = "phase-timing")]
+const PHASES: [&str; 6] = [
+    "socket_read",
+    "decode",
+    "request_body_read",
+    "handler",
+    "response_encode",
+    "socket_write",
+];
+
+fn attributes_with_label(
+    attributes: &[metrics::Label],
+    label: metrics::Label,
+) -> Vec<metrics::Label> {
+    let mut combined = Vec::with_capacity(attributes.len() + 1);
+    combined.extend_from_slice(attributes);
+    combined.push(label);
+    combined
 }
 
 impl<Observer> std::fmt::Debug for NacelleTelemetry<Observer> {
@@ -166,8 +241,6 @@ impl NacelleTelemetry<NoopObserver> {
         Self {
             config: NacelleTelemetryConfig::default(),
             observer: NoopObserver,
-            #[cfg(feature = "otel")]
-            metrics: std::sync::Arc::new(OtelMetrics::new()),
         }
     }
 }
@@ -181,7 +254,6 @@ where
         self
     }
 
-    /// Replace the event observer with one concrete observer.
     pub fn with_observer<Next>(self, observer: Next) -> NacelleTelemetry<Next>
     where
         Next: NacelleTelemetryObserver,
@@ -189,12 +261,9 @@ where
         NacelleTelemetry {
             config: self.config,
             observer,
-            #[cfg(feature = "otel")]
-            metrics: self.metrics,
         }
     }
 
-    /// Compose one additional concrete observer.
     pub fn with_additional_observer<Next>(
         self,
         observer: Next,
@@ -202,18 +271,10 @@ where
     where
         Next: NacelleTelemetryObserver,
     {
-        let composite = CompositeObserver::new(self.observer, observer);
         NacelleTelemetry {
             config: self.config,
-            observer: composite,
-            #[cfg(feature = "otel")]
-            metrics: self.metrics,
+            observer: CompositeObserver::new(self.observer, observer),
         }
-    }
-
-    pub fn with_metrics(mut self, enabled: bool) -> Self {
-        self.config.metrics = enabled;
-        self
     }
 
     pub fn with_request_metrics(mut self, request_metrics: NacelleRequestMetricsConfig) -> Self {
@@ -246,11 +307,6 @@ where
         self
     }
 
-    /// Enable diagnostic transport phase histograms at runtime.
-    ///
-    /// This switch has an effect only when the `phase-timing` Cargo feature is
-    /// compiled. The feature is intentionally disabled by default because its
-    /// timers and metric writes touch request and connection hot paths.
     pub fn with_phase_duration_metrics(mut self, enabled: bool) -> Self {
         self.config.phase_duration_metrics = enabled;
         self
@@ -260,29 +316,26 @@ where
         self.config
     }
 
-    pub fn metrics_enabled(&self) -> bool {
-        cfg!(feature = "otel") && self.config.metrics
+    pub const fn metrics_enabled(&self) -> bool {
+        true
     }
 
     pub fn request_metrics_enabled(&self) -> bool {
-        self.metrics_enabled() && self.config.request_metrics.enabled()
+        self.config.request_metrics.enabled()
     }
 
     pub fn request_duration_metrics_enabled(&self) -> bool {
-        self.metrics_enabled() && self.config.request_metrics.duration_ms
+        self.config.request_metrics.duration_ms
     }
 
     pub fn phase_duration_metrics_enabled(&self) -> bool {
-        cfg!(feature = "phase-timing")
-            && self.metrics_enabled()
-            && self.config.phase_duration_metrics
+        cfg!(feature = "phase-timing") && self.config.phase_duration_metrics
     }
 
-    pub fn request_events_enabled(&self) -> bool {
-        Observer::ENABLED || self.metrics_enabled()
+    pub const fn request_events_enabled(&self) -> bool {
+        true
     }
 
-    /// Whether a concrete event observer is active independently of metrics.
     pub const fn observer_enabled(&self) -> bool {
         Observer::ENABLED
     }
@@ -338,39 +391,28 @@ where
             reason: None,
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.connection_count.add(
-                1,
-                &[opentelemetry::KeyValue::new(
-                    "transport",
-                    transport.as_str(),
-                )],
-            );
-        }
+        metrics::counter!(
+            "nacelle.connections.opened",
+            "transport" => transport.as_str()
+        )
+        .increment(1);
     }
 
     pub fn connection_accepted(&self, context: &NacelleMetricsContext) {
-        let _ = context;
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            let attributes = context.connection_attributes();
-            self.metrics.connection_accepted.add(1, attributes);
-            self.metrics.connection_active.add(1, attributes);
-        }
+        context.connection_accepted.increment(1);
+        context.connection_active.increment(1.0);
     }
 
     pub fn connection_closed(&self, context: &NacelleMetricsContext, close_reason: &'static str) {
-        let _ = (context, close_reason);
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            let mut attributes = context.connection_attributes().to_vec();
-            attributes.push(opentelemetry::KeyValue::new("close_reason", close_reason));
-            self.metrics.connection_closed.add(1, &attributes);
-            self.metrics
-                .connection_active
-                .add(-1, context.connection_attributes());
-        }
+        metrics::counter!(
+            "nacelle.connections.closed",
+            attributes_with_label(
+                context.connection_attributes.as_ref(),
+                metrics::Label::from_static_parts("close_reason", close_reason),
+            )
+        )
+        .increment(1);
+        context.connection_active.decrement(1.0);
     }
 
     pub fn connection_rejected(&self, transport: NacelleTransport, reason: &'static str) {
@@ -386,16 +428,12 @@ where
             reason: Some(reason),
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.rejection_count.add(
-                1,
-                &[
-                    opentelemetry::KeyValue::new("transport", transport.as_str()),
-                    opentelemetry::KeyValue::new("reason", reason),
-                ],
-            );
-        }
+        metrics::counter!(
+            "nacelle.rejections",
+            "transport" => transport.as_str(),
+            "reason" => reason
+        )
+        .increment(1);
     }
 
     pub fn request_rejected(&self, transport: NacelleTransport, reason: &'static str) {
@@ -411,30 +449,20 @@ where
             reason: Some(reason),
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.rejection_count.add(
-                1,
-                &[
-                    opentelemetry::KeyValue::new("transport", transport.as_str()),
-                    opentelemetry::KeyValue::new("reason", reason),
-                ],
-            );
-        }
+        metrics::counter!(
+            "nacelle.rejections",
+            "transport" => transport.as_str(),
+            "reason" => reason
+        )
+        .increment(1);
     }
 
     pub fn request_started_with_context(&self, context: &NacelleMetricsContext) {
-        let _ = context;
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            let request_metrics = self.config.request_metrics;
-            let attributes = context.request_attributes();
-            if request_metrics.started {
-                self.metrics.request_started.add(1, attributes);
-            }
-            if request_metrics.in_flight {
-                self.metrics.request_in_flight.add(1, attributes);
-            }
+        if self.config.request_metrics.started {
+            context.request_started.increment(1);
+        }
+        if self.config.request_metrics.in_flight {
+            context.request_in_flight.increment(1.0);
         }
     }
 
@@ -446,35 +474,27 @@ where
         response_bytes: usize,
         elapsed: Duration,
     ) {
-        let _ = (context, status, request_bytes, response_bytes, elapsed);
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            let request_metrics = self.config.request_metrics;
-            let attributes = context.request_status_attributes(status);
-            if request_metrics.completed {
-                self.metrics.request_count.add(1, attributes);
-            }
-            if request_metrics.duration_ms {
-                self.metrics
-                    .request_duration_ms
-                    .record(elapsed.as_secs_f64() * 1_000.0, attributes);
-            }
-            if request_metrics.byte_counts && request_bytes != 0 {
-                self.metrics
-                    .request_bytes
-                    .add(request_bytes as u64, attributes);
-            }
-            if request_metrics.byte_counts && response_bytes != 0 {
-                self.metrics
-                    .response_bytes
-                    .add(response_bytes as u64, attributes);
-            }
-
-            if request_metrics.in_flight {
-                self.metrics
-                    .request_in_flight
-                    .add(-1, context.request_attributes());
-            }
+        let request_metrics = self.config.request_metrics;
+        if request_metrics.completed {
+            context.request_completed(status).increment(1);
+        }
+        if request_metrics.duration_ms {
+            context
+                .request_duration(status)
+                .record(elapsed.as_secs_f64() * 1_000.0);
+        }
+        if request_metrics.byte_counts && request_bytes != 0 {
+            context
+                .request_bytes(status)
+                .increment(request_bytes as u64);
+        }
+        if request_metrics.byte_counts && response_bytes != 0 {
+            context
+                .response_bytes(status)
+                .increment(response_bytes as u64);
+        }
+        if request_metrics.in_flight {
+            context.request_in_flight.decrement(1.0);
         }
     }
 
@@ -507,8 +527,6 @@ where
         elapsed: Duration,
         emit_metrics: bool,
     ) {
-        #[cfg(not(feature = "otel"))]
-        let _ = emit_metrics;
         tracing::debug!(
             target: "nacelle",
             transport = transport.as_str(),
@@ -523,29 +541,36 @@ where
             reason: None,
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        {
-            let attributes = [opentelemetry::KeyValue::new(
-                "transport",
-                transport.as_str(),
-            )];
-            let request_metrics = self.config.request_metrics;
-            if emit_metrics && self.config.metrics && request_metrics.completed {
-                self.metrics.request_count.add(1, &attributes);
-            }
-            if emit_metrics && self.config.metrics && request_metrics.duration_ms {
-                self.metrics
-                    .request_duration_ms
-                    .record(elapsed.as_secs_f64() * 1_000.0, &attributes);
-            }
-            if emit_metrics && self.config.metrics && request_metrics.byte_counts {
-                self.metrics
-                    .request_bytes
-                    .add(request_bytes as u64, &attributes);
-                self.metrics
-                    .response_bytes
-                    .add(response_bytes as u64, &attributes);
-            }
+        let request_metrics = self.config.request_metrics;
+        if emit_metrics && request_metrics.completed {
+            metrics::counter!(
+                "nacelle.requests.completed",
+                "transport" => transport.as_str(),
+                "status" => "ok"
+            )
+            .increment(1);
+        }
+        if emit_metrics && request_metrics.duration_ms {
+            metrics::histogram!(
+                "nacelle.request.duration_ms",
+                "transport" => transport.as_str(),
+                "status" => "ok"
+            )
+            .record(elapsed.as_secs_f64() * 1_000.0);
+        }
+        if emit_metrics && request_metrics.byte_counts {
+            metrics::counter!(
+                "nacelle.request.bytes",
+                "transport" => transport.as_str(),
+                "status" => "ok"
+            )
+            .increment(request_bytes as u64);
+            metrics::counter!(
+                "nacelle.response.bytes",
+                "transport" => transport.as_str(),
+                "status" => "ok"
+            )
+            .increment(response_bytes as u64);
         }
     }
 
@@ -575,8 +600,6 @@ where
         error: &crate::error::NacelleError,
         emit_metrics: bool,
     ) {
-        #[cfg(not(feature = "otel"))]
-        let _ = emit_metrics;
         tracing::warn!(
             target: "nacelle",
             transport = transport.as_str(),
@@ -590,20 +613,20 @@ where
             reason: error_reason(error),
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        {
-            let attributes = [opentelemetry::KeyValue::new(
-                "transport",
-                transport.as_str(),
-            )];
-            if emit_metrics && self.config.metrics {
-                self.metrics.request_error_count.add(1, &attributes);
-            }
-            if emit_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
-                self.metrics
-                    .request_duration_ms
-                    .record(elapsed.as_secs_f64() * 1_000.0, &attributes);
-            }
+        if emit_metrics {
+            metrics::counter!(
+                "nacelle.requests.failed",
+                "transport" => transport.as_str()
+            )
+            .increment(1);
+        }
+        if emit_metrics && self.config.request_metrics.duration_ms {
+            metrics::histogram!(
+                "nacelle.request.duration_ms",
+                "transport" => transport.as_str(),
+                "status" => "error"
+            )
+            .record(elapsed.as_secs_f64() * 1_000.0);
         }
     }
 
@@ -613,14 +636,14 @@ where
         phase: &'static str,
         elapsed: Duration,
     ) {
-        let _ = (context, phase, elapsed);
         #[cfg(feature = "phase-timing")]
-        if self.phase_duration_metrics_enabled() {
-            self.metrics.phase_duration_ms.record(
-                elapsed.as_secs_f64() * 1_000.0,
-                &phase_attributes(context, phase),
-            );
+        if self.phase_duration_metrics_enabled()
+            && let Some(histogram) = context.phase_duration(phase)
+        {
+            histogram.record(elapsed.as_secs_f64() * 1_000.0);
         }
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = (context, phase, elapsed);
     }
 
     pub fn operation_error(
@@ -629,18 +652,18 @@ where
         phase: &'static str,
         error: &crate::error::NacelleError,
     ) {
-        let _ = (context, phase, error);
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics
-                .errors
-                .add(1, &error_attributes(context, phase, error));
-            if let crate::error::NacelleError::ResourceLimit(limit) = error {
-                let mut attributes = context.request_attributes().to_vec();
-                attributes.push(opentelemetry::KeyValue::new("limit", *limit));
-                attributes.push(opentelemetry::KeyValue::new("phase", phase));
-                self.metrics.resource_limit_rejections.add(1, &attributes);
-            }
+        let mut attributes = context.request_attributes.to_vec();
+        attributes.push(metrics::Label::from_static_parts("phase", phase));
+        attributes.push(metrics::Label::from_static_parts(
+            "error_kind",
+            error_kind(error),
+        ));
+        metrics::counter!("nacelle.errors", attributes).increment(1);
+        if let crate::error::NacelleError::ResourceLimit(limit) = error {
+            let mut attributes = context.request_attributes.to_vec();
+            attributes.push(metrics::Label::from_static_parts("limit", limit));
+            attributes.push(metrics::Label::from_static_parts("phase", phase));
+            metrics::counter!("nacelle.resource_limit.rejections", attributes).increment(1);
         }
     }
 
@@ -651,16 +674,12 @@ where
             reason: Some(operation),
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.timeout_count.add(
-                1,
-                &[
-                    opentelemetry::KeyValue::new("transport", transport.as_str()),
-                    opentelemetry::KeyValue::new("operation", operation),
-                ],
-            );
-        }
+        metrics::counter!(
+            "nacelle.timeouts",
+            "transport" => transport.as_str(),
+            "operation" => operation
+        )
+        .increment(1);
     }
 
     pub fn shutdown_event(&self, kind: NacelleTelemetryEventKind, transport: NacelleTransport) {
@@ -670,16 +689,12 @@ where
             reason: None,
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.shutdown_event_count.add(
-                1,
-                &[
-                    opentelemetry::KeyValue::new("transport", transport.as_str()),
-                    opentelemetry::KeyValue::new("stage", shutdown_stage(kind)),
-                ],
-            );
-        }
+        metrics::counter!(
+            "nacelle.shutdown_events",
+            "transport" => transport.as_str(),
+            "stage" => shutdown_stage(kind)
+        )
+        .increment(1);
     }
 
     pub fn shutdown_requested(&self) {
@@ -689,16 +704,12 @@ where
             reason: None,
             count: 1,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.shutdown_event_count.add(
-                1,
-                &[
-                    opentelemetry::KeyValue::new("transport", "host"),
-                    opentelemetry::KeyValue::new("stage", "requested"),
-                ],
-            );
-        }
+        metrics::counter!(
+            "nacelle.shutdown_events",
+            "transport" => "host",
+            "stage" => "requested"
+        )
+        .increment(1);
     }
 
     pub fn connections_aborted(&self, transport: NacelleTransport, count: usize) {
@@ -708,16 +719,11 @@ where
             reason: None,
             count: count as u64,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() {
-            self.metrics.connection_abort_count.add(
-                count as u64,
-                &[opentelemetry::KeyValue::new(
-                    "transport",
-                    transport.as_str(),
-                )],
-            );
-        }
+        metrics::counter!(
+            "nacelle.connection_aborts",
+            "transport" => transport.as_str()
+        )
+        .increment(count as u64);
     }
 
     pub fn response_body_bytes(&self, transport: NacelleTransport, bytes: usize) {
@@ -730,22 +736,16 @@ where
             reason: None,
             count: bytes as u64,
         });
-        #[cfg(feature = "otel")]
-        if self.metrics_enabled() && self.config.request_metrics.byte_counts {
-            self.metrics.response_bytes.add(
-                bytes as u64,
-                &[opentelemetry::KeyValue::new(
-                    "transport",
-                    transport.as_str(),
-                )],
-            );
+        if self.config.request_metrics.byte_counts {
+            metrics::counter!(
+                "nacelle.response.bytes",
+                "transport" => transport.as_str()
+            )
+            .increment(bytes as u64);
         }
     }
 
     pub fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        #[cfg(feature = "otel")]
-        self.metrics.register_runtime_state(state);
-        #[cfg(not(feature = "otel"))]
         let _ = state;
     }
 
@@ -770,199 +770,37 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     }
 }
 
-#[cfg(feature = "otel")]
-#[derive(Debug)]
-struct OtelMetrics {
-    runtime_states: Arc<Mutex<Vec<crate::limits::NacelleRuntimeState>>>,
-    runtime_state_gauges: Mutex<Vec<opentelemetry::metrics::ObservableGauge<u64>>>,
-    connection_active: opentelemetry::metrics::UpDownCounter<i64>,
-    connection_accepted: opentelemetry::metrics::Counter<u64>,
-    connection_count: opentelemetry::metrics::Counter<u64>,
-    connection_closed: opentelemetry::metrics::Counter<u64>,
-    request_started: opentelemetry::metrics::Counter<u64>,
-    request_in_flight: opentelemetry::metrics::UpDownCounter<i64>,
-    request_count: opentelemetry::metrics::Counter<u64>,
-    request_error_count: opentelemetry::metrics::Counter<u64>,
-    rejection_count: opentelemetry::metrics::Counter<u64>,
-    timeout_count: opentelemetry::metrics::Counter<u64>,
-    shutdown_event_count: opentelemetry::metrics::Counter<u64>,
-    connection_abort_count: opentelemetry::metrics::Counter<u64>,
-    request_bytes: opentelemetry::metrics::Counter<u64>,
-    response_bytes: opentelemetry::metrics::Counter<u64>,
-    request_duration_ms: opentelemetry::metrics::Histogram<f64>,
-    #[cfg(feature = "phase-timing")]
-    phase_duration_ms: opentelemetry::metrics::Histogram<f64>,
-    errors: opentelemetry::metrics::Counter<u64>,
-    resource_limit_rejections: opentelemetry::metrics::Counter<u64>,
+fn error_kind(error: &crate::error::NacelleError) -> &'static str {
+    match error {
+        crate::error::NacelleError::ResourceLimit(_) => "resource_limit",
+        crate::error::NacelleError::Timeout(_) => "timeout",
+        crate::error::NacelleError::InvalidFrame(_) => "invalid_frame",
+        crate::error::NacelleError::FrameTooLarge { .. } => "frame_too_large",
+        crate::error::NacelleError::UnexpectedEof => "unexpected_eof",
+        crate::error::NacelleError::ConnectionClosed => "connection_closed",
+        crate::error::NacelleError::MissingProtocol => "missing_protocol",
+        crate::error::NacelleError::Io(_) => "io",
+        crate::error::NacelleError::Protocol(_) => "protocol",
+        crate::error::NacelleError::Handler(_) => "handler",
+        crate::error::NacelleError::Join(_) => "join",
+    }
 }
 
-#[cfg(feature = "otel")]
-impl OtelMetrics {
-    fn new() -> Self {
-        let meter = opentelemetry::global::meter("nacelle");
-        Self {
-            runtime_states: Arc::new(Mutex::new(Vec::new())),
-            runtime_state_gauges: Mutex::new(Vec::new()),
-            connection_active: meter
-                .i64_up_down_counter("nacelle.connections.in_flight")
-                .build(),
-            connection_accepted: meter.u64_counter("nacelle.connections.accepted").build(),
-            connection_count: meter.u64_counter("nacelle.connections.opened").build(),
-            connection_closed: meter.u64_counter("nacelle.connections.closed").build(),
-            request_started: meter.u64_counter("nacelle.requests.started").build(),
-            request_in_flight: meter
-                .i64_up_down_counter("nacelle.requests.in_flight")
-                .build(),
-            request_count: meter.u64_counter("nacelle.requests.completed").build(),
-            request_error_count: meter.u64_counter("nacelle.requests.failed").build(),
-            rejection_count: meter.u64_counter("nacelle.rejections").build(),
-            timeout_count: meter.u64_counter("nacelle.timeouts").build(),
-            shutdown_event_count: meter.u64_counter("nacelle.shutdown_events").build(),
-            connection_abort_count: meter.u64_counter("nacelle.connection_aborts").build(),
-            request_bytes: meter.u64_counter("nacelle.request.bytes").build(),
-            response_bytes: meter.u64_counter("nacelle.response.bytes").build(),
-            request_duration_ms: meter.f64_histogram("nacelle.request.duration_ms").build(),
-            #[cfg(feature = "phase-timing")]
-            phase_duration_ms: meter.f64_histogram("nacelle.phase.duration_ms").build(),
-            errors: meter.u64_counter("nacelle.errors").build(),
-            resource_limit_rejections: meter
-                .u64_counter("nacelle.resource_limit.rejections")
-                .build(),
-        }
-    }
-
-    fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        let mut states = self
-            .runtime_states
-            .lock()
-            .expect("otel runtime state registry poisoned");
-        if states
-            .iter()
-            .any(|registered| registered.shares_counters_with(&state))
-        {
-            return;
-        }
-        states.push(state);
-        if states.len() != 1 {
-            return;
-        }
-        drop(states);
-
-        let meter = opentelemetry::global::meter("nacelle");
-        let connections = self.runtime_states.clone();
-        let requests = self.runtime_states.clone();
-        let streaming = self.runtime_states.clone();
-        let memory = self.runtime_states.clone();
-        let gauges = vec![
-            meter
-                .u64_observable_gauge("nacelle.connections.active")
-                .with_callback(move |observer| {
-                    let total = connections
-                        .lock()
-                        .expect("otel runtime state registry poisoned")
-                        .iter()
-                        .map(crate::limits::NacelleRuntimeState::active_connections)
-                        .sum::<usize>();
-                    observer.observe(total as u64, &[])
-                })
-                .build(),
-            meter
-                .u64_observable_gauge("nacelle.requests.active")
-                .with_callback(move |observer| {
-                    let total = requests
-                        .lock()
-                        .expect("otel runtime state registry poisoned")
-                        .iter()
-                        .map(crate::limits::NacelleRuntimeState::active_requests)
-                        .sum::<usize>();
-                    observer.observe(total as u64, &[])
-                })
-                .build(),
-            meter
-                .u64_observable_gauge("nacelle.streaming_tasks.active")
-                .with_callback(move |observer| {
-                    let total = streaming
-                        .lock()
-                        .expect("otel runtime state registry poisoned")
-                        .iter()
-                        .map(crate::limits::NacelleRuntimeState::active_streaming_tasks)
-                        .sum::<usize>();
-                    observer.observe(total as u64, &[])
-                })
-                .build(),
-            meter
-                .u64_observable_gauge("nacelle.memory.used_bytes")
-                .with_callback(move |observer| {
-                    let states = memory.lock().expect("otel runtime state registry poisoned");
-                    let mut identities = Vec::with_capacity(states.len());
-                    let total = states
-                        .iter()
-                        .filter_map(|state| {
-                            let identity = state.memory_identity();
-                            if identities.contains(&identity) {
-                                None
-                            } else {
-                                identities.push(identity);
-                                Some(state.memory_used_bytes())
-                            }
-                        })
-                        .sum::<usize>();
-                    observer.observe(total as u64, &[])
-                })
-                .build(),
-        ];
-        self.runtime_state_gauges
-            .lock()
-            .expect("otel gauge registry poisoned")
-            .extend(gauges);
-    }
-
-    #[cfg(test)]
-    fn registered_runtime_state_count(&self) -> usize {
-        self.runtime_states
-            .lock()
-            .expect("otel runtime state registry poisoned")
-            .len()
-    }
-
-    #[cfg(test)]
-    fn registered_memory_budget_count(&self) -> usize {
-        let states = self
-            .runtime_states
-            .lock()
-            .expect("otel runtime state registry poisoned");
-        let mut identities = Vec::new();
-        for state in states.iter() {
-            let identity = state.memory_identity();
-            if !identities.contains(&identity) {
-                identities.push(identity);
-            }
-        }
-        identities.len()
+fn shutdown_stage(kind: NacelleTelemetryEventKind) -> &'static str {
+    match kind {
+        NacelleTelemetryEventKind::ShutdownRequested => "requested",
+        NacelleTelemetryEventKind::ListenerStoppedAccepting => "listener_stopped_accepting",
+        NacelleTelemetryEventKind::DrainStarted => "drain_started",
+        NacelleTelemetryEventKind::DrainCompleted => "drain_completed",
+        NacelleTelemetryEventKind::DrainTimedOut => "drain_timed_out",
+        NacelleTelemetryEventKind::ConnectionsAborted => "connections_aborted",
+        _ => "other",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "otel")]
-    #[test]
-    fn telemetry_aggregates_worker_states_without_double_counting_memory() {
-        let states = crate::limits::NacelleRuntimeState::partitioned([
-            crate::limits::NacelleLimits::default().with_max_memory_bytes(10),
-            crate::limits::NacelleLimits::default().with_max_memory_bytes(10),
-        ])
-        .expect("partitioned states should build");
-        let telemetry = NacelleTelemetry::default();
-
-        telemetry.register_runtime_state(states[0].clone());
-        telemetry.register_runtime_state(states[1].clone());
-        telemetry.register_runtime_state(states[0].clone());
-
-        assert_eq!(telemetry.metrics.registered_runtime_state_count(), 2);
-        assert_eq!(telemetry.metrics.registered_memory_budget_count(), 1);
-    }
 
     #[test]
     fn in_memory_observer_records_rejection_timeout_and_shutdown_events() {
@@ -1011,18 +849,12 @@ mod tests {
         const {
             assert!(!<Arc<NoopObserver> as NacelleTelemetryObserver>::ENABLED);
         }
-        assert!(
-            !NacelleTelemetry::default()
-                .with_metrics(false)
-                .request_events_enabled()
-        );
     }
 
     #[test]
     fn request_duration_metrics_are_opt_in() {
         let telemetry = NacelleTelemetry::default();
 
-        assert!(telemetry.config().metrics);
         assert!(telemetry.config().request_metrics.started);
         assert!(telemetry.config().request_metrics.completed);
         assert!(!telemetry.config().request_metrics.in_flight);
@@ -1045,10 +877,7 @@ mod tests {
         assert!(telemetry.config().request_metrics.duration_ms);
         assert!(!telemetry.config().request_metrics.byte_counts);
         assert!(telemetry.config().phase_duration_metrics);
-        assert_eq!(
-            telemetry.request_duration_metrics_enabled(),
-            cfg!(feature = "otel")
-        );
+        assert!(telemetry.request_duration_metrics_enabled());
         assert_eq!(
             telemetry.phase_duration_metrics_enabled(),
             cfg!(feature = "phase-timing")
@@ -1056,23 +885,11 @@ mod tests {
     }
 
     #[test]
-    fn request_duration_metrics_require_effective_metrics() {
-        let disabled = NacelleTelemetry::default()
-            .with_metrics(false)
-            .with_request_duration_metrics(true);
-        assert!(!disabled.request_duration_metrics_enabled());
-
-        let duration_disabled = NacelleTelemetry::default()
-            .with_metrics(true)
-            .with_request_duration_metrics(false);
+    fn request_duration_metrics_require_runtime_activation() {
+        let duration_disabled = NacelleTelemetry::default().with_request_duration_metrics(false);
         assert!(!duration_disabled.request_duration_metrics_enabled());
 
-        let enabled = NacelleTelemetry::default()
-            .with_metrics(true)
-            .with_request_duration_metrics(true);
-        assert_eq!(
-            enabled.request_duration_metrics_enabled(),
-            cfg!(feature = "otel")
-        );
+        let enabled = NacelleTelemetry::default().with_request_duration_metrics(true);
+        assert!(enabled.request_duration_metrics_enabled());
     }
 }

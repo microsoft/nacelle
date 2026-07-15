@@ -6,15 +6,12 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 mod shared;
 use shared::{StressServer, build_server, configure_allocator, parse_args, print_config};
 
-#[cfg(feature = "otel")]
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-#[cfg(feature = "otel")]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-#[cfg(feature = "otel")]
 use std::time::Duration;
 
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use nacelle::core::telemetry::NacelleTelemetryObserver;
 use nacelle::core::{NacelleError, NacelleTelemetry};
 #[cfg(feature = "tls-self-signed")]
@@ -22,18 +19,6 @@ use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::TcpHandler;
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::make_tcp_socket;
-#[cfg(feature = "otel")]
-use opentelemetry::global;
-#[cfg(feature = "otel")]
-use opentelemetry_sdk::Resource;
-#[cfg(feature = "otel")]
-use opentelemetry_sdk::error::OTelSdkResult;
-#[cfg(feature = "otel")]
-use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics, Sum};
-#[cfg(feature = "otel")]
-use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
-#[cfg(feature = "otel")]
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::watch;
 
@@ -173,15 +158,12 @@ fn build_tls_config(
     }
 }
 
-#[cfg(feature = "otel")]
-const OTEL_EXPORT_INTERVAL: Duration = Duration::from_secs(5);
+const METRICS_EXPORT_INTERVAL: Duration = Duration::from_secs(5);
 
-#[cfg(feature = "otel")]
 fn bytes_to_mib(bytes: u64) -> f64 {
     bytes as f64 / 1024.0 / 1024.0
 }
 
-#[cfg(feature = "otel")]
 fn format_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
@@ -200,44 +182,15 @@ fn format_bytes(bytes: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// OpenTelemetry console export
+// Metrics console export
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "otel")]
-fn init_otel_console_exporter(config: &shared::ServerConfig) -> SdkMeterProvider {
-    let exporter = StressConsoleMetricExporter::new(StressOtelByteMetrics::from(config));
-    let reader = PeriodicReader::builder(exporter)
-        .with_interval(OTEL_EXPORT_INTERVAL)
-        .build();
-    let provider = SdkMeterProvider::builder()
-        .with_reader(reader)
-        .with_resource(
-            Resource::builder()
-                .with_service_name("nacelle-stress-server")
-                .build(),
-        )
-        .build();
-    global::set_meter_provider(provider.clone());
-    provider
-}
-
-#[cfg(not(feature = "otel"))]
-#[derive(Debug)]
-struct DisabledOtelConsoleExporter;
-
-#[cfg(not(feature = "otel"))]
-fn init_otel_console_exporter(_config: &shared::ServerConfig) -> DisabledOtelConsoleExporter {
-    DisabledOtelConsoleExporter
-}
-
-#[cfg(feature = "otel")]
 #[derive(Debug, Clone, Copy)]
-struct StressOtelByteMetrics {
+struct StressByteMetrics {
     byte_counts: bool,
 }
 
-#[cfg(feature = "otel")]
-impl From<&shared::ServerConfig> for StressOtelByteMetrics {
+impl From<&shared::ServerConfig> for StressByteMetrics {
     fn from(config: &shared::ServerConfig) -> Self {
         Self {
             byte_counts: config.byte_metrics,
@@ -245,54 +198,38 @@ impl From<&shared::ServerConfig> for StressOtelByteMetrics {
     }
 }
 
-#[cfg(feature = "otel")]
 #[derive(Debug)]
-struct StressConsoleMetricExporter {
-    shutdown: AtomicBool,
-    byte_metrics: StressOtelByteMetrics,
+struct StressMetricsConsole {
+    snapshotter: Snapshotter,
+    byte_metrics: StressByteMetrics,
+    active_connections: i64,
+    active_connection_delta: i64,
+    active_requests: i64,
+    active_streaming_tasks: i64,
+    memory_used_bytes: i64,
 }
 
-#[cfg(feature = "otel")]
-impl StressConsoleMetricExporter {
-    fn new(byte_metrics: StressOtelByteMetrics) -> Self {
-        Self {
-            shutdown: AtomicBool::new(false),
-            byte_metrics,
-        }
-    }
-}
-
-#[cfg(feature = "otel")]
-impl PushMetricExporter for StressConsoleMetricExporter {
-    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::Acquire) {
-            return Err(opentelemetry_sdk::error::OTelSdkError::AlreadyShutdown);
-        }
-
-        print_otel_snapshot(
-            StressOtelSnapshot::from_resource_metrics(metrics),
-            self.byte_metrics,
-        );
-        Ok(())
-    }
-
-    fn force_flush(&self) -> OTelSdkResult {
-        Ok(())
-    }
-
-    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        self.shutdown.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    fn temporality(&self) -> Temporality {
-        Temporality::Delta
+impl StressMetricsConsole {
+    fn install(
+        config: &shared::ServerConfig,
+    ) -> Result<Self, metrics::SetRecorderError<DebuggingRecorder>> {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        recorder.install()?;
+        Ok(Self {
+            snapshotter,
+            byte_metrics: StressByteMetrics::from(config),
+            active_connections: 0,
+            active_connection_delta: 0,
+            active_requests: 0,
+            active_streaming_tasks: 0,
+            memory_used_bytes: 0,
+        })
     }
 }
 
-#[cfg(feature = "otel")]
 #[derive(Debug, Default)]
-struct StressOtelSnapshot {
+struct StressMetricsSnapshot {
     active_connections: u64,
     active_connection_delta: i64,
     active_requests: u64,
@@ -311,7 +248,6 @@ struct StressOtelSnapshot {
     phase_durations: BTreeMap<String, PhaseDurationSnapshot>,
 }
 
-#[cfg(feature = "otel")]
 #[derive(Debug, Default)]
 struct PhaseDurationSnapshot {
     count: u64,
@@ -320,85 +256,128 @@ struct PhaseDurationSnapshot {
     max_ms: Option<f64>,
 }
 
-#[cfg(feature = "otel")]
 impl PhaseDurationSnapshot {
-    fn add(&mut self, count: u64, sum_ms: f64, min_ms: Option<f64>, max_ms: Option<f64>) {
-        self.count = self.count.saturating_add(count);
-        self.sum_ms += sum_ms;
-        if let Some(min_ms) = min_ms {
-            self.min_ms = Some(self.min_ms.map_or(min_ms, |current| current.min(min_ms)));
-        }
-        if let Some(max_ms) = max_ms {
-            self.max_ms = Some(self.max_ms.map_or(max_ms, |current| current.max(max_ms)));
-        }
+    fn add(&mut self, value_ms: f64) {
+        self.count = self.count.saturating_add(1);
+        self.sum_ms += value_ms;
+        self.min_ms = Some(
+            self.min_ms
+                .map_or(value_ms, |current| current.min(value_ms)),
+        );
+        self.max_ms = Some(
+            self.max_ms
+                .map_or(value_ms, |current| current.max(value_ms)),
+        );
     }
 }
 
-#[cfg(feature = "otel")]
-impl StressOtelSnapshot {
-    fn from_resource_metrics(metrics: &ResourceMetrics) -> Self {
-        let mut snapshot = Self::default();
-        for scope in metrics.scope_metrics() {
-            for metric in scope.metrics() {
-                match metric.name() {
-                    "nacelle.connections.active" => {
-                        snapshot.active_connections += gauge_u64(metric.data());
-                    }
-                    "nacelle.requests.active" => {
-                        snapshot.active_requests += gauge_u64(metric.data());
-                    }
-                    "nacelle.streaming_tasks.active" => {
-                        snapshot.active_streaming_tasks += gauge_u64(metric.data());
-                    }
-                    "nacelle.memory.used_bytes" => {
-                        snapshot.memory_used_bytes += gauge_u64(metric.data());
-                    }
-                    "nacelle.connections.in_flight" => {
-                        snapshot.active_connection_delta += sum_i64(metric.data());
-                    }
+impl StressMetricsConsole {
+    fn snapshot(&mut self) -> StressMetricsSnapshot {
+        let mut snapshot = StressMetricsSnapshot::default();
+        for (key, _, _, value) in self.snapshotter.snapshot().into_vec() {
+            let metric_name = key.key().name();
+            match value {
+                DebugValue::Counter(value) => match metric_name {
                     "nacelle.connections.accepted" => {
-                        snapshot.accepted_connections += sum_u64(metric.data());
+                        snapshot.accepted_connections += value;
                     }
-                    "nacelle.connections.closed" => {
-                        snapshot.closed_connections += sum_u64(metric.data());
-                    }
-                    "nacelle.requests.started" => {
-                        snapshot.started_requests += sum_u64(metric.data());
-                    }
+                    "nacelle.connections.closed" => snapshot.closed_connections += value,
+                    "nacelle.requests.started" => snapshot.started_requests += value,
                     "nacelle.requests.completed" => {
-                        snapshot.completed_requests += sum_u64(metric.data());
-                        snapshot.ok_requests +=
-                            sum_u64_with_attribute(metric.data(), "status", "ok");
-                        snapshot.failed_requests +=
-                            sum_u64_with_attribute(metric.data(), "status", "error");
+                        snapshot.completed_requests += value;
+                        if metric_has_label(key.key(), "status", "ok") {
+                            snapshot.ok_requests += value;
+                        } else if metric_has_label(key.key(), "status", "error") {
+                            snapshot.failed_requests += value;
+                        }
                     }
-                    "nacelle.errors" => {
-                        snapshot.operation_errors += sum_u64(metric.data());
-                    }
+                    "nacelle.requests.failed" => snapshot.failed_requests += value,
+                    "nacelle.errors" => snapshot.operation_errors += value,
                     "nacelle.resource_limit.rejections" => {
-                        snapshot.resource_limit_rejections += sum_u64(metric.data());
+                        snapshot.resource_limit_rejections += value;
                     }
-                    "nacelle.request.bytes" => {
-                        snapshot.request_bytes += sum_u64(metric.data());
-                    }
-                    "nacelle.response.bytes" => {
-                        snapshot.response_bytes += sum_u64(metric.data());
-                    }
-                    "nacelle.phase.duration_ms" => {
-                        collect_phase_durations(metric.data(), &mut snapshot.phase_durations);
-                    }
+                    "nacelle.request.bytes" => snapshot.request_bytes += value,
+                    "nacelle.response.bytes" => snapshot.response_bytes += value,
                     _ => {}
+                },
+                DebugValue::Gauge(value) => {
+                    let delta = value.into_inner() as i64;
+                    match metric_name {
+                        "nacelle.connections.active" => {
+                            self.active_connections = self.active_connections.saturating_add(delta);
+                        }
+                        "nacelle.connections.in_flight" => {
+                            self.active_connection_delta =
+                                self.active_connection_delta.saturating_add(delta);
+                        }
+                        "nacelle.requests.active" => {
+                            self.active_requests = self.active_requests.saturating_add(delta);
+                        }
+                        "nacelle.streaming_tasks.active" => {
+                            self.active_streaming_tasks =
+                                self.active_streaming_tasks.saturating_add(delta);
+                        }
+                        "nacelle.memory.used_bytes" => {
+                            self.memory_used_bytes = self.memory_used_bytes.saturating_add(delta);
+                        }
+                        _ => {}
+                    }
                 }
+                DebugValue::Histogram(values) if metric_name == "nacelle.phase.duration_ms" => {
+                    let Some(phase) = key
+                        .key()
+                        .labels()
+                        .find(|label| label.key() == "phase")
+                        .map(|label| label.value().to_owned())
+                    else {
+                        continue;
+                    };
+                    let duration = snapshot.phase_durations.entry(phase).or_default();
+                    for value in values {
+                        duration.add(value.into_inner());
+                    }
+                }
+                DebugValue::Histogram(_) => {}
             }
         }
+        snapshot.active_connections = self.active_connections.max(0) as u64;
+        snapshot.active_connection_delta = self.active_connection_delta;
+        snapshot.active_requests = self.active_requests.max(0) as u64;
+        snapshot.active_streaming_tasks = self.active_streaming_tasks.max(0) as u64;
+        snapshot.memory_used_bytes = self.memory_used_bytes.max(0) as u64;
         snapshot
     }
 }
 
-#[cfg(feature = "otel")]
-fn print_otel_snapshot(snapshot: StressOtelSnapshot, byte_metrics: StressOtelByteMetrics) {
-    let interval_secs = OTEL_EXPORT_INTERVAL.as_secs_f64();
-    println!("nacelle-stress-server otel window={interval_secs:.1}s");
+fn metric_has_label(key: &metrics::Key, label_key: &str, label_value: &str) -> bool {
+    key.labels()
+        .any(|label| label.key() == label_key && label.value() == label_value)
+}
+
+async fn run_metrics_console(
+    mut console: StressMetricsConsole,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(METRICS_EXPORT_INTERVAL);
+    interval.tick().await;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    print_metrics_snapshot(console.snapshot(), console.byte_metrics);
+                    break;
+                }
+            }
+            _ = interval.tick() => {
+                print_metrics_snapshot(console.snapshot(), console.byte_metrics);
+            }
+        }
+    }
+}
+
+fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressByteMetrics) {
+    let interval_secs = METRICS_EXPORT_INTERVAL.as_secs_f64();
+    println!("nacelle-stress-server metrics window={interval_secs:.1}s");
     println!(
         "  connections  active={} delta={} accepted={} ({:.2}/s) closed={} ({:.2}/s)",
         snapshot.active_connections,
@@ -452,93 +431,6 @@ fn print_otel_snapshot(snapshot: StressOtelSnapshot, byte_metrics: StressOtelByt
     }
 }
 
-#[cfg(feature = "otel")]
-fn collect_phase_durations(
-    metrics: &AggregatedMetrics,
-    durations: &mut BTreeMap<String, PhaseDurationSnapshot>,
-) {
-    let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metrics else {
-        return;
-    };
-    for point in histogram.data_points() {
-        let Some(phase) = point
-            .attributes()
-            .find(|attribute| attribute.key.as_str() == "phase")
-            .map(|attribute| attribute.value.as_str().into_owned())
-        else {
-            continue;
-        };
-        durations.entry(phase).or_default().add(
-            point.count(),
-            point.sum(),
-            point.min(),
-            point.max(),
-        );
-    }
-}
-
-#[cfg(feature = "otel")]
-fn gauge_u64(metrics: &AggregatedMetrics) -> u64 {
-    match metrics {
-        AggregatedMetrics::U64(MetricData::Gauge(gauge)) => {
-            gauge.data_points().map(|point| point.value()).sum()
-        }
-        _ => 0,
-    }
-}
-
-#[cfg(feature = "otel")]
-fn sum_u64(metrics: &AggregatedMetrics) -> u64 {
-    match metrics {
-        AggregatedMetrics::U64(MetricData::Sum(sum)) => {
-            sum.data_points().map(|point| point.value()).sum()
-        }
-        _ => 0,
-    }
-}
-
-#[cfg(feature = "otel")]
-fn sum_i64(metrics: &AggregatedMetrics) -> i64 {
-    match metrics {
-        AggregatedMetrics::I64(MetricData::Sum(sum)) => {
-            sum.data_points().map(|point| point.value()).sum()
-        }
-        _ => 0,
-    }
-}
-
-#[cfg(feature = "otel")]
-fn sum_u64_with_attribute(metrics: &AggregatedMetrics, key: &str, value: &str) -> u64 {
-    match metrics {
-        AggregatedMetrics::U64(MetricData::Sum(sum)) => sum_points_with_attribute(sum, key, value),
-        _ => 0,
-    }
-}
-
-#[cfg(feature = "otel")]
-fn sum_points_with_attribute(sum: &Sum<u64>, key: &str, value: &str) -> u64 {
-    sum.data_points()
-        .filter(|point| {
-            point
-                .attributes()
-                .any(|attribute| attribute.key.as_str() == key && attribute.value.as_str() == value)
-        })
-        .map(|point| point.value())
-        .sum()
-}
-
-#[cfg(feature = "otel")]
-fn shutdown_otel_console_exporter(provider: &SdkMeterProvider) -> OTelSdkResult {
-    provider.shutdown()
-}
-
-#[cfg(not(feature = "otel"))]
-fn shutdown_otel_console_exporter(
-    _provider: &DisabledOtelConsoleExporter,
-) -> Result<(), std::convert::Infallible> {
-    Ok(())
-}
-
 async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
@@ -561,10 +453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = parse_args(std::env::args().skip(1), "tokio")?;
     configure_allocator(config.low_memory);
 
-    #[cfg(feature = "otel")]
-    let meter_provider = init_otel_console_exporter(&config);
-    #[cfg(not(feature = "otel"))]
-    let meter_provider = init_otel_console_exporter(&config);
+    let metrics_console = StressMetricsConsole::install(&config)?;
 
     let telemetry = NacelleTelemetry::default()
         .with_byte_count_metrics(config.byte_metrics)
@@ -604,6 +493,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (metrics_shutdown_tx, metrics_shutdown_rx) = watch::channel(false);
+    let metrics_task = tokio::spawn(run_metrics_console(metrics_console, metrics_shutdown_rx));
 
     if n_server_threads == 1 {
         let server_task = tokio::spawn(run_server(first_listener, server, tls_config, shutdown_rx));
@@ -611,7 +502,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         eprintln!("\nshutting down...");
         let _ = shutdown_tx.send(true);
         server_task.await??;
-        shutdown_otel_console_exporter(&meter_provider)?;
+        let _ = metrics_shutdown_tx.send(true);
+        metrics_task.await?;
         return Ok(());
     }
 
@@ -642,7 +534,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map_err(|_| "server thread panicked")?
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
     }
-    shutdown_otel_console_exporter(&meter_provider)?;
+    let _ = metrics_shutdown_tx.send(true);
+    metrics_task.await?;
 
     Ok(())
 }

@@ -762,8 +762,8 @@ pub fn print_help(runtime: &str) {
                                                      Equivalent env vars (no recompile required):\n\
                                                        MIMALLOC_PURGE_DELAY=0\n\
                                                        MIMALLOC_ARENA_EAGER_COMMIT=0\n\
-           --byte-metrics                            Enable OTel request/response byte counters.\n\
-           --no-byte-metrics                         Disable OTel request/response byte counters.\n\
+           --byte-metrics                            Enable request/response byte counters.\n\
+           --no-byte-metrics                         Disable request/response byte counters.\n\
            --phase-duration-metrics                  Enable diagnostic TCP phase histograms; requires\n\
                                                      the phase-timing Cargo feature.\n\
            --tls-self-signed                         Serve TCP over TLS with an ephemeral\n\

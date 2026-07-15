@@ -19,8 +19,7 @@ rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacell
 openssl = ["tls", "dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl", "nacelle-core/tls"]
 openssl-vendored = ["openssl", "openssl/vendored", "nacelle-openssl/vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
-otel = ["dep:opentelemetry", "nacelle-core/otel"]
-phase-timing = ["otel", "nacelle-core/phase-timing"]
+phase-timing = ["nacelle-core/phase-timing"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -28,7 +27,6 @@ nacelle-codec = { workspace = true }
 nacelle-core = { workspace = true }
 nacelle-openssl = { workspace = true, optional = true }
 nacelle-rustls = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 socket2 = { workspace = true }

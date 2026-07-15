@@ -384,19 +384,19 @@ fn contended_memory_allocation_waves(
 }
 
 fn telemetry_benches(c: &mut Criterion) {
-    let disabled = NacelleTelemetry::default().with_metrics(false);
+    let facade = NacelleTelemetry::default();
     let concrete = NacelleTelemetry::new().with_observer(NacelleInMemoryObserver::new());
     let elapsed = Duration::from_micros(250);
 
     let mut group = c.benchmark_group("telemetry");
-    group.bench_function("connection_opened_disabled", |b| {
+    group.bench_function("connection_opened_no_recorder", |b| {
         b.iter(|| {
-            black_box(&disabled).connection_opened(black_box(NacelleTransport::new("tcp")));
+            black_box(&facade).connection_opened(black_box(NacelleTransport::new("tcp")));
         })
     });
-    group.bench_function("request_completed_disabled", |b| {
+    group.bench_function("request_completed_no_recorder", |b| {
         b.iter(|| {
-            black_box(&disabled).request_completed(
+            black_box(&facade).request_completed(
                 black_box(NacelleTransport::new("tcp")),
                 black_box(1024),
                 black_box(64),
@@ -404,9 +404,9 @@ fn telemetry_benches(c: &mut Criterion) {
             );
         })
     });
-    group.bench_function("timeout_disabled", |b| {
+    group.bench_function("timeout_no_recorder", |b| {
         b.iter(|| {
-            black_box(&disabled).timeout(
+            black_box(&facade).timeout(
                 black_box(NacelleTransport::new("tcp")),
                 black_box("request_body_read"),
             );

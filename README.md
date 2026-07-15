@@ -18,7 +18,7 @@ integrations, but the public API is still allowed to change before `1.0`.
 
 The typed pipeline contracts, runtime limits, host/app builders, and telemetry
 observer contract are the most stable parts of the API. Transport metadata, listener options,
-stress-tool configuration, optional OpenSSL TLS detection, and OpenTelemetry
+stress-tool configuration, optional OpenSSL TLS detection, and metrics exporter
 integration are still moving.
 
 Authentication and compression are not implemented in Nacelle. Keep those in
@@ -130,8 +130,8 @@ nacelle = { version = "0.3" }
 # HTTP only
 nacelle = { version = "0.3", default-features = false, features = ["http"] }
 
-# TCP + HTTP + OpenTelemetry metrics
-nacelle = { version = "0.3", features = ["http", "otel"] }
+# TCP + HTTP; backend-neutral metrics are always available
+nacelle = { version = "0.3", features = ["http"] }
 
 # TCP diagnostic phase histograms; still requires runtime activation
 nacelle = { version = "0.3", features = ["phase-timing"] }
@@ -156,8 +156,14 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
-| `otel` | OpenTelemetry metrics API integration through `NacelleTelemetry`. |
-| `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Implies `otel`; disabled by default. |
+| `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
+
+Nacelle emits metrics through the [`metrics`](https://crates.io/crates/metrics)
+facade and does not select an exporter. Install the recorder chosen by your
+application before constructing Nacelle runtime state, telemetry, or servers so
+their cached metric handles bind to that recorder. Without a recorder, those
+handles are inexpensive no-ops. Request-duration and TCP phase histograms remain
+runtime opt-ins because they add timers to request and transport paths.
 
 OpenSSL builds need native OpenSSL development files unless you enable
 `openssl-vendored`. Vendored OpenSSL also needs Perl on Windows.

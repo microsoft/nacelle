@@ -61,15 +61,16 @@ Retained costs are scoped by ownership:
 	geometrically through an old-plus-replacement memory-accounted transaction.
 - App listener installers and worker thread closures erase startup-only closure
 	types; they are not involved in request dispatch.
-- Optional tracing, Hyper, Tokio, TLS providers, allocators, and OpenTelemetry
-	retain their own external indirection.
+- Optional tracing, Hyper, Tokio, TLS providers, allocators, and metrics
+	recorders retain their own external indirection.
 
-TCP computes effective telemetry modes once per connection. When metrics are
-disabled it skips `NacelleMetricsContext` and OTel attribute construction while
-retaining connection/request permits, memory accounting, and configured limits.
-Diagnostic TCP phase timers are compiled only with the non-default
-`phase-timing` feature and remain runtime-disabled until explicitly enabled on
-`NacelleTelemetry`.
+TCP computes effective telemetry modes once per connection and constructs one
+`NacelleMetricsContext` containing cached facade handles. Without an installed
+recorder, metric writes through those handles are no-ops. Connection/request
+permits and memory accounting still update cached runtime gauges at their
+existing state transitions. Diagnostic TCP phase timers are compiled only with
+the non-default `phase-timing` feature and remain runtime-disabled until
+explicitly enabled on `NacelleTelemetry`.
 
 Enable the `buffer-rotation` feature for long-lived TCP connections that may
 occasionally receive large requests. Once an oversized cumulative input buffer
@@ -83,14 +84,15 @@ Suggested RPS comparison:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --server-threads 48 --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-The default stress server build also prints a compact OTel console snapshot every
-5 seconds. Request metrics are grouped under the generic telemetry
+The stress server installs a `metrics-util` debugging recorder and prints a
+compact console snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
 `request_metrics` config; started/completed counters and byte counters are on by
 default, while in-flight and duration metrics remain opt-in. Request duration
 metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
 paths unless duration metrics or HTTP access logs are enabled. Use
-`--no-byte-metrics` when comparing the cost of byte accounting, and use
-`--no-default-features` with the plain TCP config for a metrics-free baseline.
+`--no-byte-metrics` when comparing the cost of byte accounting. Use the
+`telemetry_paths` benchmark for a no-recorder facade baseline; the stress server
+intentionally installs its console recorder in every feature set.
 
 The checked-in root `config.toml` enables self-signed TCP TLS for local
 stress runs. For the plain TCP throughput baseline, use

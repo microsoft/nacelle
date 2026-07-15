@@ -41,15 +41,16 @@ PowerShell example:
 .\examples\run-stress-test.ps1 -Config examples/nacelle-stress-server/configs/tcp.toml -ServerThreads 48 -Connections 256 -Pipeline 8 -DurationSecs 30 -PayloadBytes 256
 ```
 
-OpenTelemetry metrics are enabled in the default stress server build. That build
-prints a compact OTel console snapshot every 5 seconds and enables request
+The stress server installs a `metrics-util` recorder and prints a compact
+metrics snapshot every 5 seconds. It enables request
 started/completed counters plus request/response byte counters by default. The
 generic telemetry API groups those switches under `request_metrics`; the stress
 server exposes byte accounting as `byte_metrics = true`.
-Use `--no-byte-metrics` for a lower-overhead OTel run, or use
-`--no-default-features` with the plain TCP config when you intentionally want a
-metrics-free, system-allocator diagnostic. Add `--features mimalloc-allocator`
-when the baseline must keep mimalloc while disabling TLS and OpenTelemetry.
+Use `--no-byte-metrics` for a lower-overhead recorder run. Use
+`--no-default-features` with the plain TCP config for a system-allocator,
+Rustls-free diagnostic; metrics collection remains active. Add
+`--features mimalloc-allocator` when the baseline must keep mimalloc while
+disabling TLS.
 
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:
@@ -60,7 +61,7 @@ cargo run --release -p nacelle-stress-server --features phase-timing -- \
   --phase-duration-metrics
 ```
 
-The five-second OTel snapshot then prints count, mean, minimum, and maximum for
+The five-second metrics snapshot then prints count, mean, minimum, and maximum for
 each observed phase. Use an external metrics backend for percentiles and longer
 retention. The phase timers and histogram writes affect the measured hot path,
 so do not compare this run directly with a phase-timing-free throughput
@@ -104,7 +105,7 @@ serial handler dispatch for controlled diagnostics:
   --runs 3
 ```
 
-Add `--feature-set default` for mimalloc plus OpenTelemetry. To measure the
+Add `--feature-set default` for mimalloc. To measure the
 self-signed Rustls config, also pass
 `--config examples/nacelle-stress-server/configs/tcp-tls.toml` and
 `--tls-insecure`. The latter disables certificate verification and is only for

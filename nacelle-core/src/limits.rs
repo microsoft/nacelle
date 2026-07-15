@@ -121,6 +121,9 @@ struct NacelleRuntimeStateInner {
     active_connections: AtomicUsize,
     active_requests: AtomicUsize,
     active_streaming_tasks: AtomicUsize,
+    active_connections_metric: metrics::Gauge,
+    active_requests_metric: metrics::Gauge,
+    active_streaming_tasks_metric: metrics::Gauge,
     peer_connections: Mutex<HashMap<IpAddr, usize>>,
     peer_connection_rates: Option<NacellePeerRateLimiter>,
     memory: Arc<SharedMemoryBudget>,
@@ -131,6 +134,7 @@ struct SharedMemoryBudget {
     max_bytes: usize,
     memory_used: AtomicUsize,
     memory_waiters: AtomicUsize,
+    memory_used_metric: metrics::Gauge,
     state: Mutex<MemoryBudgetState>,
 }
 
@@ -195,6 +199,7 @@ impl SharedMemoryBudget {
             max_bytes,
             memory_used: AtomicUsize::new(0),
             memory_waiters: AtomicUsize::new(0),
+            memory_used_metric: metrics::gauge!("nacelle.memory.used_bytes"),
             state: Mutex::new(MemoryBudgetState {
                 waiters: VecDeque::new(),
                 next_waiter_id: 1,
@@ -230,6 +235,9 @@ impl NacelleRuntimeState {
                 active_connections: AtomicUsize::new(0),
                 active_requests: AtomicUsize::new(0),
                 active_streaming_tasks: AtomicUsize::new(0),
+                active_connections_metric: metrics::gauge!("nacelle.connections.active"),
+                active_requests_metric: metrics::gauge!("nacelle.requests.active"),
+                active_streaming_tasks_metric: metrics::gauge!("nacelle.streaming_tasks.active"),
                 peer_connections: Mutex::new(HashMap::new()),
                 peer_connection_rates,
                 memory,
@@ -262,16 +270,6 @@ impl NacelleRuntimeState {
         &self.inner.limits
     }
 
-    #[cfg(feature = "otel")]
-    pub(crate) fn shares_counters_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
-    #[cfg(feature = "otel")]
-    pub(crate) fn memory_identity(&self) -> usize {
-        Arc::as_ptr(&self.inner.memory) as usize
-    }
-
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
         self.acquire_connection_tracked()
     }
@@ -283,6 +281,7 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("connections"));
         }
+        self.inner.active_connections_metric.increment(1.0);
         Ok(TrackedPermit::new(
             self.clone(),
             PermitKind::Connection { peer: None },
@@ -296,10 +295,12 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("connections"));
         }
+        self.inner.active_connections_metric.increment(1.0);
         if let Err(error) = self.acquire_peer_connection(peer) {
             self.inner
                 .active_connections
                 .fetch_sub(1, Ordering::Relaxed);
+            self.inner.active_connections_metric.decrement(1.0);
             return Err(error);
         }
         if let Err(error) = self.acquire_peer_connection_rate(peer) {
@@ -307,6 +308,7 @@ impl NacelleRuntimeState {
             self.inner
                 .active_connections
                 .fetch_sub(1, Ordering::Relaxed);
+            self.inner.active_connections_metric.decrement(1.0);
             return Err(error);
         }
         Ok(TrackedPermit::new(
@@ -326,6 +328,7 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("in_flight_requests"));
         }
+        self.inner.active_requests_metric.increment(1.0);
         Ok(TrackedPermit::new(self.clone(), PermitKind::Request))
     }
 
@@ -340,6 +343,7 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("streaming_tasks"));
         }
+        self.inner.active_streaming_tasks_metric.increment(1.0);
         Ok(TrackedPermit::new(self.clone(), PermitKind::StreamingTask))
     }
 
@@ -472,6 +476,7 @@ impl NacelleRuntimeState {
                 .memory
                 .memory_used
                 .fetch_sub(bytes, Ordering::AcqRel);
+            self.inner.memory.memory_used_metric.decrement(bytes as f64);
             if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
                 let mut to_notify = Vec::new();
                 {
@@ -532,7 +537,10 @@ impl NacelleRuntimeState {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    self.inner.memory.memory_used_metric.increment(bytes as f64);
+                    return Ok(());
+                }
                 Err(observed) => current = observed,
             }
         }
@@ -780,6 +788,7 @@ impl Drop for TrackedPermit {
                     .inner
                     .active_connections
                     .fetch_sub(1, Ordering::Relaxed);
+                self.state.inner.active_connections_metric.decrement(1.0);
                 if let Some(peer) = peer {
                     self.state.release_peer_connection(peer);
                 }
@@ -789,12 +798,17 @@ impl Drop for TrackedPermit {
                     .inner
                     .active_requests
                     .fetch_sub(1, Ordering::Relaxed);
+                self.state.inner.active_requests_metric.decrement(1.0);
             }
             PermitKind::StreamingTask => {
                 self.state
                     .inner
                     .active_streaming_tasks
                     .fetch_sub(1, Ordering::Relaxed);
+                self.state
+                    .inner
+                    .active_streaming_tasks_metric
+                    .decrement(1.0);
             }
         }
     }
@@ -839,10 +853,64 @@ impl Drop for NacelleMemoryAllocation {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Barrier, mpsc};
     use std::thread;
 
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
     use super::*;
+
+    fn gauge_snapshot(snapshotter: &metrics_util::debugging::Snapshotter) -> HashMap<String, f64> {
+        snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(value) => Some((key.key().name().to_owned(), value.into_inner())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_gauges_track_partitioned_state_transitions() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let states = NacelleRuntimeState::partitioned([
+                NacelleLimits::default().with_max_memory_bytes(16),
+                NacelleLimits::default().with_max_memory_bytes(16),
+            ])
+            .expect("partitioned states should build");
+            let connection = states[0].acquire_connection().expect("connection permit");
+            let request = states[1].acquire_request().expect("request permit");
+            let streaming = states[0]
+                .acquire_streaming_task()
+                .expect("streaming permit");
+            let first_memory = states[0].allocate_memory(4).expect("first allocation");
+            let second_memory = states[1].allocate_memory(6).expect("second allocation");
+
+            let gauges = gauge_snapshot(&snapshotter);
+            assert_eq!(gauges["nacelle.connections.active"], 1.0);
+            assert_eq!(gauges["nacelle.requests.active"], 1.0);
+            assert_eq!(gauges["nacelle.streaming_tasks.active"], 1.0);
+            assert_eq!(gauges["nacelle.memory.used_bytes"], 10.0);
+
+            drop(connection);
+            drop(request);
+            drop(streaming);
+            drop(first_memory);
+            drop(second_memory);
+
+            let gauges = gauge_snapshot(&snapshotter);
+            assert_eq!(gauges["nacelle.connections.active"], -1.0);
+            assert_eq!(gauges["nacelle.requests.active"], -1.0);
+            assert_eq!(gauges["nacelle.streaming_tasks.active"], -1.0);
+            assert_eq!(gauges["nacelle.memory.used_bytes"], -10.0);
+        });
+    }
 
     #[test]
     fn memory_allocation_can_release_part_of_its_guard() {

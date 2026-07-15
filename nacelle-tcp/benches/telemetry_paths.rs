@@ -138,25 +138,15 @@ fn telemetry_paths(c: &mut Criterion) {
         .expect("benchmark runtime");
     let mut group = c.benchmark_group("tcp_connection_request");
 
-    group.bench_function("metrics_disabled", |b| {
+    group.bench_function("facade_no_recorder", |b| {
         b.to_async(&runtime).iter(|| async {
-            serve_one_request(NacelleTelemetry::default().with_metrics(false)).await;
-        });
-    });
-    group.bench_function("metrics_enabled", |b| {
-        b.to_async(&runtime).iter(|| async {
-            serve_one_request(NacelleTelemetry::default().with_metrics(true)).await;
+            serve_one_request(NacelleTelemetry::default()).await;
         });
     });
     #[cfg(feature = "phase-timing")]
     group.bench_function("phase_timing_enabled", |b| {
         b.to_async(&runtime).iter(|| async {
-            serve_one_request(
-                NacelleTelemetry::default()
-                    .with_metrics(true)
-                    .with_phase_duration_metrics(true),
-            )
-            .await;
+            serve_one_request(NacelleTelemetry::default().with_phase_duration_metrics(true)).await;
         });
     });
     group.finish();

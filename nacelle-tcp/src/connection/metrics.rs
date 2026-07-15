@@ -9,7 +9,6 @@ use nacelle_core::telemetry::{
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TcpTelemetryPlan {
-    pub(super) metrics: bool,
     pub(super) request_metrics: bool,
     pub(super) request_duration: bool,
     pub(super) phase_duration: bool,
@@ -23,7 +22,6 @@ impl TcpTelemetryPlan {
         Observer: NacelleTelemetryObserver,
     {
         Self {
-            metrics: telemetry.metrics_enabled(),
             request_metrics: telemetry.request_metrics_enabled(),
             request_duration: telemetry.request_duration_metrics_enabled(),
             phase_duration: telemetry.phase_duration_metrics_enabled(),
@@ -232,16 +230,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_plan_skips_all_optional_telemetry_work() {
-        let telemetry = NacelleTelemetry::default().with_metrics(false);
+    fn default_plan_enables_facade_metrics_without_optional_timers() {
+        let telemetry = NacelleTelemetry::default();
         let plan = TcpTelemetryPlan::new(&telemetry);
 
-        assert!(!plan.metrics);
-        assert!(!plan.request_metrics);
+        assert!(plan.request_metrics);
         assert!(!plan.request_duration);
         assert!(!plan.phase_duration);
         assert!(!plan.observer);
-        assert!(!plan.request_events);
+        assert!(plan.request_events);
         const {
             assert!(!<Arc<NoopObserver> as NacelleTelemetryObserver>::ENABLED);
         }
@@ -249,23 +246,12 @@ mod tests {
 
     #[test]
     fn observer_plan_preserves_events_without_metrics_context() {
-        let telemetry = NacelleTelemetry::default()
-            .with_metrics(false)
-            .with_observer(NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::default().with_observer(NacelleInMemoryObserver::new());
         let plan = TcpTelemetryPlan::new(&telemetry);
 
-        assert!(!plan.metrics);
-        assert!(!plan.request_metrics);
+        assert!(plan.request_metrics);
         assert!(plan.observer);
         assert!(plan.request_events);
-    }
-
-    #[test]
-    fn metrics_plan_matches_compiled_otel_feature() {
-        let plan = TcpTelemetryPlan::new(&NacelleTelemetry::default());
-
-        assert_eq!(plan.metrics, cfg!(feature = "otel"));
-        assert_eq!(plan.request_metrics, cfg!(feature = "otel"));
     }
 
     #[test]

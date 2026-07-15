@@ -46,8 +46,8 @@ The telemetry group can be run independently:
 cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
 ```
 
-The TCP crate also measures one complete connection plus one request with OTel
-compiled in:
+The TCP crate also measures one complete connection plus one request through the
+metrics facade, with independent phase-timing coverage:
 
 ```bash
 cargo bench -p nacelle-tcp --bench telemetry_paths --all-features -- --noplot
@@ -205,13 +205,14 @@ Use the Linux profiling helper for repeatable plain-TCP diagnostics:
 
 The helper builds the `profiling` Cargo profile with optimization, debug
 information, and frame pointers. Its default `--feature-set minimal` uses
-`--no-default-features`, which disables TLS, OpenTelemetry, and mimalloc. The
+`--no-default-features`, which disables TLS and mimalloc. The stress server's
+downstream console metrics recorder remains active. The
 system allocator is required because Heaptrack cannot intercept calls made
 directly to mimalloc. Treat this as a diagnostic profile, not as a matched
 comparison with the default mimalloc build.
 
-Use `--feature-set default` to profile the default mimalloc, OpenTelemetry, and
-Rustls-capable binaries. Self-signed Rustls workloads also require a TLS config
+Use `--feature-set default` to profile the default mimalloc and Rustls-capable
+binaries. Self-signed Rustls workloads also require a TLS config
 and the explicit local-test trust flag:
 
 ```bash
@@ -265,7 +266,8 @@ changing their safe defaults:
 
 The following results are local confidence checks from an Intel Xeon Silver
 4214 host with 24 physical cores, Linux 6.8, and Rust 1.95.0. The profiling
-build used the system allocator, no TLS, no OpenTelemetry, eight pinned server
+build used the system allocator, no TLS, and the former metrics configuration,
+eight pinned server
 workers, 256 persistent connections, 256-byte request bodies, 64-byte response
 bodies, and all timeout defaults enabled. Server and client CPU sets were
 disjoint. Each matrix cell used a five-second warm-up and three measured
@@ -293,8 +295,9 @@ backpressure, TLS, and telemetry require separate measurements.
 
 ### Default-feature plain TCP and Rustls diagnostic
 
-A follow-up on the same host used the default stress-server feature set:
-mimalloc, OpenTelemetry with byte metrics, and self-signed Rustls support. The
+A follow-up on the same host used the then-default stress-server feature set:
+mimalloc, the former OpenTelemetry recorder with byte metrics, and self-signed
+Rustls support. The
 workload, CPU sets, timeout defaults, warm-up, sample duration, and three-run
 cell size matched the preceding matrix. Plain TCP and Rustls were measured as
 separate transport profiles.
@@ -314,7 +317,7 @@ no samples. Plain coalescing reduced tracked write-loop self share from 2.10%
 to 0.47%, pending-write self share from 1.78% to 0.42%, `send` from 0.62% to
 0.12%, and TCP write polling from 0.53% to 0.09%. The equivalent Rustls pair
 was throughput-neutral: tracked write-loop self share remained approximately
-1.01%, while encryption, TLS buffering, and OpenTelemetry aggregation remained
+1.01%, while encryption, TLS buffering, and the former metrics aggregation remained
 material costs.
 
 Deep-pipeline Rustls testing also exposed two stress-path correctness gaps.
@@ -328,7 +331,7 @@ read timeout.
 These results support coalescing for measured plain-TCP pipelined workloads on
 this host. They do not support enabling it for Rustls or pipeline-1 workloads.
 
-## Disabled-policy specialization
+## Historical disabled-policy specialization
 
 A matched local comparison used the `telemetry_paths` benchmark at checkpoint
 `0bce7f0` and after caching the effective TCP telemetry plan once per connection.
@@ -339,7 +342,7 @@ Both builds used the same WSL2 host/toolchain and all TCP features:
 | Metrics disabled | 5.72-5.76 us | 5.03-5.07 us | approximately 12% lower |
 | Metrics enabled | 7.00-7.04 us | 7.02-7.08 us | no material change |
 
-The optimized path does not construct `NacelleMetricsContext` or OTel attribute
+The optimized path did not construct `NacelleMetricsContext` or metric attribute
 arrays when metrics are disabled, and request/phase mode checks are cached in a
 copyable per-connection plan. Connection/request permits and memory accounting
 remain active because they enforce runtime limits and expose operational state;
@@ -418,14 +421,15 @@ Suggested RPS comparison:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --server-threads 48 --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-The default stress server build also prints a compact OTel console snapshot every
-5 seconds. Request metrics are grouped under the generic telemetry
+The stress server installs a `metrics-util` recorder and prints a compact metrics
+snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
 `request_metrics` config; started/completed counters and byte counters are on by
 default, while in-flight and duration metrics remain opt-in. Request duration
 metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
 paths unless duration metrics or HTTP access logs are enabled. Use
-`--no-byte-metrics` when comparing the cost of byte accounting, and use
-`--no-default-features` with the plain TCP config for a metrics-free baseline.
+`--no-byte-metrics` when comparing the cost of byte accounting. Use the
+`telemetry_paths` Criterion target for a no-recorder facade baseline; every
+stress-server feature set installs the console recorder.
 
 The checked-in root `config.toml` enables self-signed TCP TLS for local
 stress runs. For the plain TCP throughput baseline, use

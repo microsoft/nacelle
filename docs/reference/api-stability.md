@@ -20,7 +20,7 @@ Experimental:
 - optional OpenSSL TLS detection on shared TCP listeners
 - telemetry observer event details
 - stress tooling config
-- feature combinations involving `otel`, `phase-timing`, and `error-hints`
+- feature combinations involving `phase-timing`, TLS providers, and `error-hints`
 
 Application code should use the app-first path:
 `NacelleApp::new().tcp(...).http(...).run().await`. The app owns shared runtime
