@@ -559,18 +559,22 @@ where
             .record(elapsed.as_secs_f64() * 1_000.0);
         }
         if emit_metrics && request_metrics.byte_counts {
-            metrics::counter!(
-                "nacelle.request.bytes",
-                "transport" => transport.as_str(),
-                "status" => "ok"
-            )
-            .increment(request_bytes as u64);
-            metrics::counter!(
-                "nacelle.response.bytes",
-                "transport" => transport.as_str(),
-                "status" => "ok"
-            )
-            .increment(response_bytes as u64);
+            if request_bytes != 0 {
+                metrics::counter!(
+                    "nacelle.request.bytes",
+                    "transport" => transport.as_str(),
+                    "status" => "ok"
+                )
+                .increment(request_bytes as u64);
+            }
+            if response_bytes != 0 {
+                metrics::counter!(
+                    "nacelle.response.bytes",
+                    "transport" => transport.as_str(),
+                    "status" => "ok"
+                )
+                .increment(response_bytes as u64);
+            }
         }
     }
 
