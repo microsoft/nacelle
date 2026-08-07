@@ -66,7 +66,7 @@ impl NacelleError {
                 Some("raise NacelleLimits::max_streaming_tasks or use buffered request bodies")
             }
             #[cfg(feature = "experimental-memory")]
-            Self::ResourceLimit("memory") => {
+            Self::ResourceLimit("memory_bytes") => {
                 Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
             }
             Self::ResourceLimit("request_body_bytes") => {
@@ -189,6 +189,17 @@ mod tests {
         assert_eq!(
             error.hint(),
             Some("raise NacelleTcpLimits::shutdown_timeout or fix slow connection shutdown")
+        );
+    }
+
+    #[cfg(all(feature = "error-hints", feature = "experimental-memory"))]
+    #[test]
+    fn memory_limit_uses_allocator_resource_name_for_hint() {
+        let error = NacelleError::ResourceLimit("memory_bytes");
+
+        assert_eq!(
+            error.hint(),
+            Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
         );
     }
 
