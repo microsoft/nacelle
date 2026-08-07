@@ -49,9 +49,11 @@ function Wait-PortOpen {
             if ($task.Wait(100) -and $client.Connected) {
                 return
             }
-        } catch {
+        }
+        catch {
             # Ignore while waiting for the server to begin listening.
-        } finally {
+        }
+        finally {
             $client.Dispose()
         }
 
@@ -71,7 +73,8 @@ function Get-TomlBool {
 
     $configPath = if ([System.IO.Path]::IsPathRooted($Path)) {
         $Path
-    } else {
+    }
+    else {
         Join-Path $RepoRoot $Path
     }
 
@@ -99,7 +102,8 @@ function Test-TomlKey {
 
     $configPath = if ([System.IO.Path]::IsPathRooted($Path)) {
         $Path
-    } else {
+    }
+    else {
         Join-Path $RepoRoot $Path
     }
     if (-not (Test-Path -Path $configPath)) {
