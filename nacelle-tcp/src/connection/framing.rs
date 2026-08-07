@@ -167,3 +167,33 @@ pub(super) fn map_message_read_error(error: MessageReadError<NacelleError>) -> N
         }
     }
 }
+
+pub(super) struct MessageReadFailure {
+    error: NacelleError,
+    protocol_failure: bool,
+}
+
+impl MessageReadFailure {
+    pub(super) const fn transport(error: NacelleError) -> Self {
+        Self {
+            error,
+            protocol_failure: false,
+        }
+    }
+
+    pub(super) fn from_message_read(error: MessageReadError<NacelleError>) -> Self {
+        let protocol_failure = !matches!(error, MessageReadError::Io(_));
+        Self {
+            error: map_message_read_error(error),
+            protocol_failure,
+        }
+    }
+
+    pub(super) const fn should_encode(&self) -> bool {
+        self.protocol_failure
+    }
+
+    pub(super) fn into_error(self) -> NacelleError {
+        self.error
+    }
+}

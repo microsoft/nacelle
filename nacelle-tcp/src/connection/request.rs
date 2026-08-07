@@ -427,7 +427,7 @@ where
         .await
     } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
         let body_started = start_tcp_phase(telemetry_plan.phase_duration);
-        let body = read_buffered_request_body(
+        let body_result = read_buffered_request_body(
             reader,
             read_buf,
             decoded.body_len,
@@ -437,25 +437,30 @@ where
         .await
         .inspect_err(|error| {
             record_tcp_error(telemetry, metrics_context, "request_body_read", error)
-        })?;
+        });
         finish_tcp_phase(
             telemetry,
             metrics_context,
             "request_body_read",
             body_started,
         );
-        execute_handler_with_metrics(
-            handler,
-            request,
-            body,
-            response_context,
-            runtime_state,
-            connection_context,
-            telemetry,
-            metrics_context,
-            telemetry_plan.phase_duration,
-        )
-        .await
+        match body_result {
+            Ok(body) => {
+                execute_handler_with_metrics(
+                    handler,
+                    request,
+                    body,
+                    response_context,
+                    runtime_state,
+                    connection_context,
+                    telemetry,
+                    metrics_context,
+                    telemetry_plan.phase_duration,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
     } else {
         let _streaming_permit =
             runtime_state

@@ -116,11 +116,15 @@ prototype does not yet provide concurrent per-connection response interleaving.
 ## Error Handling
 
 Malformed frame heads, oversized frames, and EOF before a complete frame cause
-the connection to fail. Streaming request read failure cancels the handler
-future. Handler errors and timeouts are encoded as error frames when enough
-request context is available, then the connection closes so unread body bytes
-cannot be interpreted as another frame. Unknown opcode handling is application
-policy.
+the connection to fail. Decoder, framing-progress, and incomplete-head failures
+are offered to `Protocol::encode_error` without an error context before the
+connection closes. Once a request head has been decoded, buffered and streaming
+body-read failures, handler errors, and handler timeouts are offered with that
+request's error context. Streaming request read failure also cancels the handler
+future. If encoding or writing an error frame fails, that delivery failure is
+returned without another delivery attempt. The connection closes after a
+terminal request failure so unread body bytes cannot be interpreted as another
+frame. Unknown opcode handling is application policy.
 
 ## Limits
 

@@ -36,7 +36,7 @@ use request::{
     LocalSerialRequestDispatch, OneWayDispatch, RequestDispatch, SerialOneWayDispatch,
     SerialRequestDispatch, SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
 };
-use response::ResponseDelivery;
+use response::{ResponseDelivery, write_error};
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W, Observer>(
@@ -236,9 +236,28 @@ where
             let decoded = match read_result {
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,
-                Err(error) => {
+                Err(failure) => {
+                    let should_encode = failure.should_encode();
+                    let error = failure.into_error();
                     if let Some(connection_metrics) = &connection_metrics {
                         telemetry.operation_error(connection_metrics, "socket_read", &error);
+                    }
+                    if should_encode
+                        && let Err(delivery_error) = write_error::<P, W, Observer>(
+                            &mut writer,
+                            protocol.deref(),
+                            None,
+                            &error,
+                            &tcp_limits,
+                            &mut response_delivery,
+                            &runtime_state,
+                            &telemetry,
+                            connection_metrics.as_ref(),
+                            telemetry_plan.phase_duration,
+                        )
+                        .await
+                    {
+                        return Err(delivery_error.error);
                     }
                     return Err(error);
                 }
@@ -290,9 +309,29 @@ where
                         .await?;
                     }
                 }
-                decoded = request_reader
-                    .decode_buffered()
-                    .map_err(map_message_read_error)?;
+                decoded = match request_reader.decode_buffered() {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        let error = map_message_read_error(error);
+                        if let Err(delivery_error) = write_error::<P, W, Observer>(
+                            &mut writer,
+                            protocol.deref(),
+                            None,
+                            &error,
+                            &tcp_limits,
+                            &mut response_delivery,
+                            &runtime_state,
+                            &telemetry,
+                            connection_metrics.as_ref(),
+                            telemetry_plan.phase_duration,
+                        )
+                        .await
+                        {
+                            return Err(delivery_error.error);
+                        }
+                        return Err(error);
+                    }
+                };
             }
             response_delivery
                 .flush(
