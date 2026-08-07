@@ -164,6 +164,10 @@ application before constructing Nacelle runtime state, telemetry, or servers so
 their cached metric handles bind to that recorder. Without a recorder, those
 handles are inexpensive no-ops. Request-duration and TCP phase histograms remain
 runtime opt-ins because they add timers to request and transport paths.
+Applications can disable all Nacelle metric emission locally with
+`NacelleTelemetry::default().with_metrics(false)` without replacing the process
+recorder or disabling telemetry observers. Connection, request, runtime, error,
+and phase-duration domains also have independent configuration switches.
 
 OpenSSL builds need native OpenSSL development files unless you enable
 `openssl-vendored`. Vendored OpenSSL also needs Perl on Windows.

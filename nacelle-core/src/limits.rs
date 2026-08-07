@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::error::NacelleError;
@@ -118,12 +118,13 @@ pub struct NacelleRuntimeState {
 #[derive(Debug)]
 struct NacelleRuntimeStateInner {
     limits: NacelleLimits,
+    metrics_enabled: AtomicBool,
     active_connections: AtomicUsize,
     active_requests: AtomicUsize,
     active_streaming_tasks: AtomicUsize,
-    active_connections_metric: metrics::Gauge,
-    active_requests_metric: metrics::Gauge,
-    active_streaming_tasks_metric: metrics::Gauge,
+    active_connections_metric: OnceLock<metrics::Gauge>,
+    active_requests_metric: OnceLock<metrics::Gauge>,
+    active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
     peer_connections: Mutex<HashMap<IpAddr, usize>>,
     peer_connection_rates: Option<NacellePeerRateLimiter>,
     memory: Arc<SharedMemoryBudget>,
@@ -132,9 +133,10 @@ struct NacelleRuntimeStateInner {
 #[derive(Debug)]
 struct SharedMemoryBudget {
     max_bytes: usize,
+    metrics_enabled: AtomicBool,
     memory_used: AtomicUsize,
     memory_waiters: AtomicUsize,
-    memory_used_metric: metrics::Gauge,
+    memory_used_metric: OnceLock<metrics::Gauge>,
     state: Mutex<MemoryBudgetState>,
 }
 
@@ -197,9 +199,10 @@ impl SharedMemoryBudget {
     fn new(max_bytes: usize) -> Self {
         Self {
             max_bytes,
+            metrics_enabled: AtomicBool::new(true),
             memory_used: AtomicUsize::new(0),
             memory_waiters: AtomicUsize::new(0),
-            memory_used_metric: metrics::gauge!("nacelle.memory.used_bytes"),
+            memory_used_metric: OnceLock::new(),
             state: Mutex::new(MemoryBudgetState {
                 waiters: VecDeque::new(),
                 next_waiter_id: 1,
@@ -232,12 +235,13 @@ impl NacelleRuntimeState {
         Self {
             inner: Arc::new(NacelleRuntimeStateInner {
                 limits,
+                metrics_enabled: AtomicBool::new(true),
                 active_connections: AtomicUsize::new(0),
                 active_requests: AtomicUsize::new(0),
                 active_streaming_tasks: AtomicUsize::new(0),
-                active_connections_metric: metrics::gauge!("nacelle.connections.active"),
-                active_requests_metric: metrics::gauge!("nacelle.requests.active"),
-                active_streaming_tasks_metric: metrics::gauge!("nacelle.streaming_tasks.active"),
+                active_connections_metric: OnceLock::new(),
+                active_requests_metric: OnceLock::new(),
+                active_streaming_tasks_metric: OnceLock::new(),
                 peer_connections: Mutex::new(HashMap::new()),
                 peer_connection_rates,
                 memory,
@@ -270,6 +274,47 @@ impl NacelleRuntimeState {
         &self.inner.limits
     }
 
+    pub(crate) fn set_metrics_enabled(&self, enabled: bool) {
+        self.inner.metrics_enabled.store(enabled, Ordering::Release);
+        self.inner
+            .memory
+            .metrics_enabled
+            .store(enabled, Ordering::Release);
+    }
+
+    fn metrics_enabled(&self) -> bool {
+        self.inner.metrics_enabled.load(Ordering::Acquire)
+    }
+
+    fn memory_metrics_enabled(&self) -> bool {
+        self.inner.memory.metrics_enabled.load(Ordering::Acquire)
+    }
+
+    fn active_connections_metric(&self) -> &metrics::Gauge {
+        self.inner
+            .active_connections_metric
+            .get_or_init(|| metrics::gauge!("nacelle.connections.active"))
+    }
+
+    fn active_requests_metric(&self) -> &metrics::Gauge {
+        self.inner
+            .active_requests_metric
+            .get_or_init(|| metrics::gauge!("nacelle.requests.active"))
+    }
+
+    fn active_streaming_tasks_metric(&self) -> &metrics::Gauge {
+        self.inner
+            .active_streaming_tasks_metric
+            .get_or_init(|| metrics::gauge!("nacelle.streaming_tasks.active"))
+    }
+
+    fn memory_used_metric(&self) -> &metrics::Gauge {
+        self.inner
+            .memory
+            .memory_used_metric
+            .get_or_init(|| metrics::gauge!("nacelle.memory.used_bytes"))
+    }
+
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
         self.acquire_connection_tracked()
     }
@@ -281,7 +326,9 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("connections"));
         }
-        self.inner.active_connections_metric.increment(1.0);
+        if self.metrics_enabled() {
+            self.active_connections_metric().increment(1.0);
+        }
         Ok(TrackedPermit::new(
             self.clone(),
             PermitKind::Connection { peer: None },
@@ -295,12 +342,16 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("connections"));
         }
-        self.inner.active_connections_metric.increment(1.0);
+        if self.metrics_enabled() {
+            self.active_connections_metric().increment(1.0);
+        }
         if let Err(error) = self.acquire_peer_connection(peer) {
             self.inner
                 .active_connections
                 .fetch_sub(1, Ordering::Relaxed);
-            self.inner.active_connections_metric.decrement(1.0);
+            if self.metrics_enabled() {
+                self.active_connections_metric().decrement(1.0);
+            }
             return Err(error);
         }
         if let Err(error) = self.acquire_peer_connection_rate(peer) {
@@ -308,7 +359,9 @@ impl NacelleRuntimeState {
             self.inner
                 .active_connections
                 .fetch_sub(1, Ordering::Relaxed);
-            self.inner.active_connections_metric.decrement(1.0);
+            if self.metrics_enabled() {
+                self.active_connections_metric().decrement(1.0);
+            }
             return Err(error);
         }
         Ok(TrackedPermit::new(
@@ -328,7 +381,9 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("in_flight_requests"));
         }
-        self.inner.active_requests_metric.increment(1.0);
+        if self.metrics_enabled() {
+            self.active_requests_metric().increment(1.0);
+        }
         Ok(TrackedPermit::new(self.clone(), PermitKind::Request))
     }
 
@@ -343,7 +398,9 @@ impl NacelleRuntimeState {
         ) {
             return Err(NacelleError::ResourceLimit("streaming_tasks"));
         }
-        self.inner.active_streaming_tasks_metric.increment(1.0);
+        if self.metrics_enabled() {
+            self.active_streaming_tasks_metric().increment(1.0);
+        }
         Ok(TrackedPermit::new(self.clone(), PermitKind::StreamingTask))
     }
 
@@ -476,7 +533,9 @@ impl NacelleRuntimeState {
                 .memory
                 .memory_used
                 .fetch_sub(bytes, Ordering::AcqRel);
-            self.inner.memory.memory_used_metric.decrement(bytes as f64);
+            if self.memory_metrics_enabled() {
+                self.memory_used_metric().decrement(bytes as f64);
+            }
             if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
                 let mut to_notify = Vec::new();
                 {
@@ -538,7 +597,9 @@ impl NacelleRuntimeState {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    self.inner.memory.memory_used_metric.increment(bytes as f64);
+                    if self.memory_metrics_enabled() {
+                        self.memory_used_metric().increment(bytes as f64);
+                    }
                     return Ok(());
                 }
                 Err(observed) => current = observed,
@@ -788,7 +849,9 @@ impl Drop for TrackedPermit {
                     .inner
                     .active_connections
                     .fetch_sub(1, Ordering::Relaxed);
-                self.state.inner.active_connections_metric.decrement(1.0);
+                if self.state.metrics_enabled() {
+                    self.state.active_connections_metric().decrement(1.0);
+                }
                 if let Some(peer) = peer {
                     self.state.release_peer_connection(peer);
                 }
@@ -798,17 +861,18 @@ impl Drop for TrackedPermit {
                     .inner
                     .active_requests
                     .fetch_sub(1, Ordering::Relaxed);
-                self.state.inner.active_requests_metric.decrement(1.0);
+                if self.state.metrics_enabled() {
+                    self.state.active_requests_metric().decrement(1.0);
+                }
             }
             PermitKind::StreamingTask => {
                 self.state
                     .inner
                     .active_streaming_tasks
                     .fetch_sub(1, Ordering::Relaxed);
-                self.state
-                    .inner
-                    .active_streaming_tasks_metric
-                    .decrement(1.0);
+                if self.state.metrics_enabled() {
+                    self.state.active_streaming_tasks_metric().decrement(1.0);
+                }
             }
         }
     }
@@ -909,6 +973,42 @@ mod tests {
             assert_eq!(gauges["nacelle.requests.active"], -1.0);
             assert_eq!(gauges["nacelle.streaming_tasks.active"], -1.0);
             assert_eq!(gauges["nacelle.memory.used_bytes"], -10.0);
+        });
+    }
+
+    #[test]
+    fn disabled_runtime_metrics_preserve_accounting_without_gauge_updates() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let state = NacelleRuntimeState::new(
+                NacelleLimits::default()
+                    .with_max_connections(1)
+                    .with_max_in_flight_requests(1)
+                    .with_max_streaming_tasks(1)
+                    .with_max_memory_bytes(16),
+            );
+            crate::telemetry::NacelleTelemetry::default()
+                .with_runtime_metrics(false)
+                .register_runtime_state(state.clone());
+
+            let connection = state.acquire_connection().expect("connection permit");
+            let request = state.acquire_request().expect("request permit");
+            let streaming = state.acquire_streaming_task().expect("streaming permit");
+            let memory = state.allocate_memory(8).expect("memory allocation");
+
+            assert_eq!(state.active_connections(), 1);
+            assert_eq!(state.active_requests(), 1);
+            assert_eq!(state.active_streaming_tasks(), 1);
+            assert_eq!(state.memory_used_bytes(), 8);
+            assert!(gauge_snapshot(&snapshotter).is_empty());
+
+            drop(connection);
+            drop(request);
+            drop(streaming);
+            drop(memory);
+            assert!(gauge_snapshot(&snapshotter).is_empty());
         });
     }
 

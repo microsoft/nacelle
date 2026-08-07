@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 mod sink;
@@ -13,12 +14,37 @@ pub struct NacelleTelemetry<Observer = NoopObserver> {
     observer: Observer,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Runtime switches for Nacelle-owned metric domains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NacelleTelemetryConfig {
+    /// Global metric emission gate. Individual domain settings are preserved.
+    pub metrics: bool,
+    /// Connection lifecycle counters and gauges.
+    pub connection_metrics: bool,
+    /// Request counters, gauges, byte counts, and duration histograms.
     pub request_metrics: NacelleRequestMetricsConfig,
+    /// Runtime permit, memory, shutdown, and abort metrics.
+    pub runtime_metrics: bool,
+    /// Rejection, timeout, request-failure, and operation-error counters.
+    pub error_metrics: bool,
+    /// TCP phase histograms when the `phase-timing` feature is also enabled.
     pub phase_duration_metrics: bool,
 }
 
+impl Default for NacelleTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            metrics: true,
+            connection_metrics: true,
+            request_metrics: NacelleRequestMetricsConfig::default(),
+            runtime_metrics: true,
+            error_metrics: true,
+            phase_duration_metrics: false,
+        }
+    }
+}
+
+/// Independent request metric switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NacelleRequestMetricsConfig {
     pub started: bool,
@@ -54,20 +80,20 @@ pub struct NacelleMetricsContext {
     pub tls: &'static str,
     connection_attributes: Arc<[metrics::Label]>,
     request_attributes: Arc<[metrics::Label]>,
-    connection_accepted: metrics::Counter,
-    connection_active: metrics::Gauge,
-    request_started: metrics::Counter,
-    request_in_flight: metrics::Gauge,
-    request_completed_ok: metrics::Counter,
-    request_completed_error: metrics::Counter,
-    request_duration_ok: metrics::Histogram,
-    request_duration_error: metrics::Histogram,
-    request_bytes_ok: metrics::Counter,
-    request_bytes_error: metrics::Counter,
-    response_bytes_ok: metrics::Counter,
-    response_bytes_error: metrics::Counter,
+    connection_accepted: OnceLock<metrics::Counter>,
+    connection_active: OnceLock<metrics::Gauge>,
+    request_started: OnceLock<metrics::Counter>,
+    request_in_flight: OnceLock<metrics::Gauge>,
+    request_completed_ok: OnceLock<metrics::Counter>,
+    request_completed_error: OnceLock<metrics::Counter>,
+    request_duration_ok: OnceLock<metrics::Histogram>,
+    request_duration_error: OnceLock<metrics::Histogram>,
+    request_bytes_ok: OnceLock<metrics::Counter>,
+    request_bytes_error: OnceLock<metrics::Counter>,
+    response_bytes_ok: OnceLock<metrics::Counter>,
+    response_bytes_error: OnceLock<metrics::Counter>,
     #[cfg(feature = "phase-timing")]
-    phase_durations: [metrics::Histogram; 6],
+    phase_durations: [OnceLock<metrics::Histogram>; 6],
 }
 
 impl NacelleMetricsContext {
@@ -87,109 +113,115 @@ impl NacelleMetricsContext {
             metrics::Label::from_static_parts("protocol", protocol),
         )
         .into();
-        let request_ok_attributes = attributes_with_label(
-            request_attributes.as_ref(),
-            metrics::Label::from_static_parts("status", "ok"),
-        );
-        let request_error_attributes = attributes_with_label(
-            request_attributes.as_ref(),
-            metrics::Label::from_static_parts("status", "error"),
-        );
-
         Self {
             transport,
             listener,
             protocol,
             tls,
-            connection_accepted: metrics::counter!(
-                "nacelle.connections.accepted",
-                connection_attributes.to_vec()
-            ),
-            connection_active: metrics::gauge!(
-                "nacelle.connections.in_flight",
-                connection_attributes.to_vec()
-            ),
-            request_started: metrics::counter!(
-                "nacelle.requests.started",
-                request_attributes.to_vec()
-            ),
-            request_in_flight: metrics::gauge!(
-                "nacelle.requests.in_flight",
-                request_attributes.to_vec()
-            ),
-            request_completed_ok: metrics::counter!(
-                "nacelle.requests.completed",
-                request_ok_attributes.to_vec()
-            ),
-            request_completed_error: metrics::counter!(
-                "nacelle.requests.completed",
-                request_error_attributes.to_vec()
-            ),
-            request_duration_ok: metrics::histogram!(
-                "nacelle.request.duration_ms",
-                request_ok_attributes.to_vec()
-            ),
-            request_duration_error: metrics::histogram!(
-                "nacelle.request.duration_ms",
-                request_error_attributes.to_vec()
-            ),
-            request_bytes_ok: metrics::counter!(
-                "nacelle.request.bytes",
-                request_ok_attributes.to_vec()
-            ),
-            request_bytes_error: metrics::counter!(
-                "nacelle.request.bytes",
-                request_error_attributes.to_vec()
-            ),
-            response_bytes_ok: metrics::counter!(
-                "nacelle.response.bytes",
-                request_ok_attributes.to_vec()
-            ),
-            response_bytes_error: metrics::counter!(
-                "nacelle.response.bytes",
-                request_error_attributes.to_vec()
-            ),
+            connection_accepted: OnceLock::new(),
+            connection_active: OnceLock::new(),
+            request_started: OnceLock::new(),
+            request_in_flight: OnceLock::new(),
+            request_completed_ok: OnceLock::new(),
+            request_completed_error: OnceLock::new(),
+            request_duration_ok: OnceLock::new(),
+            request_duration_error: OnceLock::new(),
+            request_bytes_ok: OnceLock::new(),
+            request_bytes_error: OnceLock::new(),
+            response_bytes_ok: OnceLock::new(),
+            response_bytes_error: OnceLock::new(),
             #[cfg(feature = "phase-timing")]
-            phase_durations: PHASES.map(|phase| {
-                metrics::histogram!(
-                    "nacelle.phase.duration_ms",
-                    attributes_with_label(
-                        request_attributes.as_ref(),
-                        metrics::Label::from_static_parts("phase", phase),
-                    )
-                )
-            }),
+            phase_durations: std::array::from_fn(|_| OnceLock::new()),
             connection_attributes,
             request_attributes,
         }
     }
 
+    fn connection_accepted(&self) -> &metrics::Counter {
+        self.connection_accepted.get_or_init(|| {
+            metrics::counter!(
+                "nacelle.connections.accepted",
+                self.connection_attributes.to_vec()
+            )
+        })
+    }
+
+    fn connection_active(&self) -> &metrics::Gauge {
+        self.connection_active.get_or_init(|| {
+            metrics::gauge!(
+                "nacelle.connections.in_flight",
+                self.connection_attributes.to_vec()
+            )
+        })
+    }
+
+    fn request_started(&self) -> &metrics::Counter {
+        self.request_started.get_or_init(|| {
+            metrics::counter!("nacelle.requests.started", self.request_attributes.to_vec())
+        })
+    }
+
+    fn request_in_flight(&self) -> &metrics::Gauge {
+        self.request_in_flight.get_or_init(|| {
+            metrics::gauge!(
+                "nacelle.requests.in_flight",
+                self.request_attributes.to_vec()
+            )
+        })
+    }
+
     fn request_completed(&self, status: &'static str) -> &metrics::Counter {
-        match status {
+        let handle = match status {
             "error" => &self.request_completed_error,
             _ => &self.request_completed_ok,
-        }
+        };
+        handle.get_or_init(|| {
+            metrics::counter!("nacelle.requests.completed", self.status_attributes(status))
+        })
     }
 
     fn request_duration(&self, status: &'static str) -> &metrics::Histogram {
-        match status {
+        let handle = match status {
             "error" => &self.request_duration_error,
             _ => &self.request_duration_ok,
-        }
+        };
+        handle.get_or_init(|| {
+            metrics::histogram!(
+                "nacelle.request.duration_ms",
+                self.status_attributes(status)
+            )
+        })
     }
 
     fn request_bytes(&self, status: &'static str) -> &metrics::Counter {
-        match status {
+        let handle = match status {
             "error" => &self.request_bytes_error,
             _ => &self.request_bytes_ok,
-        }
+        };
+        handle.get_or_init(|| {
+            metrics::counter!("nacelle.request.bytes", self.status_attributes(status))
+        })
     }
 
     fn response_bytes(&self, status: &'static str) -> &metrics::Counter {
-        match status {
+        let handle = match status {
             "error" => &self.response_bytes_error,
             _ => &self.response_bytes_ok,
-        }
+        };
+        handle.get_or_init(|| {
+            metrics::counter!("nacelle.response.bytes", self.status_attributes(status))
+        })
+    }
+
+    fn status_attributes(&self, status: &'static str) -> Vec<metrics::Label> {
+        let status = match status {
+            "error" => "error",
+            _ => "ok",
+        };
+        attributes_with_label(
+            self.request_attributes.as_ref(),
+            metrics::Label::from_static_parts("status", status),
+        )
     }
 
     #[cfg(feature = "phase-timing")]
@@ -197,7 +229,17 @@ impl NacelleMetricsContext {
         PHASES
             .iter()
             .position(|candidate| *candidate == phase)
-            .map(|index| &self.phase_durations[index])
+            .map(|index| {
+                self.phase_durations[index].get_or_init(|| {
+                    metrics::histogram!(
+                        "nacelle.phase.duration_ms",
+                        attributes_with_label(
+                            self.request_attributes.as_ref(),
+                            metrics::Label::from_static_parts("phase", phase),
+                        )
+                    )
+                })
+            })
     }
 }
 
@@ -282,6 +324,30 @@ where
         self
     }
 
+    /// Enable or disable all metrics without changing individual domain settings.
+    pub fn with_metrics(mut self, enabled: bool) -> Self {
+        self.config.metrics = enabled;
+        self
+    }
+
+    /// Enable or disable connection lifecycle metrics.
+    pub fn with_connection_metrics(mut self, enabled: bool) -> Self {
+        self.config.connection_metrics = enabled;
+        self
+    }
+
+    /// Enable or disable runtime permit, memory, shutdown, and abort metrics.
+    pub fn with_runtime_metrics(mut self, enabled: bool) -> Self {
+        self.config.runtime_metrics = enabled;
+        self
+    }
+
+    /// Enable or disable rejection, timeout, failure, and operation-error metrics.
+    pub fn with_error_metrics(mut self, enabled: bool) -> Self {
+        self.config.error_metrics = enabled;
+        self
+    }
+
     pub fn with_request_started_metrics(mut self, enabled: bool) -> Self {
         self.config.request_metrics.started = enabled;
         self
@@ -317,19 +383,38 @@ where
     }
 
     pub const fn metrics_enabled(&self) -> bool {
-        true
+        self.config.metrics
+    }
+
+    pub const fn connection_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.connection_metrics
+    }
+
+    pub const fn runtime_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.runtime_metrics
+    }
+
+    pub const fn error_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.error_metrics
+    }
+
+    pub fn context_metrics_enabled(&self) -> bool {
+        self.connection_metrics_enabled()
+            || self.request_metrics_enabled()
+            || self.error_metrics_enabled()
+            || self.phase_duration_metrics_enabled()
     }
 
     pub fn request_metrics_enabled(&self) -> bool {
-        self.config.request_metrics.enabled()
+        self.config.metrics && self.config.request_metrics.enabled()
     }
 
     pub fn request_duration_metrics_enabled(&self) -> bool {
-        self.config.request_metrics.duration_ms
+        self.config.metrics && self.config.request_metrics.duration_ms
     }
 
     pub fn phase_duration_metrics_enabled(&self) -> bool {
-        cfg!(feature = "phase-timing") && self.config.phase_duration_metrics
+        self.config.metrics && cfg!(feature = "phase-timing") && self.config.phase_duration_metrics
     }
 
     pub const fn request_events_enabled(&self) -> bool {
@@ -391,28 +476,34 @@ where
             reason: None,
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.connections.opened",
-            "transport" => transport.as_str()
-        )
-        .increment(1);
+        if self.connection_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.connections.opened",
+                "transport" => transport.as_str()
+            )
+            .increment(1);
+        }
     }
 
     pub fn connection_accepted(&self, context: &NacelleMetricsContext) {
-        context.connection_accepted.increment(1);
-        context.connection_active.increment(1.0);
+        if self.connection_metrics_enabled() {
+            context.connection_accepted().increment(1);
+            context.connection_active().increment(1.0);
+        }
     }
 
     pub fn connection_closed(&self, context: &NacelleMetricsContext, close_reason: &'static str) {
-        metrics::counter!(
-            "nacelle.connections.closed",
-            attributes_with_label(
-                context.connection_attributes.as_ref(),
-                metrics::Label::from_static_parts("close_reason", close_reason),
+        if self.connection_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.connections.closed",
+                attributes_with_label(
+                    context.connection_attributes.as_ref(),
+                    metrics::Label::from_static_parts("close_reason", close_reason),
+                )
             )
-        )
-        .increment(1);
-        context.connection_active.decrement(1.0);
+            .increment(1);
+            context.connection_active().decrement(1.0);
+        }
     }
 
     pub fn connection_rejected(&self, transport: NacelleTransport, reason: &'static str) {
@@ -428,12 +519,14 @@ where
             reason: Some(reason),
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.rejections",
-            "transport" => transport.as_str(),
-            "reason" => reason
-        )
-        .increment(1);
+        if self.error_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.rejections",
+                "transport" => transport.as_str(),
+                "reason" => reason
+            )
+            .increment(1);
+        }
     }
 
     pub fn request_rejected(&self, transport: NacelleTransport, reason: &'static str) {
@@ -449,20 +542,25 @@ where
             reason: Some(reason),
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.rejections",
-            "transport" => transport.as_str(),
-            "reason" => reason
-        )
-        .increment(1);
+        if self.error_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.rejections",
+                "transport" => transport.as_str(),
+                "reason" => reason
+            )
+            .increment(1);
+        }
     }
 
     pub fn request_started_with_context(&self, context: &NacelleMetricsContext) {
+        if !self.config.metrics {
+            return;
+        }
         if self.config.request_metrics.started {
-            context.request_started.increment(1);
+            context.request_started().increment(1);
         }
         if self.config.request_metrics.in_flight {
-            context.request_in_flight.increment(1.0);
+            context.request_in_flight().increment(1.0);
         }
     }
 
@@ -474,6 +572,9 @@ where
         response_bytes: usize,
         elapsed: Duration,
     ) {
+        if !self.config.metrics {
+            return;
+        }
         let request_metrics = self.config.request_metrics;
         if request_metrics.completed {
             context.request_completed(status).increment(1);
@@ -494,7 +595,7 @@ where
                 .increment(response_bytes as u64);
         }
         if request_metrics.in_flight {
-            context.request_in_flight.decrement(1.0);
+            context.request_in_flight().decrement(1.0);
         }
     }
 
@@ -542,6 +643,7 @@ where
             count: 1,
         });
         let request_metrics = self.config.request_metrics;
+        let emit_metrics = emit_metrics && self.config.metrics;
         if emit_metrics && request_metrics.completed {
             metrics::counter!(
                 "nacelle.requests.completed",
@@ -617,14 +719,14 @@ where
             reason: error_reason(error),
             count: 1,
         });
-        if emit_metrics {
+        if emit_metrics && self.error_metrics_enabled() {
             metrics::counter!(
                 "nacelle.requests.failed",
                 "transport" => transport.as_str()
             )
             .increment(1);
         }
-        if emit_metrics && self.config.request_metrics.duration_ms {
+        if emit_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
             metrics::histogram!(
                 "nacelle.request.duration_ms",
                 "transport" => transport.as_str(),
@@ -656,6 +758,9 @@ where
         phase: &'static str,
         error: &crate::error::NacelleError,
     ) {
+        if !self.error_metrics_enabled() {
+            return;
+        }
         let mut attributes = context.request_attributes.to_vec();
         attributes.push(metrics::Label::from_static_parts("phase", phase));
         attributes.push(metrics::Label::from_static_parts(
@@ -678,12 +783,14 @@ where
             reason: Some(operation),
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.timeouts",
-            "transport" => transport.as_str(),
-            "operation" => operation
-        )
-        .increment(1);
+        if self.error_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.timeouts",
+                "transport" => transport.as_str(),
+                "operation" => operation
+            )
+            .increment(1);
+        }
     }
 
     pub fn shutdown_event(&self, kind: NacelleTelemetryEventKind, transport: NacelleTransport) {
@@ -693,12 +800,14 @@ where
             reason: None,
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.shutdown_events",
-            "transport" => transport.as_str(),
-            "stage" => shutdown_stage(kind)
-        )
-        .increment(1);
+        if self.runtime_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.shutdown_events",
+                "transport" => transport.as_str(),
+                "stage" => shutdown_stage(kind)
+            )
+            .increment(1);
+        }
     }
 
     pub fn shutdown_requested(&self) {
@@ -708,12 +817,14 @@ where
             reason: None,
             count: 1,
         });
-        metrics::counter!(
-            "nacelle.shutdown_events",
-            "transport" => "host",
-            "stage" => "requested"
-        )
-        .increment(1);
+        if self.runtime_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.shutdown_events",
+                "transport" => "host",
+                "stage" => "requested"
+            )
+            .increment(1);
+        }
     }
 
     pub fn connections_aborted(&self, transport: NacelleTransport, count: usize) {
@@ -723,11 +834,13 @@ where
             reason: None,
             count: count as u64,
         });
-        metrics::counter!(
-            "nacelle.connection_aborts",
-            "transport" => transport.as_str()
-        )
-        .increment(count as u64);
+        if self.runtime_metrics_enabled() {
+            metrics::counter!(
+                "nacelle.connection_aborts",
+                "transport" => transport.as_str()
+            )
+            .increment(count as u64);
+        }
     }
 
     pub fn response_body_bytes(&self, transport: NacelleTransport, bytes: usize) {
@@ -740,7 +853,7 @@ where
             reason: None,
             count: bytes as u64,
         });
-        if self.config.request_metrics.byte_counts {
+        if self.config.metrics && self.config.request_metrics.byte_counts {
             metrics::counter!(
                 "nacelle.response.bytes",
                 "transport" => transport.as_str()
@@ -750,7 +863,7 @@ where
     }
 
     pub fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        let _ = state;
+        state.set_metrics_enabled(self.runtime_metrics_enabled());
     }
 
     fn record(&self, event: NacelleTelemetryEvent) {
@@ -804,6 +917,8 @@ fn shutdown_stage(kind: NacelleTelemetryEventKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use metrics_util::debugging::DebuggingRecorder;
+
     use super::*;
 
     #[test]
@@ -864,6 +979,10 @@ mod tests {
         assert!(!telemetry.config().request_metrics.in_flight);
         assert!(!telemetry.config().request_metrics.duration_ms);
         assert!(telemetry.config().request_metrics.byte_counts);
+        assert!(telemetry.config().metrics);
+        assert!(telemetry.config().connection_metrics);
+        assert!(telemetry.config().runtime_metrics);
+        assert!(telemetry.config().error_metrics);
         assert!(!telemetry.config().phase_duration_metrics);
         assert!(!telemetry.request_duration_metrics_enabled());
 
@@ -895,5 +1014,72 @@ mod tests {
 
         let enabled = NacelleTelemetry::default().with_request_duration_metrics(true);
         assert!(enabled.request_duration_metrics_enabled());
+    }
+
+    #[test]
+    fn global_metric_switch_preserves_domains_and_observers() {
+        let observer = NacelleInMemoryObserver::new();
+        let telemetry = NacelleTelemetry::default()
+            .with_request_duration_metrics(true)
+            .with_metrics(false)
+            .with_observer(observer.clone());
+
+        assert!(!telemetry.metrics_enabled());
+        assert!(!telemetry.connection_metrics_enabled());
+        assert!(!telemetry.request_metrics_enabled());
+        assert!(!telemetry.request_duration_metrics_enabled());
+        assert!(!telemetry.runtime_metrics_enabled());
+        assert!(!telemetry.error_metrics_enabled());
+        assert!(telemetry.config().request_metrics.duration_ms);
+
+        telemetry.timeout(NacelleTransport::new("tcp"), "test");
+        assert_eq!(observer.events().len(), 1);
+
+        let telemetry = telemetry.with_metrics(true);
+        assert!(telemetry.connection_metrics_enabled());
+        assert!(telemetry.request_duration_metrics_enabled());
+        assert!(telemetry.runtime_metrics_enabled());
+        assert!(telemetry.error_metrics_enabled());
+    }
+
+    #[test]
+    fn global_metric_switch_suppresses_emission_but_not_observers() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let observer = NacelleInMemoryObserver::new();
+
+        metrics::with_local_recorder(&recorder, || {
+            let telemetry = NacelleTelemetry::default()
+                .with_metrics(false)
+                .with_observer(observer.clone());
+            let context = NacelleMetricsContext::new(
+                NacelleTransport::new("tcp"),
+                Arc::from("test"),
+                "test",
+                "none",
+            );
+            telemetry.connection_opened(NacelleTransport::new("tcp"));
+            telemetry.connection_accepted(&context);
+            telemetry.connection_closed(&context, "eof");
+            telemetry.connection_rejected(NacelleTransport::new("tcp"), "connections");
+            telemetry.request_started_with_context(&context);
+            telemetry.request_finished_with_context(&context, "ok", 4, 8, Duration::from_millis(1));
+            telemetry.operation_error(
+                &context,
+                "decode",
+                &crate::error::NacelleError::InvalidFrame("test"),
+            );
+            telemetry.timeout(NacelleTransport::new("tcp"), "tcp_read");
+            telemetry.shutdown_requested();
+            telemetry.request_completed(
+                NacelleTransport::new("tcp"),
+                4,
+                8,
+                Duration::from_millis(1),
+            );
+        });
+
+        assert!(snapshotter.snapshot().into_vec().is_empty());
+        assert_eq!(observer.events().len(), 5);
     }
 }

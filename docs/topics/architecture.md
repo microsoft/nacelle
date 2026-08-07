@@ -153,12 +153,18 @@ listener, protocol, transport, and TLS labels. Applications must install their
 recorder before constructing these values so cached handles bind to it; without
 a recorder the handles are no-ops.
 
-Request metric switches live under `NacelleTelemetryConfig::request_metrics`.
-Started/completed counters and byte counters are on by default; in-flight
-counters and duration histograms are disabled by default. TCP phase histograms
-additionally require the non-default `phase-timing` Cargo feature. Enable them
-deliberately with `NacelleTelemetry::default()` builder methods on the server or
-app when you need diagnostic detail and can afford the extra timers and metric
-writes. Without `phase-timing`, TCP phase timer storage and `Instant` calls are
-not compiled. Core/HTTP request paths do not start a request timer unless
-duration metrics or HTTP access logging are enabled.
+`NacelleTelemetryConfig` separates connection, request, runtime, error, and TCP
+phase-duration metric domains. All domains except phase durations are enabled by
+default for compatibility. Request sub-switches live under `request_metrics`:
+started/completed counters and byte counters are on by default; in-flight
+counters and duration histograms are disabled by default. `with_metrics(false)`
+gates every domain without replacing those individual settings, so re-enabling
+metrics restores the configured domain policy. Telemetry observers are
+independent and continue receiving events while metrics are disabled.
+
+TCP phase histograms additionally require the non-default `phase-timing` Cargo
+feature. Enable them deliberately with `NacelleTelemetry::default()` builder
+methods on the server or app when you need diagnostic detail and can afford the
+extra timers and metric writes. Without `phase-timing`, TCP phase timer storage
+and `Instant` calls are not compiled. Core/HTTP request paths do not start a
+request timer unless duration metrics or HTTP access logging are enabled.
