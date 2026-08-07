@@ -38,6 +38,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
+metrics = { workspace = true }
+metrics-util = { workspace = true }
 
 [[bench]]
 name = "telemetry_paths"

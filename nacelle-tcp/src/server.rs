@@ -111,6 +111,7 @@ where
 
     /// Set runtime limits/accounting for this worker.
     pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
+        self.telemetry.register_runtime_state(runtime_state.clone());
         self.runtime_state = runtime_state;
         self
     }

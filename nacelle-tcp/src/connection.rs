@@ -127,6 +127,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
+    telemetry.register_runtime_state(runtime_state.clone());
     let _connection_permit = runtime_state.acquire_connection_tracked()?;
     drive_connection(
         reader,
@@ -201,6 +202,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    telemetry.register_runtime_state(runtime_state.clone());
     #[cfg(feature = "experimental-memory")]
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut response_delivery = ResponseDelivery::new(&config);
@@ -576,6 +578,7 @@ where
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    telemetry.register_runtime_state(runtime_state.clone());
     let _connection_permit = runtime_state.acquire_connection_tracked()?;
     serve_stream_inner(
         &mut io,
