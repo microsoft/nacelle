@@ -28,6 +28,12 @@ state, telemetry, shutdown, and listener supervision. Concrete transport
 servers retain transport-specific limits and policy. `nacelle::runtime::NacelleHost`
 and lower-level server APIs remain available for advanced manual supervision.
 
+Public transport configuration structs may be non-exhaustive so fields can be
+added without breaking downstream struct literals. Construct
+`NacelleTcpConfig` and `NacelleTcpLimits` with `Default`, then use their
+`with_*` builders or mutate existing public fields. This preserves defaults for
+settings introduced by later releases.
+
 The former detached `NacelleRequest`/`NacelleResponse` handler and Tower adapter
 were removed. Transport pipelines now remain strongly typed through completion;
 there is no compatibility adapter.

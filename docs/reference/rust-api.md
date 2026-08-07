@@ -31,6 +31,10 @@ Start with these public entry points:
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)` for the
   app-first serving path across TCP, Unix sockets, HTTP, and TLS.
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
+- `nacelle::tcp::{NacelleTcpConfig, NacelleTcpLimits}` for TCP buffering,
+  framing, and timeout policy. These structs are non-exhaustive; construct them
+  with `Default` and apply `with_*` builders so future fields retain their
+  defaults.
 - `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
   the `run_local_*_thread_per_core(...)` functions for experimental Linux-only
   worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL execution. This mode

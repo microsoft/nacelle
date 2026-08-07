@@ -184,7 +184,7 @@ where
 
     while remaining > 0 {
         let next_len = remaining.min(config.request_body_chunk_size);
-        let mut allocation = match runtime_state
+        let allocation = match runtime_state
             .allocate_memory_with_timeout(
                 next_len,
                 runtime_state.limits().memory_allocation_timeout,
@@ -200,25 +200,26 @@ where
             }
         };
         let mut chunk = BytesMut::with_capacity(next_len);
-        let bytes_read = match read_buf_with_timeout(reader, &mut chunk, tcp_limits).await {
-            Ok(bytes_read) => bytes_read,
-            Err(error) => {
-                if receiver_open {
-                    let _ = tx.send(Err(body_read_error(&error))).await;
+        while chunk.len() < next_len {
+            let bytes_read = match read_buf_with_timeout(reader, &mut chunk, tcp_limits).await {
+                Ok(bytes_read) => bytes_read,
+                Err(error) => {
+                    if receiver_open {
+                        let _ = tx.send(Err(body_read_error(&error))).await;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
+            };
+            if bytes_read == 0 {
+                if receiver_open {
+                    let _ = tx.send(Err(NacelleError::UnexpectedEof)).await;
+                }
+                return Err(NacelleError::UnexpectedEof);
             }
-        };
-        if bytes_read == 0 {
-            if receiver_open {
-                let _ = tx.send(Err(NacelleError::UnexpectedEof)).await;
-            }
-            return Err(NacelleError::UnexpectedEof);
         }
 
-        allocation.shrink_to(bytes_read);
         let chunk = NacelleBody::accounted_chunk(chunk.freeze(), allocation);
-        remaining -= bytes_read;
+        remaining -= next_len;
         if receiver_open && tx.send(Ok(chunk)).await.is_err() {
             receiver_open = false;
         }
@@ -265,10 +266,71 @@ pub(super) fn buffered_request_body(
 
 #[cfg(all(test, feature = "experimental-memory"))]
 mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::ReadBuf;
     use tokio::sync::mpsc::error::TryRecvError;
 
     use super::*;
     use nacelle_core::limits::NacelleLimits;
+
+    struct OneByteReader {
+        bytes: Bytes,
+    }
+
+    impl AsyncRead for OneByteReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if !self.bytes.is_empty() {
+                let byte = self.bytes.split_to(1);
+                buf.put_slice(&byte);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn live_chunks_fill_reserved_capacity_across_partial_reads() {
+        let runtime_state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_memory_bytes(4)
+                .without_memory_allocation_timeout(),
+        );
+        let config = NacelleTcpConfig::default()
+            .with_request_body_chunk_size(4)
+            .with_streaming_body_memory_policy(TcpStreamingBodyMemoryPolicy::LiveChunks);
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut reader = OneByteReader {
+            bytes: Bytes::from_static(b"abcd"),
+        };
+        let mut read_buf = BytesMut::new();
+
+        pump_request_body(
+            &mut reader,
+            &mut read_buf,
+            4,
+            tx,
+            &config,
+            &runtime_state,
+            &NacelleTcpLimits::default(),
+        )
+        .await
+        .expect("body pump should complete");
+
+        let chunk = rx
+            .recv()
+            .await
+            .expect("chunk should be queued")
+            .expect("chunk should be successful");
+        assert_eq!(chunk, Bytes::from_static(b"abcd"));
+        assert_eq!(runtime_state.memory_used_bytes(), 4);
+        drop(chunk);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+    }
 
     #[tokio::test]
     async fn live_chunks_admit_large_body_and_backpressure_retained_clones() {

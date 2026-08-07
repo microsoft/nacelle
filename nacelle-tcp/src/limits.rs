@@ -1,5 +1,10 @@
 use std::time::Duration;
 
+/// TCP socket and connection-finalization timeouts.
+///
+/// Construct this with [`Default`] and the `with_*` builders so newly added
+/// limits retain their defaults.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct NacelleTcpLimits {
     pub read_timeout: Option<Duration>,

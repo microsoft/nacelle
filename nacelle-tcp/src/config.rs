@@ -32,6 +32,10 @@ pub enum ResponseWritePolicy {
 }
 
 /// TCP framing, buffering, and request-body delivery configuration.
+///
+/// Construct this with [`Default`] and the `with_*` builders so newly added
+/// settings retain their defaults.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct NacelleTcpConfig {
     /// Initial cumulative socket read-buffer capacity.
