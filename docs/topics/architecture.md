@@ -119,8 +119,11 @@ bounded defaults.
 - buffered chunks for decoded TCP bodies already in memory
 - streaming channel for request/response bodies that move asynchronously
 
-TCP large request bodies reserve their declared length while streaming. HTTP
-request bodies reserve `Content-Length` when Hyper exposes a bounded size hint.
+TCP streaming request bodies reserve their declared length by default. Set
+`TcpStreamingBodyMemoryPolicy::LiveChunks` to reserve each chunk before it is
+detached from read-ahead or allocated for a socket read. The charge then follows
+the chunk through the body channel and any application-owned `Bytes` clones.
+HTTP request bodies reserve `Content-Length` when Hyper exposes a bounded size hint.
 TCP protocols can override `Protocol::max_request_body_bytes(...)` to choose a
 phase-aware body limit from the decoded head, immutable connection metadata,
 and concrete connection state immediately after head decoding and before

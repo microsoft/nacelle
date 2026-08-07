@@ -272,6 +272,17 @@ pub struct NacelleBody {
 
 impl NacelleBody {
     #[doc(hidden)]
+    pub fn accounted_chunk(chunk: Bytes, allocation: NacelleMemoryAllocation) -> Bytes {
+        if allocation.bytes() == 0 {
+            return chunk;
+        }
+        Bytes::from_owner(AccountedBytes {
+            bytes: chunk,
+            _memory_allocation: Arc::new(allocation),
+        })
+    }
+
+    #[doc(hidden)]
     pub fn new(
         receiver: mpsc::Receiver<Result<Bytes, NacelleError>>,
         remaining_bytes: usize,
@@ -520,6 +531,24 @@ impl Stream for NacelleBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accounted_chunk_holds_memory_until_final_clone_drops() {
+        let runtime_state = crate::limits::NacelleRuntimeState::new(
+            crate::limits::NacelleLimits::default().with_max_memory_bytes(1024),
+        );
+        let allocation = runtime_state
+            .allocate_memory(11)
+            .expect("memory should be available");
+        let chunk = NacelleBody::accounted_chunk(Bytes::from_static(b"hello world"), allocation);
+
+        assert_eq!(runtime_state.memory_used_bytes(), 11);
+        let chunk_clone = chunk.clone();
+        drop(chunk);
+        assert_eq!(runtime_state.memory_used_bytes(), 11);
+        drop(chunk_clone);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+    }
 
     #[tokio::test]
     async fn tracked_streaming_body_holds_memory_until_final_chunk_clone_drops() {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
-use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
+use crate::config::{NacelleTcpConfig, TcpRequestBodyMode, TcpStreamingBodyMemoryPolicy};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
     DecodedRequest, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler,
@@ -403,7 +403,10 @@ where
     };
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
-    let outcome = if decoded.body_len <= read_buf.len() {
+    let use_buffered_body = decoded.body_len <= read_buf.len()
+        && (config.request_body_mode == TcpRequestBodyMode::Buffered
+            || config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength);
+    let outcome = if use_buffered_body {
         let body_started = start_tcp_phase(telemetry_plan.phase_duration);
         let body =
             buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
@@ -468,15 +471,23 @@ where
                 .inspect_err(|error| {
                     record_tcp_error(telemetry, metrics_context, "streaming_task", error)
                 })?;
-        let _streaming_body_allocation = runtime_state
-            .allocate_memory_with_timeout(
-                decoded.body_len,
-                runtime_state.limits().memory_allocation_timeout,
+        let _streaming_body_allocation = if config.streaming_body_memory_policy
+            == TcpStreamingBodyMemoryPolicy::DeclaredLength
+        {
+            Some(
+                runtime_state
+                    .allocate_memory_with_timeout(
+                        decoded.body_len,
+                        runtime_state.limits().memory_allocation_timeout,
+                    )
+                    .await
+                    .inspect_err(|error| {
+                        record_tcp_error(telemetry, metrics_context, "streaming_memory", error)
+                    })?,
             )
-            .await
-            .inspect_err(|error| {
-                record_tcp_error(telemetry, metrics_context, "streaming_memory", error)
-            })?;
+        } else {
+            None
+        };
         let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
         let body = NacelleBody::new(body_rx, decoded.body_len);
         let handler_future = execute_handler_with_metrics(
@@ -496,6 +507,7 @@ where
             decoded.body_len,
             body_tx,
             config,
+            runtime_state,
             tcp_limits,
         );
         tokio::pin!(handler_future);
@@ -669,7 +681,10 @@ where
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
 
-    let result = if decoded.body_len <= read_buf.len() {
+    let use_buffered_body = decoded.body_len <= read_buf.len()
+        && (config.request_body_mode == TcpRequestBodyMode::Buffered
+            || config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength);
+    let result = if use_buffered_body {
         let body =
             buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
         execute_one_way(handler, request, body, runtime_state, connection_context).await
@@ -685,12 +700,20 @@ where
         execute_one_way(handler, request, body, runtime_state, connection_context).await
     } else {
         let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
-        let _streaming_body_allocation = runtime_state
-            .allocate_memory_with_timeout(
-                decoded.body_len,
-                runtime_state.limits().memory_allocation_timeout,
+        let _streaming_body_allocation = if config.streaming_body_memory_policy
+            == TcpStreamingBodyMemoryPolicy::DeclaredLength
+        {
+            Some(
+                runtime_state
+                    .allocate_memory_with_timeout(
+                        decoded.body_len,
+                        runtime_state.limits().memory_allocation_timeout,
+                    )
+                    .await?,
             )
-            .await?;
+        } else {
+            None
+        };
         let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
         let body = NacelleBody::new(body_rx, decoded.body_len);
         let handler_future =
@@ -701,6 +724,7 @@ where
             decoded.body_len,
             body_tx,
             config,
+            runtime_state,
             tcp_limits,
         );
         tokio::pin!(handler_future);

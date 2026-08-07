@@ -49,6 +49,8 @@ Start with these public entry points:
 - `nacelle::tcp::{TcpServer, LocalTcpServer}` for `Arc`-backed connection
   state, or `SerialTcpServer` / `LocalSerialTcpServer` for exclusive mutable
   state lent to one serial handler at a time.
+- `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to retain declared-length
+  admission or opt into accounting only live streaming request chunks.
 - `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
   required OpenSSL, optional OpenSSL, and Unix sockets.
 - `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and

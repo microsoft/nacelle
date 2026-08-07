@@ -7,6 +7,16 @@ pub enum TcpRequestBodyMode {
     Streaming,
 }
 
+/// How streaming TCP request bodies consume the shared runtime memory budget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TcpStreamingBodyMemoryPolicy {
+    /// Reserve the complete declared body length before invoking the handler.
+    #[default]
+    DeclaredLength,
+    /// Reserve only chunks that are queued or retained by the handler.
+    LiveChunks,
+}
+
 /// When complete encoded response frames are delivered to the socket.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ResponseWritePolicy {
@@ -35,6 +45,8 @@ pub struct NacelleTcpConfig {
     pub request_body_channel_capacity: usize,
     /// Request-body delivery mode.
     pub request_body_mode: TcpRequestBodyMode,
+    /// Memory accounting policy used for streaming request bodies.
+    pub streaming_body_memory_policy: TcpStreamingBodyMemoryPolicy,
     /// Response frame delivery policy.
     pub response_write_policy: ResponseWritePolicy,
 }
@@ -48,6 +60,7 @@ impl Default for NacelleTcpConfig {
             request_body_chunk_size: 64 * 1024,
             request_body_channel_capacity: 4,
             request_body_mode: TcpRequestBodyMode::Buffered,
+            streaming_body_memory_policy: TcpStreamingBodyMemoryPolicy::DeclaredLength,
             response_write_policy: ResponseWritePolicy::Immediate,
         }
     }
@@ -90,6 +103,15 @@ impl NacelleTcpConfig {
         self
     }
 
+    /// Select declared-length or live-chunk streaming body memory accounting.
+    pub fn with_streaming_body_memory_policy(
+        mut self,
+        policy: TcpStreamingBodyMemoryPolicy,
+    ) -> Self {
+        self.streaming_body_memory_policy = policy;
+        self
+    }
+
     /// Select immediate or bounded coalesced response delivery.
     pub fn with_response_write_policy(mut self, policy: ResponseWritePolicy) -> Self {
         self.response_write_policy = match policy {
@@ -114,6 +136,10 @@ mod tests {
         assert_eq!(config.response_buffer_capacity, 64 * 1024);
         assert_eq!(config.max_frame_len, 16 * 1024 * 1024);
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Buffered);
+        assert_eq!(
+            config.streaming_body_memory_policy,
+            TcpStreamingBodyMemoryPolicy::DeclaredLength
+        );
         assert_eq!(config.response_write_policy, ResponseWritePolicy::Immediate);
     }
 
@@ -125,7 +151,8 @@ mod tests {
             .with_max_frame_len(1)
             .with_request_body_chunk_size(0)
             .with_request_body_channel_capacity(0)
-            .with_request_body_mode(TcpRequestBodyMode::Streaming);
+            .with_request_body_mode(TcpRequestBodyMode::Streaming)
+            .with_streaming_body_memory_policy(TcpStreamingBodyMemoryPolicy::LiveChunks);
         let config = config.with_response_write_policy(ResponseWritePolicy::FlushAtBytes(0));
 
         assert_eq!(config.read_buffer_capacity, 1024);
@@ -138,5 +165,9 @@ mod tests {
             ResponseWritePolicy::FlushAtBytes(1)
         );
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Streaming);
+        assert_eq!(
+            config.streaming_body_memory_policy,
+            TcpStreamingBodyMemoryPolicy::LiveChunks
+        );
     }
 }

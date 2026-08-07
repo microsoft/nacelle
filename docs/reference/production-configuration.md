@@ -44,6 +44,13 @@ Tune this with `with_memory_allocation_timeout(...)`, or call
 the same budget as the transports.
 
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
+`NacelleTcpConfig::streaming_body_memory_policy` defaults to
+`TcpStreamingBodyMemoryPolicy::DeclaredLength`, which reserves the declared body
+length before dispatch. `LiveChunks` instead charges each streaming chunk until
+its final application-owned `Bytes` clone drops. This can admit a body larger
+than currently available budget, but retained chunks apply backpressure to later
+reads. Keep `request_body_chunk_size` within available budget and do not use
+`LiveChunks` for full-body aggregation unless the budget can hold that body.
 
 For TCP protocols, `NacelleLimits::max_request_body_bytes` is the default body
 limit. Override

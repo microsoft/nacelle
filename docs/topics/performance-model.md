@@ -59,6 +59,10 @@ Retained costs are scoped by ownership:
 	retains overflow memory guards until flush, and restores socket backpressure
 	at thresholds, streaming waits, and socket-read boundaries. Overflow grows
 	geometrically through an old-plus-replacement memory-accounted transaction.
+- TCP streaming body accounting reserves the declared body length by default.
+  `TcpStreamingBodyMemoryPolicy::LiveChunks` is opt-in and performs one shared
+  memory-budget acquire/release per chunk so accounting follows queued chunks
+  and application-owned `Bytes` clones.
 - App listener installers and worker thread closures erase startup-only closure
 	types; they are not involved in request dispatch.
 - Optional tracing, Hyper, Tokio, TLS providers, allocators, and metrics
