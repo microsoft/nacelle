@@ -29,6 +29,7 @@ impl NacelleError {
     }
 
     #[cfg(feature = "error-hints")]
+    /// Return optional operator guidance without changing this error's display text.
     pub fn hint(&self) -> Option<&'static str> {
         match self {
             Self::MissingProtocol => {
@@ -122,14 +123,7 @@ impl Display for NacelleError {
             Self::Protocol(error) => write!(f, "protocol error: {error}"),
             Self::Handler(error) => write!(f, "handler error: {error}"),
             Self::Join(error) => write!(f, "task join error: {error}"),
-        }?;
-        #[cfg(feature = "error-hints")]
-        {
-            if let Some(hint) = self.hint() {
-                write!(f, "; hint: {hint}")?;
-            }
         }
-        Ok(())
     }
 }
 
@@ -157,21 +151,36 @@ impl From<crate::runtime::JoinError> for NacelleError {
     }
 }
 
-#[cfg(all(test, feature = "error-hints"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn owned_errors_include_actionable_hints() {
+    fn display_is_stable_without_implicit_hints() {
+        let error = NacelleError::ResourceLimit("request_body_bytes");
+
+        assert_eq!(
+            error.to_string(),
+            "resource limit exceeded: request_body_bytes"
+        );
+    }
+
+    #[cfg(feature = "error-hints")]
+    #[test]
+    fn owned_errors_expose_hints_without_changing_display() {
         let error = NacelleError::ResourceLimit("request_body_bytes");
 
         assert_eq!(
             error.hint(),
             Some("raise NacelleLimits::max_request_body_bytes or lower client payload sizes")
         );
-        assert!(error.to_string().contains("hint: raise NacelleLimits"));
+        assert_eq!(
+            error.to_string(),
+            "resource limit exceeded: request_body_bytes"
+        );
     }
 
+    #[cfg(feature = "error-hints")]
     #[test]
     fn tcp_shutdown_uses_shutdown_timeout_hint() {
         let error = NacelleError::Timeout("tcp_shutdown");
@@ -182,6 +191,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "error-hints")]
     #[test]
     fn wrapped_errors_do_not_invent_hints() {
         let error = NacelleError::handler(std::io::Error::other("boom"));

@@ -59,6 +59,9 @@ Start with these public entry points:
   externally bounded pools should be shared deliberately rather than
   constructed per worker.
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
+- `nacelle::core::NacelleError::hint()` with the `error-hints` feature for
+  optional operator guidance. `NacelleError::Display` remains stable across
+  feature combinations; applications append hints deliberately where suitable.
 - `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
   memory budget allocations. Owned allocation guards can release retained

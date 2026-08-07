@@ -136,7 +136,7 @@ nacelle = { version = "0.3", features = ["http"] }
 # TCP diagnostic phase histograms; still requires runtime activation
 nacelle = { version = "0.3", features = ["phase-timing"] }
 
-# Include setup hints in NacelleError Display output
+# Expose structured setup hints through NacelleError::hint()
 nacelle = { version = "0.3", features = ["error-hints"] }
 
 # Local self-signed TLS for tests
@@ -149,7 +149,7 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | Feature | Purpose |
 | --- | --- |
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
-| `error-hints` | Include actionable setup hints in `NacelleError` display output. |
+| `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
 | `tls` | Provider-neutral TLS capability. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
