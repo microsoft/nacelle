@@ -65,6 +65,10 @@ be tuned with `with_memory_allocation_timeout(...)` or disabled with
 The memory budget is an accounting guard, not a buffer allocator: it grants a
 `NacelleMemoryAllocation` that tracks bytes the transport or application intends to
 hold elsewhere, and releases those bytes when the guard is dropped.
+When Nacelle associates an allocation with `NacelleBody`, chunks extracted from
+the body retain the allocation through their underlying `Bytes` ownership.
+Dropping or consuming the body does not release the charge while an extracted
+chunk or any clone of that chunk remains live.
 Applications can allocate from the same budget through
 `NacelleRuntimeState::memory_budget()`. Use `try_allocate(...)` for immediate
 admission, `allocate(...)` for FIFO waiting, or
