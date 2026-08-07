@@ -70,7 +70,9 @@ boundary and apply the write timeout to the complete queued batch. Growth above
 cover both the current batch allocation and its complete replacement. Size the
 base buffer near a measured batch size when using larger thresholds.
 
-Use `NacelleTcpLimits` for TCP socket read, socket write, and idle timeouts.
+Use `NacelleTcpLimits` for TCP socket read, socket write, final writer shutdown,
+and idle timeouts. Set `shutdown_timeout` independently when finalization needs
+a shorter deadline than ordinary response delivery.
 Use `NacelleHttpLimits` on `HyperServer` for HTTP header read, request body
 read, response write, keep-alive, and max connection age behavior.
 

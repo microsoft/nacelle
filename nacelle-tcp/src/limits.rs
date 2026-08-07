@@ -4,6 +4,8 @@ use std::time::Duration;
 pub struct NacelleTcpLimits {
     pub read_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
+    /// Deadline for final writer shutdown after a connection result is known.
+    pub shutdown_timeout: Option<Duration>,
     pub idle_timeout: Option<Duration>,
 }
 
@@ -12,6 +14,7 @@ impl Default for NacelleTcpLimits {
         Self {
             read_timeout: Some(Duration::from_secs(30)),
             write_timeout: Some(Duration::from_secs(30)),
+            shutdown_timeout: Some(Duration::from_secs(30)),
             idle_timeout: Some(Duration::from_secs(120)),
         }
     }
@@ -25,6 +28,12 @@ impl NacelleTcpLimits {
 
     pub fn with_write_timeout(mut self, timeout: Duration) -> Self {
         self.write_timeout = Some(timeout);
+        self
+    }
+
+    /// Set the writer-finalization deadline independently of response writes.
+    pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
+        self.shutdown_timeout = Some(timeout);
         self
     }
 
@@ -44,6 +53,7 @@ mod tests {
 
         assert_eq!(limits.read_timeout, Some(Duration::from_secs(30)));
         assert_eq!(limits.write_timeout, Some(Duration::from_secs(30)));
+        assert_eq!(limits.shutdown_timeout, Some(Duration::from_secs(30)));
         assert_eq!(limits.idle_timeout, Some(Duration::from_secs(120)));
     }
 }

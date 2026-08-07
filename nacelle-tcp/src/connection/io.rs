@@ -99,7 +99,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let future = writer.shutdown();
-    if let Some(timeout) = tcp_limits.write_timeout {
+    if let Some(timeout) = tcp_limits.shutdown_timeout {
         tokio::time::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(TCP_SHUTDOWN_TIMEOUT))?
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_completes_and_honors_write_timeout() {
+    async fn shutdown_completes_and_honors_shutdown_timeout() {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut writer = ShutdownWriter {
             shutdown: shutdown.clone(),
@@ -250,7 +250,9 @@ mod tests {
             shutdown,
             pending: true,
         };
-        let limits = NacelleTcpLimits::default().with_write_timeout(Duration::from_millis(10));
+        let limits = NacelleTcpLimits::default()
+            .with_write_timeout(Duration::from_secs(1))
+            .with_shutdown_timeout(Duration::from_millis(10));
         let result = shutdown_with_timeout(&mut pending_writer, &limits).await;
 
         assert!(matches!(

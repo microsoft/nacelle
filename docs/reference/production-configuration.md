@@ -65,14 +65,17 @@ complete frames enter the pending batch; the runtime flushes before another
 socket read, before awaiting another streaming body chunk, and when the
 threshold is reached or crossed. Read-boundary flushes include the underlying
 `AsyncWrite`, and clean connection teardown performs a writer shutdown bounded
-by the configured write timeout; this delivers buffered TLS records and permits
-a TLS `close_notify`. Pending capacity above the connection's base response buffer
+by `NacelleTcpLimits::shutdown_timeout`; terminal error paths make the same
+bounded attempt. This delivers buffered TLS records and permits a TLS
+`close_notify`. Pending capacity above the connection's base response buffer
 remains charged to runtime memory until flush or failure cleanup. Geometric
 growth is transactional and requires memory headroom for both the old buffer
 and its complete replacement; a growth attempt is rejected before encoding
 when that temporary allocation cannot be charged.
 
-`NacelleTcpLimits` controls TCP socket read, socket write, and idle timeouts.
+`NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
+and idle timeouts. Shutdown uses its own deadline so finalization policy can be
+tuned independently of ordinary response delivery.
 `NacelleHttpLimits` controls HTTP header read, request body read, response
 write, keep-alive, and max connection age behavior on `HyperServer`.
 

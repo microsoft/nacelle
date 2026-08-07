@@ -98,7 +98,9 @@ frame on encoder failure. The queue drains before another socket read and before
 awaiting another streaming response chunk. At that boundary, the runtime also
 flushes the underlying `AsyncWrite`, which is required for buffered transports
 such as TLS. When the connection ends cleanly, the runtime performs a
-write-timeout-bounded writer shutdown so TLS transports can emit `close_notify`.
+`shutdown_timeout`-bounded writer shutdown so TLS transports can emit
+`close_notify`. Terminal error paths make the same bounded shutdown attempt;
+an earlier connection failure remains the returned error if shutdown also fails.
 Request telemetry records encoded response bytes when a request completes; a
 later batch write, transport flush, or shutdown failure is reported as a
 connection operation error.

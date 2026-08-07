@@ -323,7 +323,7 @@ material costs.
 Deep-pipeline Rustls testing also exposed two stress-path correctness gaps.
 The client now flushes buffered TLS requests before reading responses, and the
 TCP connection driver flushes the underlying transport before another request
-read and performs a write-timeout-bounded shutdown. This delivers terminal TLS
+read and performs a shutdown-timeout-bounded shutdown. This delivers terminal TLS
 records promptly and emits `close_notify`. Final pipeline-32 Rustls samples all
 completed in approximately 10.02 seconds instead of waiting for the 30-second
 read timeout.

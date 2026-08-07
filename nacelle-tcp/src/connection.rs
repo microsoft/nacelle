@@ -362,19 +362,17 @@ where
         Ok(_) => result,
         Err(error) => Err(error.error),
     };
+    let shutdown_result = shutdown_with_timeout(&mut writer, &tcp_limits).await;
+    if let Err(error) = &shutdown_result {
+        record_tcp_error(
+            &telemetry,
+            connection_metrics.as_ref(),
+            "socket_shutdown",
+            error,
+        );
+    }
     let result = match result {
-        Ok(()) => {
-            let shutdown_result = shutdown_with_timeout(&mut writer, &tcp_limits).await;
-            if let Err(error) = &shutdown_result {
-                record_tcp_error(
-                    &telemetry,
-                    connection_metrics.as_ref(),
-                    "socket_shutdown",
-                    error,
-                );
-            }
-            shutdown_result
-        }
+        Ok(()) => shutdown_result,
         Err(error) => Err(error),
     };
     if let Some(connection_metrics) = &connection_metrics {
@@ -420,9 +418,12 @@ where
 }
 
 /// Drive one serial shared-runtime TCP connection without another connection permit.
+///
+/// The I/O value is borrowed so a caller that cancels this future regains the
+/// stream and can apply its own finalization policy.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_serial_stream_without_connection_limit<P, H, OH, IO, Observer>(
-    mut io: IO,
+    io: &mut IO,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
@@ -438,9 +439,9 @@ where
     H: SerialTcpHandler<P>,
     OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let (reader, writer) = tokio::io::split(&mut io);
+    let (reader, writer) = tokio::io::split(io);
     drive_connection_with_dispatch(
         reader,
         writer,

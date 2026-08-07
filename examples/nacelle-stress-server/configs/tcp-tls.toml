@@ -20,4 +20,5 @@ handler_timeout_ms = 60000
 [tcp_limits]
 read_timeout_ms = 30000
 write_timeout_ms = 30000
+shutdown_timeout_ms = 30000
 idle_timeout_ms = 120000

@@ -12,7 +12,7 @@ Key budgets include:
 - memory budget allocations
 - request and response body size
 - core handler timeout
-- TCP read, write, and idle timeouts through `NacelleTcpLimits`
+- TCP read, write, final shutdown, and idle timeouts through `NacelleTcpLimits`
 - HTTP header, body, write, keep-alive, and connection-age limits through `NacelleHttpLimits`
 - TLS handshake timeouts through the TLS config types
 

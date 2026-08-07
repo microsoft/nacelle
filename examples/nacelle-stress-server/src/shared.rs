@@ -169,6 +169,7 @@ struct LimitsConfigFile {
 struct TcpLimitsConfigFile {
     read_timeout_ms: Option<u64>,
     write_timeout_ms: Option<u64>,
+    shutdown_timeout_ms: Option<u64>,
     idle_timeout_ms: Option<u64>,
 }
 
@@ -270,6 +271,9 @@ impl ServerConfig {
         if let Some(write_timeout_ms) = file.write_timeout_ms {
             self.tcp_limits.write_timeout = Some(Duration::from_millis(write_timeout_ms));
         }
+        if let Some(shutdown_timeout_ms) = file.shutdown_timeout_ms {
+            self.tcp_limits.shutdown_timeout = Some(Duration::from_millis(shutdown_timeout_ms));
+        }
         if let Some(idle_timeout_ms) = file.idle_timeout_ms {
             self.tcp_limits.idle_timeout = Some(Duration::from_millis(idle_timeout_ms));
         }
@@ -284,6 +288,7 @@ impl ServerConfig {
         self.tcp_timeouts_disabled = true;
         self.tcp_limits.read_timeout = None;
         self.tcp_limits.write_timeout = None;
+        self.tcp_limits.shutdown_timeout = None;
         self.tcp_limits.idle_timeout = None;
     }
 
@@ -667,6 +672,10 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         format_duration_ms(config.tcp_limits.write_timeout)
     );
     println!(
+        "    shutdown_timeout_ms: {}",
+        format_duration_ms(config.tcp_limits.shutdown_timeout)
+    );
+    println!(
         "    idle_timeout_ms: {}",
         format_duration_ms(config.tcp_limits.idle_timeout)
     );
@@ -745,10 +754,10 @@ pub fn print_help(runtime: &str) {
            --config <path>                           Load TOML config before applying CLI flags\n\
            --server-threads <count>                  Threads (default: logical CPUs)\n\
            --handler-mode <shared|serial>            Connection-state handler mode (default: shared)\n\
-           --disable-timeouts                        Disable handler, allocation, read, write, and idle\n\
+           --disable-timeouts                        Disable handler, allocation, read, write, shutdown, and idle\n\
                                                      timeouts for diagnostic comparisons only.\n\
            --disable-handler-timeout                 Disable only the handler timeout for diagnostics.\n\
-           --disable-tcp-timeouts                    Disable only read, write, and idle timeouts for diagnostics.\n\
+           --disable-tcp-timeouts                    Disable read, write, shutdown, and idle timeouts for diagnostics.\n\
            --response-bytes <bytes>                  Response payload bytes per request (default 64)\n\
            --response-write-mode <mode>              immediate (default) or coalesce-buffered\n\
            --read-buffer <bytes>                     Read buffer capacity (default 65536)\n\
@@ -821,6 +830,7 @@ handler_timeout_ms = 60000
 [tcp_limits]
 read_timeout_ms = 30000
 write_timeout_ms = 30000
+shutdown_timeout_ms = 30000
 idle_timeout_ms = 120000
 "#;
         let file = toml::from_str::<ServerConfigFile>(toml).unwrap();
@@ -861,6 +871,10 @@ idle_timeout_ms = 120000
         );
         assert_eq!(
             config.tcp_limits.write_timeout,
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            config.tcp_limits.shutdown_timeout,
             Some(Duration::from_secs(30))
         );
         assert_eq!(
