@@ -14,13 +14,14 @@ autobins = false
 default = ["tcp"]
 tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
+experimental-memory = ["nacelle/experimental-memory"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 bench = []
 
 [dependencies]
 bytes = { workspace = true }
 http = { workspace = true, optional = true }
-nacelle = { path = "../../nacelle", version = "0.3.0-beta.3", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.0-beta.4", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 
@@ -37,7 +38,7 @@ harness = false
 [[bench]]
 name = "critical_paths"
 harness = false
-required-features = ["bench", "tcp"]
+required-features = ["bench", "tcp", "experimental-memory"]
 
 [[bin]]
 name = "echo"
@@ -57,12 +58,12 @@ required-features = ["http"]
 [[bin]]
 name = "memory_guard"
 path = "src/bin/memory_guard.rs"
-required-features = ["http"]
+required-features = ["http", "experimental-memory"]
 
 [[bin]]
 name = "tcp_memory_guard"
 path = "src/bin/tcp_memory_guard.rs"
-required-features = ["tcp"]
+required-features = ["tcp", "experimental-memory"]
 
 [[bin]]
 name = "tls_http_echo"

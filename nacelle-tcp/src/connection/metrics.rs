@@ -246,12 +246,17 @@ mod tests {
 
     #[test]
     fn observer_plan_preserves_events_without_metrics_context() {
-        let telemetry = NacelleTelemetry::default().with_observer(NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::default()
+            .with_metrics(false)
+            .with_observer(NacelleInMemoryObserver::new());
         let plan = TcpTelemetryPlan::new(&telemetry);
 
-        assert!(plan.request_metrics);
+        assert!(!plan.request_metrics);
+        assert!(!plan.request_duration);
+        assert!(!plan.phase_duration);
         assert!(plan.observer);
         assert!(plan.request_events);
+        assert!(!telemetry.context_metrics_enabled());
     }
 
     #[test]

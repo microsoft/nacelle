@@ -69,15 +69,25 @@ and memory approaching the configured budget.
 
 ## Benchmarking
 
-Nacelle always emits lifecycle metrics through the `metrics` facade. Request
-metrics are grouped under `NacelleTelemetryConfig::request_metrics`: `started`,
-`completed`, and `byte_counts` are on by default, while `in_flight`,
-and `duration_ms` are opt-in. TCP phase histograms require the non-default
-`phase-timing` Cargo feature and explicit runtime activation. The stress
-server installs a debugging recorder and prints a compact console snapshot every
-5 seconds. Production applications should install their chosen recorder before
-constructing Nacelle runtime state, telemetry, or servers. If no recorder is
-installed, facade handles are no-ops.
+Nacelle emits metrics through the `metrics` facade according to
+`NacelleTelemetryConfig`. Connection, runtime, and error domains are on by
+default. Request metrics are grouped under `request_metrics`: `started`,
+`completed`, and `byte_counts` are on by default, while `in_flight` and
+`duration_ms` are opt-in. TCP phase histograms require the non-default
+`phase-timing` Cargo feature and explicit runtime activation.
+
+Use `NacelleTelemetry::default().with_metrics(false)` to suppress all Nacelle
+metric domains while retaining any application recorder. This global gate does
+not erase individual domain settings, and telemetry observers remain active.
+Use `with_connection_metrics`, `with_request_metrics`, `with_runtime_metrics`,
+`with_error_metrics`, and `with_phase_duration_metrics` for independent policy.
+A shared `NacelleRuntimeState` has one runtime-metric policy; configure servers
+sharing that state consistently before serving traffic.
+
+The stress server installs a debugging recorder and prints a compact console
+snapshot every 5 seconds. Production applications should install their chosen
+recorder before constructing Nacelle runtime state, telemetry, or servers. If no
+recorder is installed, facade handles are no-ops.
 
 Request duration metrics remain opt-in through `NacelleTelemetryConfig`. With
 the default config, core/HTTP request paths avoid request timer work unless HTTP
@@ -125,7 +135,7 @@ rather than embedded in the metric name:
 | `nacelle.connections.active` | Gauge | Current runtime active connections. |
 | `nacelle.requests.active` | Gauge | Current runtime active requests. |
 | `nacelle.streaming_tasks.active` | Gauge | Current runtime streaming body tasks. |
-| `nacelle.memory.used_bytes` | Gauge | Current bytes allocated by runtime memory accounting. |
+| `nacelle.memory.used_bytes` | Gauge | Current bytes allocated by runtime memory accounting; emitted only with `experimental-memory`. |
 | `nacelle.connections.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
 | `nacelle.connections.closed` | Counter | Closed connections, labeled with close reason where available. |
 | `nacelle.connections.in_flight` | UpDownCounter | Per-listener connection delta for transport-level detail. |
@@ -140,5 +150,5 @@ rather than embedded in the metric name:
 Run microbenchmarks before and after hot-path changes:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp"
+cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
 ```

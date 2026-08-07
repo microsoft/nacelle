@@ -34,6 +34,8 @@ Invoke-Step "reference protocol tests" { cargo test -p nacelle-reference-protoco
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
 Invoke-Step "examples check" { cargo check -p nacelle-examples --all-features --all-targets }
 Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
+Invoke-Step "examples HTTP-only check" { cargo check -p nacelle-examples --no-default-features --features http --all-targets }
+Invoke-Step "examples HTTP-only clippy" { cargo clippy -p nacelle-examples --no-default-features --features http --all-targets -- -D warnings }
 Invoke-Step "nacelle full tests" { cargo test -p nacelle --features "http" --all-targets }
 Invoke-Step "nacelle full clippy" { cargo clippy -p nacelle --features "http" --all-targets -- -D warnings }
 Invoke-Step "nacelle http tests" { cargo test -p nacelle --no-default-features --features http --all-targets }

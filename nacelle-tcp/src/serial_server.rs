@@ -210,14 +210,14 @@ where
 
     pub(crate) async fn serve_io_without_connection_limit<IO>(
         &self,
-        io: IO,
+        mut io: IO,
         connection: NacelleConnectionMeta,
     ) -> Result<(), NacelleError>
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         serve_serial_stream_without_connection_limit(
-            io,
+            &mut io,
             self.protocol.clone(),
             self.handler.clone(),
             self.one_way_handler.clone(),

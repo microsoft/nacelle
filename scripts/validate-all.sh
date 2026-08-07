@@ -20,6 +20,8 @@ cargo test -p nacelle-reference-protocol --all-targets
 cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings
 cargo check -p nacelle-examples --all-features --all-targets
 cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings
+cargo check -p nacelle-examples --no-default-features --features http --all-targets
+cargo clippy -p nacelle-examples --no-default-features --features http --all-targets -- -D warnings
 cargo test -p nacelle --features http --all-targets
 cargo clippy -p nacelle --features http --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features http --all-targets

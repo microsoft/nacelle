@@ -11,6 +11,7 @@ publish = false
 
 [features]
 default = ["tls-self-signed"]
+experimental-memory = ["nacelle/experimental-memory"]
 tls = ["nacelle/tcp", "nacelle/rustls"]
 tls-self-signed = [
 	"tls",
@@ -22,7 +23,7 @@ tls-self-signed = [
 
 [dependencies]
 bytes = { workspace = true }
-nacelle = { path = "../../nacelle", version = "0.3.0-beta.3", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.0-beta.4", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 pem = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }

@@ -10,13 +10,13 @@ max_request_body_bytes = 1048576
 max_response_body_bytes = 1048576
 max_upstream_response_bytes = 1048576
 
-# Startup-only Nacelle admission and memory-accounting limits.
+# Startup-only Nacelle admission limits.
 max_connections = 64
 max_in_flight_requests = 32
 max_connections_per_peer = 16
-# This covers Nacelle-managed allocations, not total process RSS or the
-# proxy-owned upstream response buffer.
-max_memory_bytes = 134217728
+# Requires the non-default experimental-memory feature. This covers
+# Nacelle-managed allocations, not total process RSS or upstream buffers.
+# max_memory_bytes = 134217728
 handler_timeout_ms = 60000
 
 # With the default tls-self-signed feature, omitting both paths creates an

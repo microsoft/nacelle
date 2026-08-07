@@ -59,9 +59,9 @@ These settings apply to requests that start after a successful reload:
 - complete upstream I/O deadline
 - maximum upstream response size
 
-Listener, handler, connection, concurrency, Nacelle memory, and request/response
-hard limits are startup-only because changing them requires rebuilding runtime
-state. `ProxyService` snapshots runtime settings at request start, so in-flight
+Listener, handler, connection, concurrency, and request/response hard limits
+are startup-only because changing them requires rebuilding runtime state.
+The optional Nacelle memory limit is also startup-only. `ProxyService` snapshots runtime settings at request start, so in-flight
 requests continue with their original values.
 
 TLS identity replacement is validated before runtime settings are swapped, but
@@ -75,9 +75,10 @@ cycle before the complete pair becomes active.
 ## Resource And Timeout Model
 
 The checked-in profile sets explicit total connections, per-peer connections,
-in-flight requests, body sizes, handler timeout, and Nacelle-managed memory.
-`max_memory_bytes` accounts for Nacelle transport allocations; it is not a
-total RSS limit and does not include every allocation made by this example.
+in-flight requests, body sizes, and handler timeout. Build with
+`--features experimental-memory` and uncomment `max_memory_bytes` to add
+Nacelle transport allocation accounting. It is not a total RSS limit and does
+not include every allocation made by this example.
 Use a process or container memory limit for a hard deployment boundary.
 
 This proxy fully buffers each inbound request and complete upstream response.

@@ -27,7 +27,9 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-use framing::{InstrumentedDecoder, allocate_connection_buffers, map_message_read_error};
+#[cfg(feature = "experimental-memory")]
+use framing::allocate_connection_buffers;
+use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
 use io::shutdown_with_timeout;
 use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_close_reason, tcp_metrics_context};
@@ -36,7 +38,7 @@ use request::{
     LocalSerialRequestDispatch, OneWayDispatch, RequestDispatch, SerialOneWayDispatch,
     SerialRequestDispatch, SharedOneWayDispatch, SharedRequestDispatch, run_one_way, run_request,
 };
-use response::ResponseDelivery;
+use response::{ResponseDelivery, write_error};
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W, Observer>(
@@ -199,6 +201,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    #[cfg(feature = "experimental-memory")]
     let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
@@ -206,7 +209,9 @@ where
     let connection_state = protocol.connection_state(&connection_info);
     let mut connection_context = handler.new_connection(connection_info, connection_state);
     let telemetry_plan = TcpTelemetryPlan::new(&telemetry);
-    let connection_metrics = Some(tcp_metrics_context(protocol.deref(), &connection));
+    let connection_metrics = telemetry
+        .context_metrics_enabled()
+        .then(|| tcp_metrics_context(protocol.deref(), &connection));
     #[cfg(feature = "phase-timing")]
     let reader = framing::InstrumentedReader::new(
         reader,
@@ -236,9 +241,28 @@ where
             let decoded = match read_result {
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,
-                Err(error) => {
+                Err(failure) => {
+                    let should_encode = failure.should_encode();
+                    let error = failure.into_error();
                     if let Some(connection_metrics) = &connection_metrics {
                         telemetry.operation_error(connection_metrics, "socket_read", &error);
+                    }
+                    if should_encode
+                        && let Err(delivery_error) = write_error::<P, W, Observer>(
+                            &mut writer,
+                            protocol.deref(),
+                            None,
+                            &error,
+                            &tcp_limits,
+                            &mut response_delivery,
+                            &runtime_state,
+                            &telemetry,
+                            connection_metrics.as_ref(),
+                            telemetry_plan.phase_duration,
+                        )
+                        .await
+                    {
+                        return Err(delivery_error.error);
                     }
                     return Err(error);
                 }
@@ -290,9 +314,29 @@ where
                         .await?;
                     }
                 }
-                decoded = request_reader
-                    .decode_buffered()
-                    .map_err(map_message_read_error)?;
+                decoded = match request_reader.decode_buffered() {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        let error = map_message_read_error(error);
+                        if let Err(delivery_error) = write_error::<P, W, Observer>(
+                            &mut writer,
+                            protocol.deref(),
+                            None,
+                            &error,
+                            &tcp_limits,
+                            &mut response_delivery,
+                            &runtime_state,
+                            &telemetry,
+                            connection_metrics.as_ref(),
+                            telemetry_plan.phase_duration,
+                        )
+                        .await
+                        {
+                            return Err(delivery_error.error);
+                        }
+                        return Err(error);
+                    }
+                };
             }
             response_delivery
                 .flush(
@@ -323,19 +367,17 @@ where
         Ok(_) => result,
         Err(error) => Err(error.error),
     };
+    let shutdown_result = shutdown_with_timeout(&mut writer, &tcp_limits).await;
+    if let Err(error) = &shutdown_result {
+        record_tcp_error(
+            &telemetry,
+            connection_metrics.as_ref(),
+            "socket_shutdown",
+            error,
+        );
+    }
     let result = match result {
-        Ok(()) => {
-            let shutdown_result = shutdown_with_timeout(&mut writer, &tcp_limits).await;
-            if let Err(error) = &shutdown_result {
-                record_tcp_error(
-                    &telemetry,
-                    connection_metrics.as_ref(),
-                    "socket_shutdown",
-                    error,
-                );
-            }
-            shutdown_result
-        }
+        Ok(()) => shutdown_result,
         Err(error) => Err(error),
     };
     if let Some(connection_metrics) = &connection_metrics {
@@ -381,9 +423,12 @@ where
 }
 
 /// Drive one serial shared-runtime TCP connection without another connection permit.
+///
+/// The I/O value is borrowed so a caller that cancels this future regains the
+/// stream and can apply its own finalization policy.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_serial_stream_without_connection_limit<P, H, OH, IO, Observer>(
-    mut io: IO,
+    io: &mut IO,
     protocol: Arc<P>,
     handler: Arc<H>,
     one_way_handler: Arc<OH>,
@@ -399,9 +444,9 @@ where
     H: SerialTcpHandler<P>,
     OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
-    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let (reader, writer) = tokio::io::split(&mut io);
+    let (reader, writer) = tokio::io::split(io);
     drive_connection_with_dispatch(
         reader,
         writer,

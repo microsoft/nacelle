@@ -7,8 +7,10 @@ use std::task::{Context, Poll};
 #[cfg(feature = "phase-timing")]
 use tokio::io::{AsyncRead, ReadBuf};
 
+#[cfg(feature = "experimental-memory")]
 use crate::config::NacelleTcpConfig;
 use nacelle_core::error::NacelleError;
+#[cfg(feature = "experimental-memory")]
 use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
@@ -77,6 +79,7 @@ where
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 pub(super) fn allocate_connection_buffers(
     config: &NacelleTcpConfig,
     runtime_state: &NacelleRuntimeState,
@@ -165,5 +168,35 @@ pub(super) fn map_message_read_error(error: MessageReadError<NacelleError>) -> N
         MessageReadError::ConsumedOnNeedMore { .. } => {
             NacelleError::InvalidFrame("decoder consumed input before requesting more data")
         }
+    }
+}
+
+pub(super) struct MessageReadFailure {
+    error: NacelleError,
+    protocol_failure: bool,
+}
+
+impl MessageReadFailure {
+    pub(super) const fn transport(error: NacelleError) -> Self {
+        Self {
+            error,
+            protocol_failure: false,
+        }
+    }
+
+    pub(super) fn from_message_read(error: MessageReadError<NacelleError>) -> Self {
+        let protocol_failure = !matches!(error, MessageReadError::Io(_));
+        Self {
+            error: map_message_read_error(error),
+            protocol_failure,
+        }
+    }
+
+    pub(super) const fn should_encode(&self) -> bool {
+        self.protocol_failure
+    }
+
+    pub(super) fn into_error(self) -> NacelleError {
+        self.error
     }
 }

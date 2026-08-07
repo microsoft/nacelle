@@ -1848,6 +1848,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn http_content_length_body_reserves_memory_until_consumed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1905,16 +1906,24 @@ mod tests {
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
+        #[cfg(feature = "experimental-memory")]
         let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
             nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(1024),
         );
+        #[cfg(not(feature = "experimental-memory"))]
+        let runtime_state = nacelle_core::limits::NacelleRuntimeState::default();
+        #[cfg(feature = "experimental-memory")]
         let handler_state = runtime_state.clone();
         let server = HyperServer::new(handler_fn(move |context: HttpRequestContext<()>| {
+            #[cfg(feature = "experimental-memory")]
             let handler_state = handler_state.clone();
             async move {
+                #[cfg(feature = "experimental-memory")]
                 while handler_state.memory_used_bytes() != 11 {
                     tokio::task::yield_now().await;
                 }
+                #[cfg(not(feature = "experimental-memory"))]
+                tokio::task::yield_now().await;
                 context
                     .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
                     .await
@@ -1947,12 +1956,14 @@ mod tests {
         .expect("response should read");
 
         assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        #[cfg(feature = "experimental-memory")]
         wait_for_memory(&runtime_state, 0).await;
         assert_eq!(runtime_state.active_streaming_tasks(), 0);
         assert_eq!(runtime_state.active_requests(), 0);
         server_task.abort();
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2551,6 +2562,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "experimental-memory")]
     async fn wait_for_memory(
         runtime_state: &nacelle_core::limits::NacelleRuntimeState,
         expected: usize,

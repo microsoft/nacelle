@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-core"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 edition = "2024"
 rust-version.workspace = true
 description = "Shared pipeline, body, limits, lifecycle, telemetry, and TLS primitives for Nacelle."
@@ -14,6 +14,7 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 error-hints = []
+experimental-memory = []
 tls = []
 phase-timing = []
 

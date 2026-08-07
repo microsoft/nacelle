@@ -88,8 +88,9 @@ protocols use `Infallible` as their one-way request type.
 
 The TCP runtime encodes and writes each streaming response chunk before polling
 the next one, so socket backpressure bounds response production. It stages only
-one bounded frame at a time, accounts staging growth against the runtime memory
-budget, and writes an explicit end frame after a streaming body reaches EOF.
+one bounded frame at a time and writes an explicit end frame after a streaming
+body reaches EOF. With `experimental-memory`, it also accounts staging growth
+against the runtime memory budget.
 
 `ResponseWritePolicy::Immediate` writes each completed frame immediately.
 `CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
@@ -98,7 +99,9 @@ frame on encoder failure. The queue drains before another socket read and before
 awaiting another streaming response chunk. At that boundary, the runtime also
 flushes the underlying `AsyncWrite`, which is required for buffered transports
 such as TLS. When the connection ends cleanly, the runtime performs a
-write-timeout-bounded writer shutdown so TLS transports can emit `close_notify`.
+`shutdown_timeout`-bounded writer shutdown so TLS transports can emit
+`close_notify`. Terminal error paths make the same bounded shutdown attempt;
+an earlier connection failure remains the returned error if shutdown also fails.
 Request telemetry records encoded response bytes when a request completes; a
 later batch write, transport flush, or shutdown failure is reported as a
 connection operation error.
@@ -116,11 +119,15 @@ prototype does not yet provide concurrent per-connection response interleaving.
 ## Error Handling
 
 Malformed frame heads, oversized frames, and EOF before a complete frame cause
-the connection to fail. Streaming request read failure cancels the handler
-future. Handler errors and timeouts are encoded as error frames when enough
-request context is available, then the connection closes so unread body bytes
-cannot be interpreted as another frame. Unknown opcode handling is application
-policy.
+the connection to fail. Decoder, framing-progress, and incomplete-head failures
+are offered to `Protocol::encode_error` without an error context before the
+connection closes. Once a request head has been decoded, buffered and streaming
+body-read failures, handler errors, and handler timeouts are offered with that
+request's error context. Streaming request read failure also cancels the handler
+future. If encoding or writing an error frame fails, that delivery failure is
+returned without another delivery attempt. The connection closes after a
+terminal request failure so unread body bytes cannot be interpreted as another
+frame. Unknown opcode handling is application policy.
 
 ## Limits
 
@@ -148,7 +155,8 @@ in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler, and declared streaming body bytes are allocated against the memory
-budget until the streaming request finishes.
+budget until the streaming request finishes when `experimental-memory` is
+enabled.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers

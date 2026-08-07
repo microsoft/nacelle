@@ -1,5 +1,5 @@
 //! HTTP body conversion between Hyper's `Incoming` and Nacelle's
-//! `NacelleBody`, plus response serialization with memory accounting.
+//! `NacelleBody`, plus response serialization.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,8 +16,13 @@ use crate::pipeline::HttpResponse;
 use crate::policy::{NacelleHttpPolicy, apply_security_headers};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::{NacelleBody, TrackedBodySender};
+use nacelle_core::request::NacelleBody;
+#[cfg(feature = "experimental-memory")]
+use nacelle_core::request::TrackedBodySender as RequestBodySender;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
+
+#[cfg(not(feature = "experimental-memory"))]
+type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 
 pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
 
@@ -35,7 +40,10 @@ where
     let (tx, body) = if incoming_body_is_empty(body_len_hint) {
         (None, NacelleBody::empty())
     } else {
+        #[cfg(feature = "experimental-memory")]
         let (tx, body) = NacelleBody::tracked_channel(8, body_len_hint.unwrap_or_default());
+        #[cfg(not(feature = "experimental-memory"))]
+        let (tx, body) = NacelleBody::channel_with_remaining(8, body_len_hint.unwrap_or_default());
         (Some(tx), body)
     };
     let pump = async move {
@@ -63,10 +71,12 @@ async fn pump_incoming_body<Observer>(
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-    mut tx: TrackedBodySender,
+    tx: RequestBodySender,
 ) where
     Observer: NacelleTelemetryObserver,
 {
+    #[cfg(feature = "experimental-memory")]
+    let mut tx = tx;
     if let Some(body_len_hint) = body_len_hint
         && body_len_hint > runtime_state.limits().max_request_body_bytes
     {
@@ -75,6 +85,7 @@ async fn pump_incoming_body<Observer>(
             .await;
         return;
     }
+    #[cfg(feature = "experimental-memory")]
     if let Some(bytes) = body_len_hint {
         match runtime_state
             .allocate_memory_with_timeout(bytes, runtime_state.limits().memory_allocation_timeout)

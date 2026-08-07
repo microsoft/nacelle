@@ -20,14 +20,17 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::protocol::{
     DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
-    LocalSerialTcpOneWayHandler, Protocol, SerialTcpHandler, SerialTcpOneWayContext,
-    SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext, TcpRequestContext,
-    TcpResponse,
+    LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol, SerialTcpHandler,
+    SerialTcpOneWayContext, SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext,
+    TcpRequestContext, TcpResponse,
 };
 use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::TcpServer;
 
-use super::{serve_local_stream_without_connection_limit, serve_stream_with_connection_meta};
+use super::{
+    serve_local_stream_without_connection_limit, serve_serial_stream_without_connection_limit,
+    serve_stream_with_connection_meta,
+};
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;
 
@@ -35,6 +38,89 @@ struct RecordingIo {
     input: Vec<u8>,
     position: usize,
     writes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+struct FailingErrorWriteIo {
+    input_read: bool,
+    write_attempts: Arc<AtomicUsize>,
+    shutdown_attempts: Arc<AtomicUsize>,
+}
+
+struct ShutdownTrackingIo<IO> {
+    inner: IO,
+    shutdown_called: Arc<AtomicBool>,
+}
+
+impl<IO> AsyncRead for ShutdownTrackingIo<IO>
+where
+    IO: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<IO> AsyncWrite for ShutdownTrackingIo<IO>
+where
+    IO: AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdown_called.store(true, Ordering::SeqCst);
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl AsyncRead for FailingErrorWriteIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.input_read {
+            buf.put_slice(&[u8::MAX]);
+            self.input_read = true;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for FailingErrorWriteIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.write_attempts.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test error write failure",
+        )))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdown_attempts.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Err(std::io::Error::other("test shutdown failure")))
+    }
 }
 
 impl AsyncRead for RecordingIo {
@@ -99,6 +185,9 @@ impl MessageDecoder for PhaseDecoder {
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.is_empty() {
             return Ok(None);
+        }
+        if src[0] == u8::MAX {
+            return Err(NacelleError::InvalidFrame("test malformed head"));
         }
         let body_len = src[0] as usize;
         let _head = src.split_to(1);
@@ -294,6 +383,156 @@ async fn coalesced_single_response_flushes_before_waiting_for_input() {
         .await
         .expect("server task should join")
         .expect("server should close cleanly");
+}
+
+#[tokio::test]
+async fn normal_peer_closure_attempts_writer_shutdown() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let shutdown_called = Arc::new(AtomicBool::new(false));
+    let io = ShutdownTrackingIo {
+        inner: server_io,
+        shutdown_called: shutdown_called.clone(),
+    };
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        ))
+        .build()
+        .expect("server should build");
+    let server_task = tokio::spawn(async move { server.serve_io(io).await });
+
+    client.shutdown().await.expect("client should close");
+    server_task
+        .await
+        .expect("server task should join")
+        .expect("server should close cleanly");
+
+    assert!(shutdown_called.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn decoder_failure_is_encoded_before_connection_closes() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn(|context: TcpRequestContext<PhaseProtocol>| async move {
+            context.respond(TcpResponse::empty()).await
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[u8::MAX])
+        .await
+        .expect("malformed head should write");
+    let mut response = [0_u8; 128];
+    let bytes_read = tokio::time::timeout(Duration::from_secs(1), client.read(&mut response))
+        .await
+        .expect("error response should arrive")
+        .expect("error response should read");
+    assert_eq!(
+        std::str::from_utf8(&response[..bytes_read]).expect("utf8 error response"),
+        "invalid frame: test malformed head"
+    );
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish after decoder failure")
+        .expect("server task should join");
+    assert!(matches!(
+        result,
+        Err(NacelleError::InvalidFrame("test malformed head"))
+    ));
+}
+
+#[tokio::test]
+async fn buffered_decoder_failure_is_encoded_after_prior_response() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .build()
+        .expect("server should build");
+    let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
+
+    client
+        .write_all(&[0, u8::MAX])
+        .await
+        .expect("pipelined input should write");
+    let expected = b"okinvalid frame: test malformed head";
+    let mut response = vec![0_u8; expected.len()];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut response))
+        .await
+        .expect("response and error should arrive")
+        .expect("response and error should read");
+    assert_eq!(response, expected);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish after buffered decoder failure")
+        .expect("server task should join");
+    assert!(matches!(
+        result,
+        Err(NacelleError::InvalidFrame("test malformed head"))
+    ));
+}
+
+#[tokio::test]
+async fn failed_decoder_error_write_is_returned_without_retry() {
+    let write_attempts = Arc::new(AtomicUsize::new(0));
+    let shutdown_attempts = Arc::new(AtomicUsize::new(0));
+    let io = FailingErrorWriteIo {
+        input_read: false,
+        write_attempts: write_attempts.clone(),
+        shutdown_attempts: shutdown_attempts.clone(),
+    };
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        ))
+        .build()
+        .expect("server should build");
+
+    let result = server.serve_io(io).await;
+
+    assert!(matches!(
+        result,
+        Err(NacelleError::Io(ref error))
+            if error.kind() == std::io::ErrorKind::BrokenPipe
+                && error.to_string() == "test error write failure"
+    ));
+    assert_eq!(write_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(shutdown_attempts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -600,6 +839,50 @@ async fn streaming_body_eof_cancels_handler_and_connection() {
         .expect("server task should join");
     assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
     assert!(handler_started.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn buffered_body_eof_is_encoded_before_connection_closes() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn(|context: TcpRequestContext<PhaseProtocol>| async move {
+            context.respond(TcpResponse::empty()).await
+        }),
+        NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Buffered),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(16)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[4, b'a'])
+        .await
+        .expect("partial body should write");
+    client
+        .shutdown()
+        .await
+        .expect("client should close write half");
+    let mut response = [0_u8; 128];
+    let bytes_read = tokio::time::timeout(Duration::from_secs(1), client.read(&mut response))
+        .await
+        .expect("error response should arrive")
+        .expect("error response should read");
+    assert_eq!(
+        std::str::from_utf8(&response[..bytes_read]).expect("utf8 error response"),
+        "connection closed before the frame completed"
+    );
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish after buffered body EOF")
+        .expect("server task should join");
+    assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
 }
 
 #[tokio::test]
@@ -1221,6 +1504,32 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
         state.in_call = false;
         context.respond(TcpResponse::bytes(response)).await
     }
+}
+
+#[tokio::test]
+async fn borrowed_serial_connection_releases_io_on_cancellation() {
+    let (_client, mut server_io) = tokio::io::duplex(64);
+    let serve = serve_serial_stream_without_connection_limit(
+        &mut server_io,
+        Arc::new(SerialCounterProtocol),
+        Arc::new(SerialCounterHandler),
+        Arc::new(NoOneWayHandler::<SerialCounterProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), serve)
+            .await
+            .is_err()
+    );
+    server_io
+        .shutdown()
+        .await
+        .expect("caller should recover and shut down borrowed I/O");
 }
 
 struct DrainSerialHandler {
