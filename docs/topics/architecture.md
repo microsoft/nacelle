@@ -92,7 +92,8 @@ does not configure the caller-owned shared Tokio runtime.
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
 request, streaming, and per-peer capacities in configured worker order while
-retaining a single shared FIFO hard memory ceiling for process safety.
+retaining a single shared FIFO hard memory ceiling when `experimental-memory`
+is enabled.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
 must not scale with worker count.
@@ -105,8 +106,9 @@ shared lifecycle/limit enforcement in core.
 ## Runtime State
 
 `NacelleRuntimeState` owns shared budgets and counters. Connection, request, and
-streaming-task limits are non-blocking atomic bounded counters. Memory uses a
-checked allocation guard that releases on drop.
+streaming-task limits are non-blocking atomic bounded counters. With the
+non-default `experimental-memory` feature, memory uses a checked allocation
+guard that releases on drop.
 
 This keeps the common request path allocation-light while still enforcing
 bounded defaults.
@@ -119,7 +121,8 @@ bounded defaults.
 - buffered chunks for decoded TCP bodies already in memory
 - streaming channel for request/response bodies that move asynchronously
 
-TCP streaming request bodies reserve their declared length by default. Set
+With `experimental-memory`, TCP streaming request bodies reserve their declared
+length by default. Set
 `TcpStreamingBodyMemoryPolicy::LiveChunks` to reserve each chunk before it is
 detached from read-ahead or allocated for a socket read. The charge then follows
 the chunk through the body channel and any application-owned `Bytes` clones.
@@ -148,8 +151,9 @@ Telemetry is deliberately low-cardinality. Reasons are static strings such as
 `connections`, `request_body_bytes`, or `http_body_read`.
 
 Nacelle emits through the backend-neutral `metrics` facade and does not own an
-exporter. Runtime state and shared memory budgets cache gauge handles and update
-them at existing acquire/release transitions. `NacelleTelemetry` owns lifecycle,
+exporter. With `experimental-memory`, runtime state and shared memory budgets
+cache a memory gauge handle and update it at existing acquire/release
+transitions. `NacelleTelemetry` owns lifecycle,
 request, phase, error, and byte metrics for all transports. Transports that can
 provide extra low-cardinality detail attach a `NacelleMetricsContext` with
 listener, protocol, transport, and TLS labels. Applications must install their

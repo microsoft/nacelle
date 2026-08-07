@@ -5,7 +5,9 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
-use crate::config::{NacelleTcpConfig, TcpRequestBodyMode, TcpStreamingBodyMemoryPolicy};
+#[cfg(feature = "experimental-memory")]
+use crate::config::TcpStreamingBodyMemoryPolicy;
+use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
     DecodedRequest, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler,
@@ -325,6 +327,16 @@ where
     }
 }
 
+fn use_buffered_body(config: &NacelleTcpConfig, body_len: usize, buffered_len: usize) -> bool {
+    if body_len > buffered_len || config.request_body_mode == TcpRequestBodyMode::Buffered {
+        return body_len <= buffered_len;
+    }
+    #[cfg(feature = "experimental-memory")]
+    return config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength;
+    #[cfg(not(feature = "experimental-memory"))]
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_request<P, D, R, W, Observer>(
     reader: &mut R,
@@ -403,9 +415,7 @@ where
     };
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
-    let use_buffered_body = decoded.body_len <= read_buf.len()
-        && (config.request_body_mode == TcpRequestBodyMode::Buffered
-            || config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength);
+    let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
     let outcome = if use_buffered_body {
         let body_started = start_tcp_phase(telemetry_plan.phase_duration);
         let body =
@@ -471,6 +481,7 @@ where
                 .inspect_err(|error| {
                     record_tcp_error(telemetry, metrics_context, "streaming_task", error)
                 })?;
+        #[cfg(feature = "experimental-memory")]
         let _streaming_body_allocation = if config.streaming_body_memory_policy
             == TcpStreamingBodyMemoryPolicy::DeclaredLength
         {
@@ -681,9 +692,7 @@ where
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
 
-    let use_buffered_body = decoded.body_len <= read_buf.len()
-        && (config.request_body_mode == TcpRequestBodyMode::Buffered
-            || config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength);
+    let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
     let result = if use_buffered_body {
         let body =
             buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
@@ -700,6 +709,7 @@ where
         execute_one_way(handler, request, body, runtime_state, connection_context).await
     } else {
         let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
+        #[cfg(feature = "experimental-memory")]
         let _streaming_body_allocation = if config.streaming_body_memory_policy
             == TcpStreamingBodyMemoryPolicy::DeclaredLength
         {

@@ -14,6 +14,7 @@ autobins = false
 default = ["tcp"]
 tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
+experimental-memory = ["nacelle/experimental-memory"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 bench = []
 
@@ -37,7 +38,7 @@ harness = false
 [[bench]]
 name = "critical_paths"
 harness = false
-required-features = ["bench", "tcp"]
+required-features = ["bench", "tcp", "experimental-memory"]
 
 [[bin]]
 name = "echo"
@@ -57,12 +58,12 @@ required-features = ["http"]
 [[bin]]
 name = "memory_guard"
 path = "src/bin/memory_guard.rs"
-required-features = ["http"]
+required-features = ["http", "experimental-memory"]
 
 [[bin]]
 name = "tcp_memory_guard"
 path = "src/bin/tcp_memory_guard.rs"
-required-features = ["tcp"]
+required-features = ["tcp", "experimental-memory"]
 
 [[bin]]
 name = "tls_http_echo"

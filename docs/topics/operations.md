@@ -135,7 +135,7 @@ rather than embedded in the metric name:
 | `nacelle.connections.active` | Gauge | Current runtime active connections. |
 | `nacelle.requests.active` | Gauge | Current runtime active requests. |
 | `nacelle.streaming_tasks.active` | Gauge | Current runtime streaming body tasks. |
-| `nacelle.memory.used_bytes` | Gauge | Current bytes allocated by runtime memory accounting. |
+| `nacelle.memory.used_bytes` | Gauge | Current bytes allocated by runtime memory accounting; emitted only with `experimental-memory`. |
 | `nacelle.connections.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
 | `nacelle.connections.closed` | Counter | Closed connections, labeled with close reason where available. |
 | `nacelle.connections.in_flight` | UpDownCounter | Per-listener connection delta for transport-level detail. |
@@ -150,5 +150,5 @@ rather than embedded in the metric name:
 Run microbenchmarks before and after hot-path changes:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp"
+cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
 ```

@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 
 [features]
 default = []
+experimental-memory = ["nacelle-core/experimental-memory"]
 tls = []
 rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]

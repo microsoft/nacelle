@@ -1,10 +1,13 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+#[cfg(feature = "experimental-memory")]
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::error::NacelleError;
+#[cfg(feature = "experimental-memory")]
 use crate::lifecycle::NacelleShutdownToken;
 use crate::peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
@@ -18,9 +21,11 @@ pub struct NacelleLimits {
     pub max_connections_per_peer: Option<usize>,
     pub max_connection_opens_per_peer_per_second: Option<usize>,
     pub connection_rate_limit_table_capacity: usize,
+    #[cfg(feature = "experimental-memory")]
     pub max_memory_bytes: usize,
     pub max_request_body_bytes: usize,
     pub max_response_body_bytes: usize,
+    #[cfg(feature = "experimental-memory")]
     pub memory_allocation_timeout: Option<Duration>,
     pub handler_timeout: Option<Duration>,
 }
@@ -34,9 +39,11 @@ impl Default for NacelleLimits {
             max_connections_per_peer: None,
             max_connection_opens_per_peer_per_second: None,
             connection_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
+            #[cfg(feature = "experimental-memory")]
             max_memory_bytes: usize::MAX,
             max_request_body_bytes: 16 * 1024 * 1024,
             max_response_body_bytes: 16 * 1024 * 1024,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation_timeout: Some(Duration::from_secs(5)),
             handler_timeout: Some(Duration::from_secs(60)),
         }
@@ -79,6 +86,7 @@ impl NacelleLimits {
         self
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn with_max_memory_bytes(mut self, max: usize) -> Self {
         self.max_memory_bytes = max.max(1);
         self
@@ -94,11 +102,13 @@ impl NacelleLimits {
         self
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn with_memory_allocation_timeout(mut self, timeout: Duration) -> Self {
         self.memory_allocation_timeout = Some(timeout);
         self
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn without_memory_allocation_timeout(mut self) -> Self {
         self.memory_allocation_timeout = None;
         self
@@ -127,9 +137,11 @@ struct NacelleRuntimeStateInner {
     active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
     peer_connections: Mutex<HashMap<IpAddr, usize>>,
     peer_connection_rates: Option<NacellePeerRateLimiter>,
+    #[cfg(feature = "experimental-memory")]
     memory: Arc<SharedMemoryBudget>,
 }
 
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug)]
 struct SharedMemoryBudget {
     max_bytes: usize,
@@ -140,12 +152,14 @@ struct SharedMemoryBudget {
     state: Mutex<MemoryBudgetState>,
 }
 
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug)]
 struct MemoryBudgetState {
     waiters: VecDeque<MemoryWaiter>,
     next_waiter_id: usize,
 }
 
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug)]
 struct MemoryWaiter {
     id: usize,
@@ -154,6 +168,7 @@ struct MemoryWaiter {
     granted: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "experimental-memory")]
 struct MemoryWaiterRegistration {
     state: NacelleRuntimeState,
     id: usize,
@@ -162,6 +177,7 @@ struct MemoryWaiterRegistration {
     active: bool,
 }
 
+#[cfg(feature = "experimental-memory")]
 impl MemoryWaiterRegistration {
     fn take_grant(&mut self) -> Option<NacelleMemoryAllocation> {
         if !self.granted.load(Ordering::Acquire) {
@@ -184,6 +200,7 @@ impl MemoryWaiterRegistration {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 impl Drop for MemoryWaiterRegistration {
     fn drop(&mut self) {
         if !self.active {
@@ -195,6 +212,7 @@ impl Drop for MemoryWaiterRegistration {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 impl SharedMemoryBudget {
     fn new(max_bytes: usize) -> Self {
         Self {
@@ -211,6 +229,7 @@ impl SharedMemoryBudget {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug, Clone)]
 pub struct NacelleMemoryBudget {
     state: NacelleRuntimeState,
@@ -224,11 +243,21 @@ impl Default for NacelleRuntimeState {
 
 impl NacelleRuntimeState {
     pub fn new(limits: NacelleLimits) -> Self {
-        let memory = Arc::new(SharedMemoryBudget::new(limits.max_memory_bytes));
-        Self::new_with_shared_memory(limits, memory)
+        #[cfg(feature = "experimental-memory")]
+        {
+            let memory = Arc::new(SharedMemoryBudget::new(limits.max_memory_bytes));
+            Self::new_inner(limits, memory)
+        }
+        #[cfg(not(feature = "experimental-memory"))]
+        {
+            Self::new_inner(limits)
+        }
     }
 
-    fn new_with_shared_memory(limits: NacelleLimits, memory: Arc<SharedMemoryBudget>) -> Self {
+    fn new_inner(
+        limits: NacelleLimits,
+        #[cfg(feature = "experimental-memory")] memory: Arc<SharedMemoryBudget>,
+    ) -> Self {
         let peer_connection_rates = limits
             .max_connection_opens_per_peer_per_second
             .map(|_| NacellePeerRateLimiter::new(limits.connection_rate_limit_table_capacity));
@@ -244,30 +273,40 @@ impl NacelleRuntimeState {
                 active_streaming_tasks_metric: OnceLock::new(),
                 peer_connections: Mutex::new(HashMap::new()),
                 peer_connection_rates,
+                #[cfg(feature = "experimental-memory")]
                 memory,
             }),
         }
     }
 
-    /// Construct states with independent counters and one shared hard memory ceiling.
+    /// Construct states with independent counters.
+    ///
+    /// With `experimental-memory`, the states share one hard memory ceiling.
     pub fn partitioned(
         limits: impl IntoIterator<Item = NacelleLimits>,
     ) -> Result<Vec<Self>, NacelleError> {
         let limits: Vec<_> = limits.into_iter().collect();
-        let max_memory_bytes = limits
-            .first()
-            .map_or(usize::MAX, |limits| limits.max_memory_bytes);
-        if limits
-            .iter()
-            .any(|limits| limits.max_memory_bytes != max_memory_bytes)
+        #[cfg(feature = "experimental-memory")]
         {
-            return Err(NacelleError::ResourceLimit("memory_limit_mismatch"));
+            let max_memory_bytes = limits
+                .first()
+                .map_or(usize::MAX, |limits| limits.max_memory_bytes);
+            if limits
+                .iter()
+                .any(|limits| limits.max_memory_bytes != max_memory_bytes)
+            {
+                return Err(NacelleError::ResourceLimit("memory_limit_mismatch"));
+            }
+            let memory = Arc::new(SharedMemoryBudget::new(max_memory_bytes));
+            Ok(limits
+                .into_iter()
+                .map(|limits| Self::new_inner(limits, memory.clone()))
+                .collect())
         }
-        let memory = Arc::new(SharedMemoryBudget::new(max_memory_bytes));
-        Ok(limits
-            .into_iter()
-            .map(|limits| Self::new_with_shared_memory(limits, memory.clone()))
-            .collect())
+        #[cfg(not(feature = "experimental-memory"))]
+        {
+            Ok(limits.into_iter().map(Self::new).collect())
+        }
     }
 
     pub fn limits(&self) -> &NacelleLimits {
@@ -276,6 +315,7 @@ impl NacelleRuntimeState {
 
     pub(crate) fn set_metrics_enabled(&self, enabled: bool) {
         self.inner.metrics_enabled.store(enabled, Ordering::Release);
+        #[cfg(feature = "experimental-memory")]
         self.inner
             .memory
             .metrics_enabled
@@ -286,6 +326,7 @@ impl NacelleRuntimeState {
         self.inner.metrics_enabled.load(Ordering::Acquire)
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn memory_metrics_enabled(&self) -> bool {
         self.inner.memory.metrics_enabled.load(Ordering::Acquire)
     }
@@ -308,6 +349,7 @@ impl NacelleRuntimeState {
             .get_or_init(|| metrics::gauge!("nacelle.streaming_tasks.active"))
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn memory_used_metric(&self) -> &metrics::Gauge {
         self.inner
             .memory
@@ -416,16 +458,19 @@ impl NacelleRuntimeState {
         self.inner.active_streaming_tasks.load(Ordering::Relaxed)
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn memory_used_bytes(&self) -> usize {
         self.inner.memory.memory_used.load(Ordering::Acquire)
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn memory_budget(&self) -> NacelleMemoryBudget {
         NacelleMemoryBudget {
             state: self.clone(),
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub fn allocate_memory(&self, bytes: usize) -> Result<NacelleMemoryAllocation, NacelleError> {
         if bytes == 0 || self.inner.memory.max_bytes == usize::MAX {
             return Ok(NacelleMemoryAllocation::empty());
@@ -433,6 +478,7 @@ impl NacelleRuntimeState {
         self.try_allocate_memory_without_waiters(bytes)
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub async fn allocate_memory_wait(
         &self,
         bytes: usize,
@@ -441,6 +487,7 @@ impl NacelleRuntimeState {
             .await
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub async fn allocate_memory_with_timeout(
         &self,
         bytes: usize,
@@ -450,6 +497,7 @@ impl NacelleRuntimeState {
             .await
     }
 
+    #[cfg(feature = "experimental-memory")]
     pub async fn allocate_memory_with_timeout_and_shutdown(
         &self,
         bytes: usize,
@@ -527,6 +575,7 @@ impl NacelleRuntimeState {
         .await
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn release_memory(&self, bytes: usize) {
         if bytes != 0 && self.inner.memory.max_bytes != usize::MAX {
             self.inner
@@ -554,6 +603,7 @@ impl NacelleRuntimeState {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn try_allocate_memory_counter(
         &self,
         bytes: usize,
@@ -565,6 +615,7 @@ impl NacelleRuntimeState {
         })
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn try_allocate_memory_without_waiters(
         &self,
         bytes: usize,
@@ -580,6 +631,7 @@ impl NacelleRuntimeState {
         Ok(allocation)
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn try_reserve_memory_counter(&self, bytes: usize) -> Result<(), NacelleError> {
         let limit = self.inner.memory.max_bytes;
         let mut current = self.inner.memory.memory_used.load(Ordering::Relaxed);
@@ -607,6 +659,7 @@ impl NacelleRuntimeState {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn grant_waiters_locked(
         &self,
         memory: &mut MemoryBudgetState,
@@ -626,6 +679,7 @@ impl NacelleRuntimeState {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn cancel_memory_waiter(&self, id: usize, granted: &AtomicBool) -> bool {
         if granted.load(Ordering::Acquire) {
             return true;
@@ -656,6 +710,7 @@ impl NacelleRuntimeState {
         false
     }
 
+    #[cfg(feature = "experimental-memory")]
     async fn wait_for_memory_allocation(
         &self,
         mut registration: MemoryWaiterRegistration,
@@ -763,6 +818,7 @@ impl NacelleRuntimeState {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 impl NacelleMemoryBudget {
     pub fn max_bytes(&self) -> usize {
         self.state.inner.memory.max_bytes
@@ -878,12 +934,14 @@ impl Drop for TrackedPermit {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug)]
 pub struct NacelleMemoryAllocation {
     state: Option<NacelleRuntimeState>,
     bytes: usize,
 }
 
+#[cfg(feature = "experimental-memory")]
 impl NacelleMemoryAllocation {
     fn empty() -> Self {
         Self {
@@ -907,6 +965,7 @@ impl NacelleMemoryAllocation {
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 impl Drop for NacelleMemoryAllocation {
     fn drop(&mut self) {
         if let Some(state) = &self.state {
@@ -917,14 +976,19 @@ impl Drop for NacelleMemoryAllocation {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "experimental-memory")]
     use std::collections::HashMap;
+    #[cfg(feature = "experimental-memory")]
     use std::sync::{Arc, Barrier, mpsc};
+    #[cfg(feature = "experimental-memory")]
     use std::thread;
 
+    #[cfg(feature = "experimental-memory")]
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
     use super::*;
 
+    #[cfg(feature = "experimental-memory")]
     fn gauge_snapshot(snapshotter: &metrics_util::debugging::Snapshotter) -> HashMap<String, f64> {
         snapshotter
             .snapshot()
@@ -937,6 +1001,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn runtime_gauges_track_partitioned_state_transitions() {
         let recorder = DebuggingRecorder::new();
@@ -976,6 +1041,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn disabled_runtime_metrics_preserve_accounting_without_gauge_updates() {
         let recorder = DebuggingRecorder::new();
@@ -1012,6 +1078,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn memory_allocation_can_release_part_of_its_guard() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(16));
@@ -1025,6 +1092,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn shrinking_memory_allocation_grants_waiting_budget() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
@@ -1056,12 +1124,14 @@ mod tests {
         assert_ne!(limits.max_connections, usize::MAX);
         assert_ne!(limits.max_in_flight_requests, usize::MAX);
         assert_ne!(limits.max_streaming_tasks, usize::MAX);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(limits.max_memory_bytes, usize::MAX);
         assert!(limits.max_connection_opens_per_peer_per_second.is_none());
         assert_eq!(
             limits.connection_rate_limit_table_capacity,
             DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY
         );
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(
             limits.memory_allocation_timeout,
             Some(Duration::from_secs(5))
@@ -1069,6 +1139,7 @@ mod tests {
         assert!(limits.handler_timeout.is_some());
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn runtime_state_reports_active_permits_and_memory() {
         let state = NacelleRuntimeState::new(
@@ -1105,6 +1176,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn disabled_memory_budget_returns_empty_allocation_without_accounting() {
         let state = NacelleRuntimeState::default();
@@ -1138,6 +1210,7 @@ mod tests {
         assert_eq!(state.active_requests(), 1);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn partitioned_states_reject_mismatched_hard_memory_limits() {
         let result = NacelleRuntimeState::partitioned([
@@ -1151,6 +1224,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn memory_budget_rejects_concurrent_allocations_without_oversubscription() {
         const MEMORY_LIMIT: usize = 1024;
@@ -1205,6 +1279,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn memory_budget_waits_fifo_without_bypassing_larger_waiters() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
@@ -1250,6 +1325,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn memory_budget_try_allocate_does_not_bypass_queued_waiter() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
@@ -1281,6 +1357,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn memory_budget_timeout_removes_waiter() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
@@ -1301,6 +1378,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn dropping_memory_waiter_releases_queue_and_racing_grant() {
         for release_before_cancel in [false, true] {
@@ -1334,6 +1412,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queued_grants_and_direct_allocations_share_one_atomic_ceiling() {
         const ROUNDS: usize = if cfg!(miri) { 1 } else { 250 };
@@ -1375,6 +1454,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn memory_budget_timeout_at_fifo_head_grants_next_waiter() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));
@@ -1412,6 +1492,7 @@ mod tests {
         assert_eq!(state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn memory_budget_shutdown_cancels_waiter() {
         let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(10));

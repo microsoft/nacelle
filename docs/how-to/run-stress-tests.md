@@ -25,7 +25,7 @@ Repeatable profiles:
 
 - `examples/nacelle-stress-server/configs/tcp.toml`: plain TCP baseline.
 - `examples/nacelle-stress-server/configs/tcp-low-memory.toml`: plain TCP with
-  mimalloc low-memory behavior enabled.
+  mimalloc low-memory behavior and experimental runtime memory accounting.
 - `examples/nacelle-stress-server/configs/tcp-tls.toml`: TCP wrapped in
   self-signed TLS.
 
@@ -51,6 +51,10 @@ Use `--no-byte-metrics` for a lower-overhead recorder run. Use
 Rustls-free diagnostic; metrics collection remains active. Add
 `--features mimalloc-allocator` when the baseline must keep mimalloc while
 disabling TLS.
+
+The launch helpers enable `experimental-memory` automatically when an effective
+config contains `max_memory_bytes`. For a direct low-memory server run, pass
+`--features experimental-memory` explicitly.
 
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:

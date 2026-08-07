@@ -89,6 +89,32 @@ function Get-TomlBool {
     return $null
 }
 
+function Test-TomlKey {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Key
+    )
+
+    $configPath = if ([System.IO.Path]::IsPathRooted($Path)) {
+        $Path
+    } else {
+        Join-Path $RepoRoot $Path
+    }
+    if (-not (Test-Path -Path $configPath)) {
+        return $false
+    }
+
+    foreach ($line in Get-Content -Path $configPath) {
+        $withoutComment = ($line -replace '\s*#.*$', '').Trim()
+        if ($withoutComment -match "^$([regex]::Escape($Key))\s*=") {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Get-EffectiveTlsSelfSigned {
     $value = Get-TomlBool -Path "config.toml" -Key "tls_self_signed"
     if ($null -eq $value) {
@@ -112,11 +138,16 @@ Write-Host "==> Building nacelle-stress-test ($profile)"
 Invoke-Cargo -Args (@("build") + $cargoProfileArg + @("--package", "nacelle-stress-test"))
 
 Write-Host "==> Building nacelle-stress-server ($profile)"
-Invoke-Cargo -Args (@(
+$serverBuildArgs = @(
     "build"
 ) + $cargoProfileArg + @(
     "--package", "nacelle-stress-server"
-))
+)
+if ((Test-TomlKey -Path "config.toml" -Key "max_memory_bytes") -or
+    (Test-TomlKey -Path $Config -Key "max_memory_bytes")) {
+    $serverBuildArgs += @("--features", "experimental-memory")
+}
+Invoke-Cargo -Args $serverBuildArgs
 
 $serverExe = Join-Path $RepoRoot "target\$profile\nacelle-stress-server.exe"
 $clientExe = Join-Path $RepoRoot "target\$profile\nacelle-stress-test.exe"

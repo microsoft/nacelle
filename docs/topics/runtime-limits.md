@@ -9,7 +9,7 @@ Key budgets include:
 - in-flight requests
 - streaming body tasks
 - optional per-peer connections
-- memory budget allocations
+- experimental runtime memory budget allocations
 - request and response body size
 - core handler timeout
 - TCP read, write, final shutdown, and idle timeouts through `NacelleTcpLimits`
@@ -26,9 +26,10 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Memory allocation budgeting is opt-in: the default
-`max_memory_bytes` is `usize::MAX`, which disables Nacelle memory-budget
-enforcement until you set an explicit byte limit.
+and transport timeouts are bounded by default. Runtime memory budgeting is
+compiled only with the non-default `experimental-memory` feature. Without that
+feature, memory fields, allocation APIs, transport accounting, ownership
+tracking, waiters, and the memory gauge are absent.
 
 Recommended presets:
 
@@ -41,7 +42,7 @@ Recommended presets:
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
 
-Memory budget:
+Experimental memory budget:
 
 ```text
 connection_budget =
@@ -52,7 +53,10 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-When memory limiting is enabled with `NacelleLimits::with_max_memory_bytes(...)`,
+Enable `experimental-memory`, then set
+`NacelleLimits::with_max_memory_bytes(...)` to activate enforcement. With the
+feature enabled, its default `max_memory_bytes` is `usize::MAX`, so accounting
+does not reject allocations until an explicit finite limit is configured.
 Nacelle allocates from that budget for connection buffers and buffered or
 streaming request bodies. The limiter accounts for Nacelle-managed allocations,
 not total process RSS, so keep process or container memory limits in place.

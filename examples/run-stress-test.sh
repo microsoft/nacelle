@@ -38,6 +38,21 @@ config_bool_value() {
     ' "$key" "$config_path"
 }
 
+config_has_key() {
+    local config_path="$1"
+    local key="$2"
+    [[ -f "$config_path" ]] && awk -v key="$key" '
+        {
+            sub(/[[:space:]]*#.*/, "", $0)
+            if ($0 ~ "^[[:space:]]*" key "[[:space:]]*=") {
+                found = 1
+                exit
+            }
+        }
+        END { exit !found }
+    ' "$config_path"
+}
+
 effective_tls_self_signed() {
     local value
     value="$(config_bool_value "config.toml" "tls_self_signed")"
@@ -90,7 +105,12 @@ if [[ "$CONFIG_PATH" != "config.toml" && "$CONFIG_PATH" != "./config.toml" ]]; t
 fi
 
 # Start server in background
-cargo run --release --package nacelle-stress-server -- "${SERVER_ARGS[@]}" &
+SERVER_CARGO_ARGS=(run --release --package nacelle-stress-server)
+if config_has_key "config.toml" "max_memory_bytes" \
+    || config_has_key "$CONFIG_PATH" "max_memory_bytes"; then
+    SERVER_CARGO_ARGS+=(--features experimental-memory)
+fi
+cargo "${SERVER_CARGO_ARGS[@]}" -- "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null' EXIT
 

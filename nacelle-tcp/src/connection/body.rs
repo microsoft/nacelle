@@ -2,7 +2,9 @@ use bytes::{Bytes, BytesMut};
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
 
-use crate::config::{NacelleTcpConfig, TcpStreamingBodyMemoryPolicy};
+use crate::config::NacelleTcpConfig;
+#[cfg(feature = "experimental-memory")]
+use crate::config::TcpStreamingBodyMemoryPolicy;
 use crate::limits::NacelleTcpLimits;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -24,6 +26,7 @@ where
         return Ok(NacelleBody::empty());
     }
 
+    #[cfg(feature = "experimental-memory")]
     let allocation = runtime_state
         .allocate_memory_with_timeout(body_len, runtime_state.limits().memory_allocation_timeout)
         .await?;
@@ -40,7 +43,12 @@ where
         }
     }
 
-    Ok(NacelleBody::from_single_chunk(body.freeze(), body_len).with_memory_allocation(allocation))
+    let body = NacelleBody::from_single_chunk(body.freeze(), body_len);
+    #[cfg(feature = "experimental-memory")]
+    let body = body.with_memory_allocation(allocation);
+    #[cfg(not(feature = "experimental-memory"))]
+    let _ = runtime_state;
+    Ok(body)
 }
 
 pub(super) async fn pump_request_body<R>(
@@ -55,22 +63,30 @@ pub(super) async fn pump_request_body<R>(
 where
     R: AsyncRead + Unpin,
 {
-    match config.streaming_body_memory_policy {
-        TcpStreamingBodyMemoryPolicy::DeclaredLength => {
-            pump_declared_request_body(reader, read_buf, body_len, tx, config, tcp_limits).await
+    #[cfg(feature = "experimental-memory")]
+    {
+        match config.streaming_body_memory_policy {
+            TcpStreamingBodyMemoryPolicy::DeclaredLength => {
+                pump_declared_request_body(reader, read_buf, body_len, tx, config, tcp_limits).await
+            }
+            TcpStreamingBodyMemoryPolicy::LiveChunks => {
+                pump_live_request_body(
+                    reader,
+                    read_buf,
+                    body_len,
+                    tx,
+                    config,
+                    runtime_state,
+                    tcp_limits,
+                )
+                .await
+            }
         }
-        TcpStreamingBodyMemoryPolicy::LiveChunks => {
-            pump_live_request_body(
-                reader,
-                read_buf,
-                body_len,
-                tx,
-                config,
-                runtime_state,
-                tcp_limits,
-            )
-            .await
-        }
+    }
+    #[cfg(not(feature = "experimental-memory"))]
+    {
+        let _ = runtime_state;
+        pump_declared_request_body(reader, read_buf, body_len, tx, config, tcp_limits).await
     }
 }
 
@@ -127,6 +143,7 @@ where
     Ok(())
 }
 
+#[cfg(feature = "experimental-memory")]
 async fn pump_live_request_body<R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
@@ -246,7 +263,7 @@ pub(super) fn buffered_request_body(
     NacelleBody::from_buffered(chunks, body_len)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "experimental-memory"))]
 mod tests {
     use tokio::sync::mpsc::error::TryRecvError;
 

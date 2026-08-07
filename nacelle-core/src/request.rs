@@ -11,6 +11,7 @@ use futures_core::Stream;
 use tokio::sync::mpsc;
 
 use crate::error::NacelleError;
+#[cfg(feature = "experimental-memory")]
 use crate::limits::NacelleMemoryAllocation;
 use crate::telemetry::NacelleTransport;
 
@@ -184,17 +185,20 @@ enum NacelleBodySource {
     },
 }
 
+#[cfg(feature = "experimental-memory")]
 struct AccountedBytes {
     bytes: Bytes,
     _memory_allocation: Arc<NacelleMemoryAllocation>,
 }
 
+#[cfg(feature = "experimental-memory")]
 impl AsRef<[u8]> for AccountedBytes {
     fn as_ref(&self) -> &[u8] {
         self.bytes.as_ref()
     }
 }
 
+#[cfg(feature = "experimental-memory")]
 fn accounted_bytes(
     bytes: Bytes,
     memory_allocation: Option<&Arc<NacelleMemoryAllocation>>,
@@ -208,22 +212,40 @@ fn accounted_bytes(
     }
 }
 
+#[cfg(feature = "experimental-memory")]
+macro_rules! body_bytes {
+    ($bytes:expr, $memory_allocation:expr $(,)?) => {
+        accounted_bytes($bytes, $memory_allocation)
+    };
+}
+
+#[cfg(not(feature = "experimental-memory"))]
+macro_rules! body_bytes {
+    ($bytes:expr, $memory_allocation:expr $(,)?) => {
+        $bytes
+    };
+}
+
 enum BodyReceiver {
     Public(mpsc::Receiver<Result<Bytes, NacelleError>>),
+    #[cfg(feature = "experimental-memory")]
     Tracked(mpsc::Receiver<TrackedBodyMessage>),
 }
 
+#[cfg(feature = "experimental-memory")]
 enum TrackedBodyMessage {
     Chunk(Result<Bytes, NacelleError>),
     MemoryAllocation(NacelleMemoryAllocation),
 }
 
+#[cfg(feature = "experimental-memory")]
 #[doc(hidden)]
 pub struct TrackedBodySender {
     sender: mpsc::Sender<TrackedBodyMessage>,
     memory_allocation_sent: bool,
 }
 
+#[cfg(feature = "experimental-memory")]
 impl TrackedBodySender {
     pub async fn send(
         &self,
@@ -267,10 +289,12 @@ impl TrackedBodySender {
 pub struct NacelleBody {
     source: NacelleBodySource,
     remaining_bytes: usize,
+    #[cfg(feature = "experimental-memory")]
     memory_allocation: Option<Arc<NacelleMemoryAllocation>>,
 }
 
 impl NacelleBody {
+    #[cfg(feature = "experimental-memory")]
     #[doc(hidden)]
     pub fn accounted_chunk(chunk: Bytes, allocation: NacelleMemoryAllocation) -> Bytes {
         if allocation.bytes() == 0 {
@@ -292,6 +316,7 @@ impl NacelleBody {
                 receiver: BodyReceiver::Public(receiver),
             },
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation: None,
         }
     }
@@ -303,6 +328,7 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes: 0,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation: None,
         }
     }
@@ -316,15 +342,25 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation: None,
         }
     }
 
     pub fn channel(capacity: usize) -> (mpsc::Sender<Result<Bytes, NacelleError>>, NacelleBody) {
-        let (tx, rx) = mpsc::channel(capacity.max(1));
-        (tx, NacelleBody::new(rx, 0))
+        Self::channel_with_remaining(capacity, 0)
     }
 
+    #[doc(hidden)]
+    pub fn channel_with_remaining(
+        capacity: usize,
+        remaining_bytes: usize,
+    ) -> (mpsc::Sender<Result<Bytes, NacelleError>>, NacelleBody) {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        (tx, NacelleBody::new(rx, remaining_bytes))
+    }
+
+    #[cfg(feature = "experimental-memory")]
     #[doc(hidden)]
     pub fn tracked_channel(
         capacity: usize,
@@ -351,6 +387,7 @@ impl NacelleBody {
         Self {
             source: NacelleBodySource::SingleChunk(Some(chunk)),
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation: None,
         }
     }
@@ -363,10 +400,12 @@ impl NacelleBody {
                 next_index: 0,
             },
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation: None,
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[doc(hidden)]
     pub fn with_memory_allocation(mut self, allocation: NacelleMemoryAllocation) -> Self {
         self.memory_allocation = Some(Arc::new(allocation));
@@ -378,18 +417,26 @@ impl NacelleBody {
         let Self {
             source,
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation,
         } = self;
         match source {
             NacelleBodySource::SingleChunk(chunk) => {
-                Ok(chunk.map(|chunk| accounted_bytes(chunk, memory_allocation.as_ref())))
+                #[cfg(feature = "experimental-memory")]
+                {
+                    Ok(chunk.map(|chunk| body_bytes!(chunk, memory_allocation.as_ref())))
+                }
+                #[cfg(not(feature = "experimental-memory"))]
+                {
+                    Ok(chunk)
+                }
             }
             NacelleBodySource::Buffered { chunks, next_index } => {
                 let remaining = chunks.len().saturating_sub(next_index);
                 if remaining == 0 {
                     Ok(None)
                 } else if remaining == 1 {
-                    Ok(Some(accounted_bytes(
+                    Ok(Some(body_bytes!(
                         chunks[next_index].clone(),
                         memory_allocation.as_ref(),
                     )))
@@ -397,6 +444,7 @@ impl NacelleBody {
                     Err(Self {
                         source: NacelleBodySource::Buffered { chunks, next_index },
                         remaining_bytes,
+                        #[cfg(feature = "experimental-memory")]
                         memory_allocation,
                     })
                 }
@@ -404,6 +452,7 @@ impl NacelleBody {
             NacelleBodySource::Streaming { receiver } => Err(Self {
                 source: NacelleBodySource::Streaming { receiver },
                 remaining_bytes,
+                #[cfg(feature = "experimental-memory")]
                 memory_allocation,
             }),
         }
@@ -421,46 +470,65 @@ impl NacelleBody {
         let Self {
             source,
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation,
         } = self;
         match source {
             NacelleBodySource::SingleChunk(slot) => {
                 let chunk = slot.take()?;
                 *remaining_bytes = 0;
-                Some(Ok(accounted_bytes(chunk, memory_allocation.as_ref())))
+                Some(Ok(body_bytes!(chunk, memory_allocation.as_ref())))
             }
             NacelleBodySource::Buffered { chunks, next_index } => {
                 let chunk = chunks.get(*next_index)?.clone();
                 *next_index += 1;
                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                Some(Ok(accounted_bytes(chunk, memory_allocation.as_ref())))
+                Some(Ok(body_bytes!(chunk, memory_allocation.as_ref())))
             }
-            NacelleBodySource::Streaming { receiver } => loop {
-                let message = match receiver {
-                    BodyReceiver::Public(receiver) => {
-                        break match receiver.recv().await {
+            NacelleBodySource::Streaming { receiver } => {
+                #[cfg(not(feature = "experimental-memory"))]
+                {
+                    match receiver {
+                        BodyReceiver::Public(receiver) => match receiver.recv().await {
                             Some(Ok(chunk)) => {
                                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                                 Some(Ok(chunk))
                             }
                             other => other,
-                        };
+                        },
                     }
-                    BodyReceiver::Tracked(receiver) => receiver.recv().await,
-                };
-                match message {
-                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
-                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                        break Some(Ok(accounted_bytes(chunk, memory_allocation.as_ref())));
-                    }
-                    Some(TrackedBodyMessage::Chunk(Err(error))) => break Some(Err(error)),
-                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
-                        debug_assert!(memory_allocation.is_none());
-                        *memory_allocation = Some(Arc::new(allocation));
-                    }
-                    None => break None,
                 }
-            },
+                #[cfg(feature = "experimental-memory")]
+                {
+                    loop {
+                        let message = match receiver {
+                            BodyReceiver::Public(receiver) => {
+                                break match receiver.recv().await {
+                                    Some(Ok(chunk)) => {
+                                        *remaining_bytes =
+                                            remaining_bytes.saturating_sub(chunk.len());
+                                        Some(Ok(chunk))
+                                    }
+                                    other => other,
+                                };
+                            }
+                            BodyReceiver::Tracked(receiver) => receiver.recv().await,
+                        };
+                        match message {
+                            Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                break Some(Ok(body_bytes!(chunk, memory_allocation.as_ref())));
+                            }
+                            Some(TrackedBodyMessage::Chunk(Err(error))) => break Some(Err(error)),
+                            Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                                debug_assert!(memory_allocation.is_none());
+                                *memory_allocation = Some(Arc::new(allocation));
+                            }
+                            None => break None,
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -472,6 +540,7 @@ impl Stream for NacelleBody {
         let Self {
             source,
             remaining_bytes,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation,
         } = self.get_mut();
         match source {
@@ -480,7 +549,7 @@ impl Stream for NacelleBody {
                     return Poll::Ready(None);
                 };
                 *remaining_bytes = 0;
-                Poll::Ready(Some(Ok(accounted_bytes(chunk, memory_allocation.as_ref()))))
+                Poll::Ready(Some(Ok(body_bytes!(chunk, memory_allocation.as_ref()))))
             }
             NacelleBodySource::Buffered { chunks, next_index } => {
                 let Some(chunk) = chunks.get(*next_index).cloned() else {
@@ -488,50 +557,80 @@ impl Stream for NacelleBody {
                 };
                 *next_index += 1;
                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                Poll::Ready(Some(Ok(accounted_bytes(chunk, memory_allocation.as_ref()))))
+                Poll::Ready(Some(Ok(body_bytes!(chunk, memory_allocation.as_ref()))))
             }
-            NacelleBodySource::Streaming { receiver } => loop {
-                let message = match receiver {
-                    BodyReceiver::Public(receiver) => {
-                        break match receiver.poll_recv(cx) {
+            NacelleBodySource::Streaming { receiver } => {
+                #[cfg(not(feature = "experimental-memory"))]
+                {
+                    match receiver {
+                        BodyReceiver::Public(receiver) => match receiver.poll_recv(cx) {
                             Poll::Ready(Some(Ok(chunk))) => {
                                 *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
                                 Poll::Ready(Some(Ok(chunk)))
                             }
                             other => other,
-                        };
+                        },
                     }
-                    BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
-                        Poll::Ready(message) => message,
-                        Poll::Pending => break Poll::Pending,
-                    },
-                };
-                match message {
-                    Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
-                        *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
-                        break Poll::Ready(Some(Ok(accounted_bytes(
-                            chunk,
-                            memory_allocation.as_ref(),
-                        ))));
-                    }
-                    Some(TrackedBodyMessage::Chunk(Err(error))) => {
-                        break Poll::Ready(Some(Err(error)));
-                    }
-                    Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
-                        debug_assert!(memory_allocation.is_none());
-                        *memory_allocation = Some(Arc::new(allocation));
-                    }
-                    None => break Poll::Ready(None),
                 }
-            },
+                #[cfg(feature = "experimental-memory")]
+                {
+                    loop {
+                        let message = match receiver {
+                            BodyReceiver::Public(receiver) => {
+                                break match receiver.poll_recv(cx) {
+                                    Poll::Ready(Some(Ok(chunk))) => {
+                                        *remaining_bytes =
+                                            remaining_bytes.saturating_sub(chunk.len());
+                                        Poll::Ready(Some(Ok(chunk)))
+                                    }
+                                    other => other,
+                                };
+                            }
+                            BodyReceiver::Tracked(receiver) => match receiver.poll_recv(cx) {
+                                Poll::Ready(message) => message,
+                                Poll::Pending => break Poll::Pending,
+                            },
+                        };
+                        match message {
+                            Some(TrackedBodyMessage::Chunk(Ok(chunk))) => {
+                                *remaining_bytes = remaining_bytes.saturating_sub(chunk.len());
+                                break Poll::Ready(Some(Ok(body_bytes!(
+                                    chunk,
+                                    memory_allocation.as_ref(),
+                                ))));
+                            }
+                            Some(TrackedBodyMessage::Chunk(Err(error))) => {
+                                break Poll::Ready(Some(Err(error)));
+                            }
+                            Some(TrackedBodyMessage::MemoryAllocation(allocation)) => {
+                                debug_assert!(memory_allocation.is_none());
+                                *memory_allocation = Some(Arc::new(allocation));
+                            }
+                            None => break Poll::Ready(None),
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn public_channel_preserves_known_remaining_bytes() {
+        let (sender, mut body) = NacelleBody::channel_with_remaining(1, 5);
+        sender.send(Ok(Bytes::from_static(b"hello"))).await.unwrap();
+        drop(sender);
+
+        assert_eq!(body.remaining_bytes(), 5);
+        assert_eq!(body.next_chunk().await.unwrap().unwrap(), b"hello"[..]);
+        assert_eq!(body.remaining_bytes(), 0);
+    }
+
     use super::*;
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn accounted_chunk_holds_memory_until_final_clone_drops() {
         let runtime_state = crate::limits::NacelleRuntimeState::new(
@@ -550,6 +649,7 @@ mod tests {
         assert_eq!(runtime_state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn tracked_streaming_body_holds_memory_until_final_chunk_clone_drops() {
         let runtime_state = crate::limits::NacelleRuntimeState::new(
@@ -587,6 +687,7 @@ mod tests {
         assert_eq!(runtime_state.memory_used_bytes(), 0);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[test]
     fn consuming_single_chunk_body_transfers_memory_accounting() {
         let runtime_state = crate::limits::NacelleRuntimeState::new(

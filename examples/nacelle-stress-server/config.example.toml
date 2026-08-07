@@ -18,7 +18,8 @@ max_connections_per_peer = 4096
 # max_connection_opens_per_peer_per_second = 2048
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
-max_memory_bytes = 8589934592
+# Requires the non-default experimental-memory feature:
+# max_memory_bytes = 8589934592
 max_request_body_bytes = 16777216
 max_response_body_bytes = 16777216
 handler_timeout_ms = 60000

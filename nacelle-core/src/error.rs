@@ -65,6 +65,7 @@ impl NacelleError {
             Self::ResourceLimit("streaming_tasks") => {
                 Some("raise NacelleLimits::max_streaming_tasks or use buffered request bodies")
             }
+            #[cfg(feature = "experimental-memory")]
             Self::ResourceLimit("memory") => {
                 Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
             }

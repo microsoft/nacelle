@@ -30,20 +30,20 @@ that context is not a comparable baseline.
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp"
+cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
 ```
 
 For the codec/TCP integration specifically, run both Criterion targets:
 
 ```bash
 cargo bench -p nacelle-codec --bench framed_comparison --all-features
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp"
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp experimental-memory"
 ```
 
 The telemetry group can be run independently:
 
 ```bash
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp experimental-memory" -- telemetry --noplot
 ```
 
 The TCP crate also measures one complete connection plus one request through the
@@ -344,9 +344,10 @@ Both builds used the same WSL2 host/toolchain and all TCP features:
 
 The optimized path did not construct `NacelleMetricsContext` or metric attribute
 arrays when metrics are disabled, and request/phase mode checks are cached in a
-copyable per-connection plan. Connection/request permits and memory accounting
-remain active because they enforce runtime limits and expose operational state;
-disabling telemetry does not disable safety policy.
+copyable per-connection plan. Connection/request permits remain active because
+they enforce runtime limits and expose operational state. Memory accounting
+also remains active when the benchmark includes `experimental-memory`;
+disabling telemetry does not disable either safety policy.
 
 On the same local WSL2 host, 64 already-buffered one-byte requests producing
 32-byte responses measured. The first two rows use a 2 KiB base response
@@ -444,7 +445,8 @@ separately:
 
 The `examples/run-stress-test.sh` and `examples/run-stress-test.ps1` helpers
 apply root `config.toml` first, then the selected profile, and choose the
-matching client mode automatically.
+matching client mode automatically. They also enable `experimental-memory`
+when either effective config contains `max_memory_bytes`.
 
 Guardrails:
 

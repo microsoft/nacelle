@@ -23,6 +23,7 @@ Invoke-Step "nacelle-tcp tls clippy" { cargo clippy -p nacelle-tcp --features tl
 Invoke-Step "nacelle-http full clippy" { cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
 Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
+Invoke-Step "examples HTTP-only clippy" { cargo clippy -p nacelle-examples --no-default-features --features http --all-targets -- -D warnings }
 Invoke-Step "nacelle full clippy" { cargo clippy -p nacelle --features "http" --all-targets -- -D warnings }
 Invoke-Step "nacelle tcp-only clippy" { cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings }
 Invoke-Step "nacelle all-feature clippy" { cargo clippy -p nacelle --features "http,tls-self-signed" --all-targets -- -D warnings }

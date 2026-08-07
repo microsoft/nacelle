@@ -86,6 +86,7 @@ pub struct ServerConfig {
     pub server_threads: usize,
     pub handler_mode: HandlerMode,
     pub handler_timeout_disabled: bool,
+    #[cfg(feature = "experimental-memory")]
     pub memory_allocation_timeout_disabled: bool,
     pub tcp_timeouts_disabled: bool,
     pub response_bytes: usize,
@@ -112,6 +113,7 @@ impl Default for ServerConfig {
                 .unwrap_or(1),
             handler_mode: HandlerMode::Shared,
             handler_timeout_disabled: false,
+            #[cfg(feature = "experimental-memory")]
             memory_allocation_timeout_disabled: false,
             tcp_timeouts_disabled: false,
             response_bytes: 64,
@@ -158,6 +160,7 @@ struct LimitsConfigFile {
     max_connection_opens_per_peer_per_second: Option<usize>,
     max_in_flight_requests: Option<usize>,
     max_streaming_tasks: Option<usize>,
+    #[cfg(feature = "experimental-memory")]
     max_memory_bytes: Option<usize>,
     max_request_body_bytes: Option<usize>,
     max_response_body_bytes: Option<usize>,
@@ -250,6 +253,7 @@ impl ServerConfig {
         if let Some(max_streaming_tasks) = file.max_streaming_tasks {
             self.limits.max_streaming_tasks = max_streaming_tasks.max(1);
         }
+        #[cfg(feature = "experimental-memory")]
         if let Some(max_memory_bytes) = file.max_memory_bytes {
             self.limits.max_memory_bytes = max_memory_bytes.max(1);
         }
@@ -294,8 +298,11 @@ impl ServerConfig {
 
     fn disable_timeouts(&mut self) {
         self.disable_handler_timeout();
-        self.memory_allocation_timeout_disabled = true;
-        self.limits.memory_allocation_timeout = None;
+        #[cfg(feature = "experimental-memory")]
+        {
+            self.memory_allocation_timeout_disabled = true;
+            self.limits.memory_allocation_timeout = None;
+        }
         self.disable_tcp_timeouts();
     }
 }
@@ -592,6 +599,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "  handler_timeout_disabled: {}",
         config.handler_timeout_disabled
     );
+    #[cfg(feature = "experimental-memory")]
     println!(
         "  memory_allocation_timeout_disabled: {}",
         config.memory_allocation_timeout_disabled
@@ -645,6 +653,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "    max_streaming_tasks: {}",
         config.limits.max_streaming_tasks
     );
+    #[cfg(feature = "experimental-memory")]
     println!("    max_memory_bytes: {}", config.limits.max_memory_bytes);
     println!(
         "    max_request_body_bytes: {}",
@@ -658,6 +667,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         "    handler_timeout_ms: {}",
         format_duration_ms(config.limits.handler_timeout)
     );
+    #[cfg(feature = "experimental-memory")]
     println!(
         "    memory_allocation_timeout_ms: {}",
         format_duration_ms(config.limits.memory_allocation_timeout)
@@ -801,7 +811,13 @@ mod tests {
 
     #[test]
     fn toml_config_applies_limits() {
-        let toml = r#"
+        let memory_limit = if cfg!(feature = "experimental-memory") {
+            "max_memory_bytes = 8589934592"
+        } else {
+            ""
+        };
+        let toml = format!(
+            r#"
 bind = "127.0.0.1:9000"
 server_threads = 4
 handler_mode = "serial"
@@ -822,7 +838,7 @@ max_connections_per_peer = 4096
 max_connection_opens_per_peer_per_second = 2048
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
-max_memory_bytes = 8589934592
+{memory_limit}
 max_request_body_bytes = 16777216
 max_response_body_bytes = 15728640
 handler_timeout_ms = 60000
@@ -832,8 +848,9 @@ read_timeout_ms = 30000
 write_timeout_ms = 30000
 shutdown_timeout_ms = 30000
 idle_timeout_ms = 120000
-"#;
-        let file = toml::from_str::<ServerConfigFile>(toml).unwrap();
+"#
+        );
+        let file = toml::from_str::<ServerConfigFile>(&toml).unwrap();
         let mut config = ServerConfig::default();
         config.apply_config_file(file);
 
@@ -861,6 +878,7 @@ idle_timeout_ms = 120000
         );
         assert_eq!(config.limits.max_in_flight_requests, 64_000);
         assert_eq!(config.limits.max_streaming_tasks, 8_192);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(config.limits.max_memory_bytes, 8_589_934_592);
         assert_eq!(config.limits.max_request_body_bytes, 16_777_216);
         assert_eq!(config.limits.max_response_body_bytes, 15_728_640);
@@ -880,6 +898,19 @@ idle_timeout_ms = 120000
         assert_eq!(
             config.tcp_limits.idle_timeout,
             Some(Duration::from_secs(120))
+        );
+    }
+
+    #[cfg(not(feature = "experimental-memory"))]
+    #[test]
+    fn toml_rejects_memory_limit_without_experimental_feature() {
+        let error = toml::from_str::<ServerConfigFile>("[limits]\nmax_memory_bytes = 536870912\n")
+            .expect_err("memory limit should be unavailable");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `max_memory_bytes`")
         );
     }
 
@@ -942,8 +973,10 @@ idle_timeout_ms = 120000
         .unwrap();
 
         assert!(config.handler_timeout_disabled);
+        #[cfg(feature = "experimental-memory")]
         assert!(config.memory_allocation_timeout_disabled);
         assert!(config.tcp_timeouts_disabled);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(config.limits.memory_allocation_timeout, None);
         assert_eq!(config.limits.handler_timeout, None);
         assert_eq!(config.tcp_limits.read_timeout, None);

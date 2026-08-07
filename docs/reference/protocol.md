@@ -88,8 +88,9 @@ protocols use `Infallible` as their one-way request type.
 
 The TCP runtime encodes and writes each streaming response chunk before polling
 the next one, so socket backpressure bounds response production. It stages only
-one bounded frame at a time, accounts staging growth against the runtime memory
-budget, and writes an explicit end frame after a streaming body reaches EOF.
+one bounded frame at a time and writes an explicit end frame after a streaming
+body reaches EOF. With `experimental-memory`, it also accounts staging growth
+against the runtime memory budget.
 
 `ResponseWritePolicy::Immediate` writes each completed frame immediately.
 `CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
@@ -154,7 +155,8 @@ in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler, and declared streaming body bytes are allocated against the memory
-budget until the streaming request finishes.
+budget until the streaming request finishes when `experimental-memory` is
+enabled.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers

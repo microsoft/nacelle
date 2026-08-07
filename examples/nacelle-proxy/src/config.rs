@@ -51,6 +51,7 @@ pub(crate) struct ProxyStartupConfiguration {
     pub(crate) max_connections: usize,
     pub(crate) max_in_flight_requests: usize,
     pub(crate) max_connections_per_peer: usize,
+    #[cfg(feature = "experimental-memory")]
     pub(crate) max_memory_bytes: usize,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) max_response_body_bytes: usize,
@@ -80,6 +81,7 @@ pub(crate) struct ProxyFileConfiguration {
     max_in_flight_requests: usize,
     #[serde(default = "default_max_connections_per_peer")]
     max_connections_per_peer: usize,
+    #[cfg(feature = "experimental-memory")]
     #[serde(default = "default_max_memory_bytes")]
     max_memory_bytes: usize,
     #[serde(default = "default_handler_timeout_ms")]
@@ -121,6 +123,7 @@ impl ConfigurationSnapshot {
                 max_connections: 64,
                 max_in_flight_requests: 32,
                 max_connections_per_peer: 16,
+                #[cfg(feature = "experimental-memory")]
                 max_memory_bytes: 128 * 1024 * 1024,
                 handler_timeout_ms: 60_000,
             },
@@ -146,6 +149,7 @@ impl ProxyFileConfiguration {
             max_connections: self.max_connections,
             max_in_flight_requests: self.max_in_flight_requests,
             max_connections_per_peer: self.max_connections_per_peer,
+            #[cfg(feature = "experimental-memory")]
             max_memory_bytes: self.max_memory_bytes,
             max_request_body_bytes: self.max_request_body_bytes,
             max_response_body_bytes: self.max_response_body_bytes,
@@ -178,12 +182,18 @@ impl ProxyFileConfiguration {
         if self.max_connections == 0
             || self.max_in_flight_requests == 0
             || self.max_connections_per_peer == 0
-            || self.max_memory_bytes == 0
             || self.handler_timeout_ms == 0
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "proxy resource limits and handler timeout must be greater than zero",
+            ));
+        }
+        #[cfg(feature = "experimental-memory")]
+        if self.max_memory_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "max_memory_bytes must be greater than zero",
             ));
         }
         if self.max_in_flight_requests > self.max_connections
@@ -194,6 +204,7 @@ impl ProxyFileConfiguration {
                 "request and per-peer connection limits cannot exceed max_connections",
             ));
         }
+        #[cfg(feature = "experimental-memory")]
         if self.max_request_body_bytes > self.max_memory_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -303,6 +314,7 @@ const fn default_max_connections_per_peer() -> usize {
     16
 }
 
+#[cfg(feature = "experimental-memory")]
 const fn default_max_memory_bytes() -> usize {
     128 * 1024 * 1024
 }
@@ -330,6 +342,21 @@ backend_addr = "127.0.0.1:8080"
         assert!(error.to_string().contains("unknown field"));
     }
 
+    #[cfg(not(feature = "experimental-memory"))]
+    #[test]
+    fn rejects_memory_limit_without_experimental_feature() {
+        let source = format!("{MINIMAL_CONFIGURATION}max_memory_bytes = 1024\n");
+
+        let error = toml::from_str::<ProxyFileConfiguration>(&source)
+            .expect_err("memory limit should be unavailable");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `max_memory_bytes`")
+        );
+    }
+
     #[test]
     fn uses_conservative_resource_defaults() {
         let file = toml::from_str::<ProxyFileConfiguration>(MINIMAL_CONFIGURATION)
@@ -339,6 +366,7 @@ backend_addr = "127.0.0.1:8080"
         assert_eq!(startup.max_connections, 64);
         assert_eq!(startup.max_in_flight_requests, 32);
         assert_eq!(startup.max_connections_per_peer, 16);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(startup.max_memory_bytes, 128 * 1024 * 1024);
         assert_eq!(startup.max_request_body_bytes, 1024 * 1024);
     }

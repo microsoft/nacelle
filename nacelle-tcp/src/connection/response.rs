@@ -5,7 +5,9 @@ use crate::config::{NacelleTcpConfig, ResponseWritePolicy};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{FrameBuffer, Protocol, TcpCompletion};
 use nacelle_core::error::NacelleError;
-use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
+#[cfg(feature = "experimental-memory")]
+use nacelle_core::limits::NacelleMemoryAllocation;
+use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::io::{flush_with_timeout, write_all_tracked_with_timeout};
@@ -34,14 +36,17 @@ struct FrameDelivery {
 
 struct PendingGrowth {
     pending: BytesMut,
+    #[cfg(feature = "experimental-memory")]
     allocations: BufferAllocations,
 }
 
+#[cfg(feature = "experimental-memory")]
 struct BufferAllocations {
     requested: NacelleMemoryAllocation,
     excess: Option<NacelleMemoryAllocation>,
 }
 
+#[cfg(feature = "experimental-memory")]
 impl BufferAllocations {
     fn shrink_by(&mut self, mut bytes: usize) {
         let requested_release = self.requested.bytes().min(bytes);
@@ -75,6 +80,7 @@ pub(super) struct ResponseDelivery {
     pending: BytesMut,
     base_capacity: usize,
     policy: ResponseWritePolicy,
+    #[cfg(feature = "experimental-memory")]
     overflow_allocations: Option<BufferAllocations>,
 }
 
@@ -84,6 +90,7 @@ impl ResponseDelivery {
             pending: BytesMut::with_capacity(config.response_buffer_capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
+            #[cfg(feature = "experimental-memory")]
             overflow_allocations: None,
         }
     }
@@ -104,11 +111,17 @@ impl ResponseDelivery {
     fn reset(&mut self) {
         if self.pending.capacity() > self.base_capacity {
             drop(std::mem::take(&mut self.pending));
-            self.overflow_allocations = None;
+            #[cfg(feature = "experimental-memory")]
+            {
+                self.overflow_allocations = None;
+            }
             self.pending = BytesMut::with_capacity(self.base_capacity);
         } else {
             self.pending.clear();
-            self.overflow_allocations = None;
+            #[cfg(feature = "experimental-memory")]
+            {
+                self.overflow_allocations = None;
+            }
         }
     }
 
@@ -123,21 +136,26 @@ impl ResponseDelivery {
         let previous_capacity = self.pending.capacity();
         let maximum_capacity = isize::MAX as usize;
         if required_len > maximum_capacity {
-            return Err(NacelleError::ResourceLimit("memory_bytes"));
+            return Err(NacelleError::ResourceLimit("response_frame_bytes"));
         }
         let growth_capacity = previous_capacity
             .saturating_mul(2)
             .min(maximum_capacity)
             .max(required_len);
-        match self.allocate_growth(growth_capacity, runtime_state) {
+        #[cfg(feature = "experimental-memory")]
+        return match self.allocate_growth(growth_capacity, runtime_state) {
             Ok(growth) => Ok(Some(growth)),
             Err(NacelleError::ResourceLimit("memory_bytes")) if growth_capacity != required_len => {
                 self.allocate_growth(required_len, runtime_state).map(Some)
             }
             Err(error) => Err(error),
-        }
+        };
+        #[cfg(not(feature = "experimental-memory"))]
+        self.allocate_growth(growth_capacity, runtime_state)
+            .map(Some)
     }
 
+    #[cfg(feature = "experimental-memory")]
     fn allocate_growth(
         &self,
         capacity: usize,
@@ -161,13 +179,28 @@ impl ResponseDelivery {
         })
     }
 
-    fn commit_growth(&mut self, mut growth: PendingGrowth) {
+    #[cfg(not(feature = "experimental-memory"))]
+    fn allocate_growth(
+        &self,
+        capacity: usize,
+        _runtime_state: &NacelleRuntimeState,
+    ) -> Result<PendingGrowth, NacelleError> {
+        let mut pending = BytesMut::with_capacity(capacity);
+        pending.extend_from_slice(&self.pending);
+        Ok(PendingGrowth { pending })
+    }
+
+    fn commit_growth(&mut self, growth: PendingGrowth) {
         let previous = std::mem::replace(&mut self.pending, growth.pending);
         drop(previous);
-        self.overflow_allocations = None;
-        growth.allocations.shrink_by(self.base_capacity);
-        if !growth.allocations.is_empty() {
-            self.overflow_allocations = Some(growth.allocations);
+        #[cfg(feature = "experimental-memory")]
+        {
+            self.overflow_allocations = None;
+            let mut allocations = growth.allocations;
+            allocations.shrink_by(self.base_capacity);
+            if !allocations.is_empty() {
+                self.overflow_allocations = Some(allocations);
+            }
         }
     }
 
@@ -596,6 +629,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
 
+    #[cfg(feature = "experimental-memory")]
     use nacelle_core::limits::NacelleLimits;
     use tokio::io::{AsyncWrite, sink};
 
@@ -675,6 +709,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn oversized_staging_is_rejected_before_encoding() {
         let mut writer = sink();
@@ -722,6 +757,7 @@ mod tests {
         assert!(delivery.overflow_allocations.is_none());
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn overflow_accounting_matches_actual_buffer_capacity() {
         let config = NacelleTcpConfig {
@@ -758,6 +794,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn growth_authorizes_the_complete_replacement_allocation() {
         let config = NacelleTcpConfig {
@@ -814,6 +851,7 @@ mod tests {
         assert_eq!(runtime_state.memory_used_bytes(), 8);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn repeated_growth_keeps_fixed_exact_overflow_accounting() {
         let config = NacelleTcpConfig {
@@ -869,8 +907,12 @@ mod tests {
             ..NacelleTcpConfig::default()
         };
         let mut delivery = ResponseDelivery::new(&config);
+        #[cfg(feature = "experimental-memory")]
         let runtime_state =
             NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(64));
+        #[cfg(not(feature = "experimental-memory"))]
+        let runtime_state = NacelleRuntimeState::default();
+        #[cfg(feature = "experimental-memory")]
         let _baseline = runtime_state
             .allocate_memory(8)
             .expect("base response buffer should fit");
@@ -895,11 +937,13 @@ mod tests {
             .expect_err("encoding should fail");
 
         assert!(matches!(error.error, NacelleError::InvalidFrame(_)));
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(runtime_state.memory_used_bytes(), 8);
         assert_eq!(delivery.pending.capacity(), delivery.base_capacity);
         assert!(delivery.pending.is_empty());
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn coalesced_overflow_remains_accounted_until_flush() {
         let config = NacelleTcpConfig {
@@ -945,6 +989,7 @@ mod tests {
         assert_eq!(runtime_state.memory_used_bytes(), 8);
     }
 
+    #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn failed_coalesced_write_releases_overflow_accounting() {
         let config = NacelleTcpConfig {

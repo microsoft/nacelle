@@ -42,15 +42,16 @@ Start with these public entry points:
   runtime builder instead.
 - `nacelle::runtime::ThreadPerCoreLimits::Global` for exact process-wide counters, or
   `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
-  mode still enforces one shared hard memory ceiling across all workers.
+  mode enforces one shared hard memory ceiling across all workers when
+  `experimental-memory` is enabled.
 - `nacelle::runtime::WorkerContext::offload_blocking(...)` for explicit blocking work whose
   completion is awaited back on the originating local worker.
 - `nacelle::tcp::Protocol` for TCP wire-format adapters.
 - `nacelle::tcp::{TcpServer, LocalTcpServer}` for `Arc`-backed connection
   state, or `SerialTcpServer` / `LocalSerialTcpServer` for exclusive mutable
   state lent to one serial handler at a time.
-- `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to retain declared-length
-  admission or opt into accounting only live streaming request chunks.
+- With `experimental-memory`, `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to
+  retain declared-length admission or account only live streaming chunks.
 - `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
   required OpenSSL, optional OpenSSL, and Unix sockets.
 - `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and
@@ -64,7 +65,8 @@ Start with these public entry points:
 - `nacelle::core::NacelleError::hint()` with the `error-hints` feature for
   optional operator guidance. `NacelleError::Display` remains stable across
   feature combinations; applications append hints deliberately where suitable.
-- `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
+- With `experimental-memory`,
+  `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
   memory budget allocations. Owned allocation guards can release retained
   capacity with `NacelleMemoryAllocation::shrink_to(...)`.

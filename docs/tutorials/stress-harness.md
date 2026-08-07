@@ -46,7 +46,7 @@ Repeatable profiles:
 
 - `examples/nacelle-stress-server/configs/tcp.toml`: plain TCP baseline.
 - `examples/nacelle-stress-server/configs/tcp-low-memory.toml`: plain TCP with
-  mimalloc low-memory behavior enabled.
+  mimalloc low-memory behavior and experimental runtime memory accounting.
 - `examples/nacelle-stress-server/configs/tcp-tls.toml`: TCP wrapped in
   self-signed TLS.
 
@@ -70,6 +70,10 @@ server exposes byte accounting as `byte_metrics = true`.
 Use `--no-byte-metrics` for a lower-overhead recorder run. Use
 `--no-default-features` with the plain TCP config for a Rustls-free,
 system-allocator baseline; metrics collection remains active.
+
+The launch helpers enable `experimental-memory` automatically when an effective
+config contains `max_memory_bytes`. For a direct low-memory server run, pass
+`--features experimental-memory` explicitly.
 
 The Tokio stress server default build includes `tls-self-signed` support. The
 checked-in root `config.toml` enables `tls_self_signed = true`, so the local

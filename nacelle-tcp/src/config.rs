@@ -8,6 +8,7 @@ pub enum TcpRequestBodyMode {
 }
 
 /// How streaming TCP request bodies consume the shared runtime memory budget.
+#[cfg(feature = "experimental-memory")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TcpStreamingBodyMemoryPolicy {
     /// Reserve the complete declared body length before invoking the handler.
@@ -46,6 +47,7 @@ pub struct NacelleTcpConfig {
     /// Request-body delivery mode.
     pub request_body_mode: TcpRequestBodyMode,
     /// Memory accounting policy used for streaming request bodies.
+    #[cfg(feature = "experimental-memory")]
     pub streaming_body_memory_policy: TcpStreamingBodyMemoryPolicy,
     /// Response frame delivery policy.
     pub response_write_policy: ResponseWritePolicy,
@@ -60,6 +62,7 @@ impl Default for NacelleTcpConfig {
             request_body_chunk_size: 64 * 1024,
             request_body_channel_capacity: 4,
             request_body_mode: TcpRequestBodyMode::Buffered,
+            #[cfg(feature = "experimental-memory")]
             streaming_body_memory_policy: TcpStreamingBodyMemoryPolicy::DeclaredLength,
             response_write_policy: ResponseWritePolicy::Immediate,
         }
@@ -104,6 +107,7 @@ impl NacelleTcpConfig {
     }
 
     /// Select declared-length or live-chunk streaming body memory accounting.
+    #[cfg(feature = "experimental-memory")]
     pub fn with_streaming_body_memory_policy(
         mut self,
         policy: TcpStreamingBodyMemoryPolicy,
@@ -136,6 +140,7 @@ mod tests {
         assert_eq!(config.response_buffer_capacity, 64 * 1024);
         assert_eq!(config.max_frame_len, 16 * 1024 * 1024);
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Buffered);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(
             config.streaming_body_memory_policy,
             TcpStreamingBodyMemoryPolicy::DeclaredLength
@@ -151,8 +156,10 @@ mod tests {
             .with_max_frame_len(1)
             .with_request_body_chunk_size(0)
             .with_request_body_channel_capacity(0)
-            .with_request_body_mode(TcpRequestBodyMode::Streaming)
-            .with_streaming_body_memory_policy(TcpStreamingBodyMemoryPolicy::LiveChunks);
+            .with_request_body_mode(TcpRequestBodyMode::Streaming);
+        #[cfg(feature = "experimental-memory")]
+        let config =
+            config.with_streaming_body_memory_policy(TcpStreamingBodyMemoryPolicy::LiveChunks);
         let config = config.with_response_write_policy(ResponseWritePolicy::FlushAtBytes(0));
 
         assert_eq!(config.read_buffer_capacity, 1024);
@@ -165,6 +172,7 @@ mod tests {
             ResponseWritePolicy::FlushAtBytes(1)
         );
         assert_eq!(config.request_body_mode, TcpRequestBodyMode::Streaming);
+        #[cfg(feature = "experimental-memory")]
         assert_eq!(
             config.streaming_body_memory_policy,
             TcpStreamingBodyMemoryPolicy::LiveChunks
