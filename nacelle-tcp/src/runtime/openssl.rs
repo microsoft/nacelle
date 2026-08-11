@@ -11,7 +11,7 @@ use crate::protocol::{
 };
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
@@ -298,7 +298,7 @@ where
                         server
                             .telemetry()
                             .timeout(NacelleTransport::new("tcp"), "tls_handshake");
-                        return Err(NacelleError::Timeout("tls_handshake"));
+                        return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                     }
                 }
                 let connection =
@@ -608,7 +608,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection =

@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use http::StatusCode;
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleShutdown};
+use nacelle::core::{
+    NacelleError, NacelleLimits, NacelleRuntimeState, NacelleShutdown, NacelleTimeoutReason,
+};
 use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer, NacelleHttpLimits};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -94,7 +96,7 @@ async fn main() -> Result<(), NacelleError> {
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(1), server_task)
         .await
-        .map_err(|_| NacelleError::Timeout("example_shutdown"))?
+        .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Other("example_shutdown")))?
         .map_err(NacelleError::from)??;
 
     Ok(())

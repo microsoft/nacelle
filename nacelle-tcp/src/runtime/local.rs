@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
 use nacelle_core::error::NacelleError;
+#[cfg(any(feature = "openssl", feature = "rustls"))]
+use nacelle_core::error::NacelleTimeoutReason;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
@@ -248,7 +250,7 @@ where
                             server
                                 .telemetry()
                                 .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     };
                     let connection = connection
@@ -349,7 +351,7 @@ where
                             server
                                 .telemetry()
                                 .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -450,7 +452,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -579,7 +581,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -618,7 +620,7 @@ where
 
 fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     match error {
-        NacelleError::ResourceLimit(reason) => reason,
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
         _ => "connections",
     }
 }

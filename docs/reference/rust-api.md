@@ -89,6 +89,11 @@ Start with these public entry points:
   optional operator guidance. `NacelleError::Display` remains stable across
   feature combinations; applications append hints deliberately where suitable.
   Hint text is advisory and must not be parsed as a stable identifier.
+- Match `NacelleError::ResourceLimit(NacelleResourceLimitReason::...)` and
+  `NacelleError::Timeout(NacelleTimeoutReason::...)` for programmatic handling.
+  The reason enums are non-exhaustive and their `as_str()` methods expose stable
+  low-cardinality labels. Use `Other(&'static str)` only for application-owned
+  static reason vocabularies.
 - With `experimental-memory`,
   `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport

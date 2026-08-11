@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown};
+use nacelle::core::{NacelleLimits, NacelleRuntimeState, NacelleShutdown, NacelleTimeoutReason};
 use nacelle::prelude::*;
 use nacelle::tcp::{NacelleTcpConfig, TcpRequestContext, TcpResponse, TcpServer};
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR, LengthDelimitedProtocol};
@@ -116,7 +116,7 @@ async fn main() -> Result<(), NacelleError> {
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(1), server_task)
         .await
-        .map_err(|_| NacelleError::Timeout("example_shutdown"))?
+        .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Other("example_shutdown")))?
         .map_err(NacelleError::from)??;
 
     Ok(())
@@ -180,7 +180,7 @@ async fn read_until_close(mut client: tokio::net::TcpStream) -> Result<Vec<u8>, 
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
         .await
-        .map_err(|_| NacelleError::Timeout("tcp_rejection_close"))??;
+        .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::TcpRejectionClose))??;
     Ok(response)
 }
 

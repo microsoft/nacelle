@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::error::NacelleError;
+#[cfg(feature = "experimental-memory")]
+use crate::error::NacelleTimeoutReason;
+use crate::error::{NacelleError, NacelleResourceLimitReason};
 #[cfg(feature = "experimental-memory")]
 use crate::lifecycle::NacelleShutdownToken;
 use crate::peer_rate::{
@@ -300,7 +302,9 @@ impl NacelleRuntimeState {
                 .iter()
                 .any(|limits| limits.max_memory_bytes != max_memory_bytes)
             {
-                return Err(NacelleError::ResourceLimit("memory_limit_mismatch"));
+                return Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::MemoryLimitMismatch,
+                ));
             }
             let memory = Arc::new(SharedMemoryBudget::new(max_memory_bytes));
             Ok(limits
@@ -371,7 +375,9 @@ impl NacelleRuntimeState {
             &self.inner.active_connections,
             self.inner.limits.max_connections,
         ) {
-            return Err(NacelleError::ResourceLimit("connections"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections,
+            ));
         }
         if self.metrics_enabled() {
             self.active_connections_metric().increment(1.0);
@@ -387,7 +393,9 @@ impl NacelleRuntimeState {
             &self.inner.active_connections,
             self.inner.limits.max_connections,
         ) {
-            return Err(NacelleError::ResourceLimit("connections"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections,
+            ));
         }
         if self.metrics_enabled() {
             self.active_connections_metric().increment(1.0);
@@ -426,7 +434,9 @@ impl NacelleRuntimeState {
             &self.inner.active_requests,
             self.inner.limits.max_in_flight_requests,
         ) {
-            return Err(NacelleError::ResourceLimit("in_flight_requests"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::InFlightRequests,
+            ));
         }
         if self.metrics_enabled() {
             self.active_requests_metric().increment(1.0);
@@ -443,7 +453,9 @@ impl NacelleRuntimeState {
             &self.inner.active_streaming_tasks,
             self.inner.limits.max_streaming_tasks,
         ) {
-            return Err(NacelleError::ResourceLimit("streaming_tasks"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::StreamingTasks,
+            ));
         }
         if self.metrics_enabled() {
             self.active_streaming_tasks_metric().increment(1.0);
@@ -513,7 +525,9 @@ impl NacelleRuntimeState {
             return Ok(NacelleMemoryAllocation::empty());
         }
         if bytes > self.inner.memory.max_bytes {
-            return Err(NacelleError::ResourceLimit("memory_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::MemoryBytes,
+            ));
         }
 
         if let Ok(allocation) = self.try_allocate_memory_without_waiters(bytes) {
@@ -543,7 +557,7 @@ impl NacelleRuntimeState {
                             .fetch_sub(1, Ordering::AcqRel);
                         return Ok(allocation);
                     }
-                    Err(NacelleError::ResourceLimit("memory_bytes")) => {}
+                    Err(NacelleError::ResourceLimit(NacelleResourceLimitReason::MemoryBytes)) => {}
                     Err(error) => {
                         self.inner
                             .memory
@@ -626,12 +640,16 @@ impl NacelleRuntimeState {
         bytes: usize,
     ) -> Result<NacelleMemoryAllocation, NacelleError> {
         if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
-            return Err(NacelleError::ResourceLimit("memory_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::MemoryBytes,
+            ));
         }
         let allocation = self.try_allocate_memory_counter(bytes)?;
         if self.inner.memory.memory_waiters.load(Ordering::Acquire) != 0 {
             drop(allocation);
-            return Err(NacelleError::ResourceLimit("memory_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::MemoryBytes,
+            ));
         }
         Ok(allocation)
     }
@@ -642,10 +660,14 @@ impl NacelleRuntimeState {
         let mut current = self.inner.memory.memory_used.load(Ordering::Relaxed);
         loop {
             let Some(next) = current.checked_add(bytes) else {
-                return Err(NacelleError::ResourceLimit("memory_bytes"));
+                return Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::MemoryBytes,
+                ));
             };
             if next > limit {
-                return Err(NacelleError::ResourceLimit("memory_bytes"));
+                return Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::MemoryBytes,
+                ));
             }
             match self.inner.memory.memory_used.compare_exchange_weak(
                 current,
@@ -755,7 +777,9 @@ impl NacelleRuntimeState {
                     if let Some(allocation) = registration.cancel() {
                         return Ok(allocation);
                     }
-                    return Err(NacelleError::Timeout("memory_allocation"));
+                    return Err(NacelleError::Timeout(
+                        NacelleTimeoutReason::MemoryAllocation,
+                    ));
                 }
                 _ = wait_optional_shutdown(&mut shutdown) => {
                     if let Some(allocation) = registration.cancel() {
@@ -778,7 +802,9 @@ impl NacelleRuntimeState {
             .expect("peer connection map poisoned");
         let current = peers.get(&peer).copied().unwrap_or(0);
         if current >= limit {
-            return Err(NacelleError::ResourceLimit("peer_connections"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnections,
+            ));
         }
         peers.insert(peer, current + 1);
         Ok(())
@@ -806,18 +832,20 @@ impl NacelleRuntimeState {
         let Some(limit) = self.inner.limits.max_connection_opens_per_peer_per_second else {
             return Ok(());
         };
-        let limiter = self
-            .inner
-            .peer_connection_rates
-            .as_ref()
-            .ok_or(NacelleError::ResourceLimit("peer_connection_rate_table"))?;
+        let limiter =
+            self.inner
+                .peer_connection_rates
+                .as_ref()
+                .ok_or(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::PeerConnectionRateTable,
+                ))?;
         match limiter.try_acquire(peer, limit) {
             NacellePeerRateLimitResult::Allowed => Ok(()),
-            NacellePeerRateLimitResult::RateLimited => {
-                Err(NacelleError::ResourceLimit("peer_connection_rate"))
-            }
+            NacellePeerRateLimitResult::RateLimited => Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRate,
+            )),
             NacellePeerRateLimitResult::TableFull => Err(NacelleError::ResourceLimit(
-                "peer_connection_rate_table_full",
+                NacelleResourceLimitReason::PeerConnectionRateTableFull,
             )),
         }
     }
@@ -1212,7 +1240,9 @@ mod tests {
         let request = state.acquire_request_tracked().expect("first request");
         assert!(matches!(
             state.acquire_request_tracked(),
-            Err(NacelleError::ResourceLimit("in_flight_requests"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::InFlightRequests
+            ))
         ));
 
         drop(request);
@@ -1232,7 +1262,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(NacelleError::ResourceLimit("memory_limit_mismatch"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::MemoryLimitMismatch
+            ))
         ));
     }
 
@@ -1276,7 +1308,9 @@ mod tests {
             assert_eq!(state.memory_used_bytes(), MEMORY_LIMIT);
             assert!(matches!(
                 state.allocate_memory(1),
-                Err(NacelleError::ResourceLimit("memory_bytes"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::MemoryBytes
+                ))
             ));
 
             release.wait();
@@ -1358,7 +1392,9 @@ mod tests {
 
         assert!(matches!(
             state.memory_budget().try_allocate(1),
-            Err(NacelleError::ResourceLimit("memory_bytes"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::MemoryBytes
+            ))
         ));
 
         drop(second_half);
@@ -1379,7 +1415,10 @@ mod tests {
             .allocate_memory_with_timeout(1, Some(Duration::from_millis(10)))
             .await
             .expect_err("waiter should time out");
-        assert!(matches!(error, NacelleError::Timeout("memory_allocation")));
+        assert!(matches!(
+            error,
+            NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)
+        ));
 
         drop(held);
         let recovered = state
@@ -1489,7 +1528,7 @@ mod tests {
             .expect_err("head waiter should time out");
         assert!(matches!(
             head_error,
-            NacelleError::Timeout("memory_allocation")
+            NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)
         ));
 
         let next_allocation = tokio::time::timeout(Duration::from_secs(1), next)
@@ -1547,7 +1586,9 @@ mod tests {
             .expect("first peer connection");
         assert!(matches!(
             state.acquire_connection_for_peer(peer),
-            Err(NacelleError::ResourceLimit("peer_connections"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnections
+            ))
         ));
 
         drop(connection);
@@ -1573,7 +1614,9 @@ mod tests {
 
         assert!(matches!(
             state.acquire_connection_for_peer(peer),
-            Err(NacelleError::ResourceLimit("peer_connection_rate"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRate
+            ))
         ));
         assert_eq!(state.active_connections(), 0);
     }
@@ -1596,7 +1639,7 @@ mod tests {
         assert!(matches!(
             state.acquire_connection_for_peer(second_peer),
             Err(NacelleError::ResourceLimit(
-                "peer_connection_rate_table_full"
+                NacelleResourceLimitReason::PeerConnectionRateTableFull
             ))
         ));
         assert_eq!(state.active_connections(), 0);

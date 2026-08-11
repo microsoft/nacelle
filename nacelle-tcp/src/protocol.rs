@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 use nacelle_core::pipeline::{
     Completed, ConnectionContext, ConnectionInfo, Handler, LocalHandler, NoResponse,
     RequestContext, RequiredCompletion, RequiredResponder, Respond,
@@ -89,9 +89,13 @@ impl<'buffer> FrameBuffer<'buffer> {
         let next = self
             .len()
             .checked_add(additional)
-            .ok_or(NacelleError::ResourceLimit("response_frame_bytes"))?;
+            .ok_or(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes,
+            ))?;
         if next > self.max_len {
-            return Err(NacelleError::ResourceLimit("response_frame_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes,
+            ));
         }
         Ok(())
     }
@@ -720,7 +724,9 @@ mod tests {
             .expect("remaining cumulative capacity should be available");
         assert!(matches!(
             frame.extend_from_slice(b"x"),
-            Err(NacelleError::ResourceLimit("response_frame_bytes"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes
+            ))
         ));
         assert_eq!(&bytes[..], b"prior!");
     }

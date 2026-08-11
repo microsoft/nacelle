@@ -90,5 +90,7 @@ pub use nacelle_rustls::NacelleGeneratedTlsConfig;
 pub use nacelle_rustls::NacelleTlsConfig;
 pub mod prelude {
     pub use crate::NacelleApp;
-    pub use nacelle_core::{NacelleBody, NacelleError};
+    pub use nacelle_core::{
+        NacelleBody, NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason,
+    };
 }

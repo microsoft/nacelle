@@ -186,6 +186,12 @@ a future minor release. `phase-timing` and `error-hints` are supported opt-ins;
 the exact text returned by `NacelleError::hint()` is advisory and must not be
 parsed or used as a programmatic error code.
 
+Match resource and timeout failures through `NacelleResourceLimitReason` and
+`NacelleTimeoutReason`, not through `Display` or hint text. Their `as_str()`
+methods expose the stable low-cardinality labels used by Nacelle telemetry.
+Applications can use the explicit `Other(&'static str)` variants for their own
+static, bounded reason vocabulary.
+
 `rustls` and `openssl` are mutually exclusive compile-time choices. Select
 exactly one when TLS is required; Nacelle has no runtime provider selector.
 HTTP TLS requires `rustls`, while TCP supports either backend.

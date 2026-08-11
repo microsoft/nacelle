@@ -12,7 +12,7 @@ pub mod request;
 pub mod runtime;
 pub mod telemetry;
 
-pub use error::{BoxError, NacelleError};
+pub use error::{BoxError, NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
 pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
 #[cfg(feature = "experimental-memory")]

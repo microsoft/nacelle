@@ -14,7 +14,7 @@ use crate::protocol::{
     LocalTcpOneWayHandler, Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol,
     TcpHandler, TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpResponder,
 };
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{
     ConnectionContext, ConnectionInfo, NoResponse, RequestContext, RequiredResponder,
@@ -378,7 +378,7 @@ where
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {
-        let error = NacelleError::ResourceLimit("request_body_bytes");
+        let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
         record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
         record_core_request_failed(
             telemetry,
@@ -404,7 +404,9 @@ where
         {
             return Err(delivery_error.error);
         }
-        return Err(NacelleError::ResourceLimit("request_body_bytes"));
+        return Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes,
+        ));
     }
     let _request_permit = match runtime_state.acquire_request_tracked() {
         Ok(permit) => permit,
@@ -686,7 +688,9 @@ where
         runtime_state.limits().max_request_body_bytes,
     );
     if decoded.body_len > max_request_body_bytes {
-        return Err(NacelleError::ResourceLimit("request_body_bytes"));
+        return Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes,
+        ));
     }
     let _request_permit = runtime_state.acquire_request_tracked()?;
     let mut request_metrics =
@@ -803,7 +807,7 @@ where
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await
-            .map_err(|_| NacelleError::Timeout("handler"))?
+            .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
     } else {
         future.await
     }
@@ -863,7 +867,7 @@ where
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await
-            .map_err(|_| NacelleError::Timeout("handler"))?
+            .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
     } else {
         future.await
     }

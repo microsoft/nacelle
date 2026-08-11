@@ -7,6 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nacelle_core::error::NacelleError;
+#[cfg(all(test, feature = "http"))]
+use nacelle_core::error::NacelleResourceLimitReason;
 use nacelle_core::lifecycle::NacelleShutdown;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
@@ -1119,7 +1121,9 @@ mod tests {
     fn app_registers_concrete_http_listener() {
         let handler = handler_fn(
             |_context: nacelle_http::HttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit("test_http_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("test_http_handler"),
+                ))
             },
         );
         let app = NacelleApp::new().http(
@@ -1133,7 +1137,9 @@ mod tests {
         let state_handler = handler_fn(
             |context: nacelle_http::HttpRequestContext<(), String>| async move {
                 assert_eq!(context.app_state(), "application-state");
-                Err(NacelleError::ResourceLimit("test_http_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("test_http_handler"),
+                ))
             },
         );
         let state_app = NacelleApp::with_state(String::from("application-state")).http(

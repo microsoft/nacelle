@@ -4,7 +4,7 @@ use tokio::io::AsyncWrite;
 use crate::config::{NacelleTcpConfig, ResponseWritePolicy};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{FrameBuffer, Protocol, TcpCompletion};
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 #[cfg(feature = "experimental-memory")]
 use nacelle_core::limits::NacelleMemoryAllocation;
 use nacelle_core::limits::NacelleRuntimeState;
@@ -136,7 +136,9 @@ impl ResponseDelivery {
         let previous_capacity = self.pending.capacity();
         let maximum_capacity = isize::MAX as usize;
         if required_len > maximum_capacity {
-            return Err(NacelleError::ResourceLimit("response_frame_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes,
+            ));
         }
         let growth_capacity = previous_capacity
             .saturating_mul(2)
@@ -145,7 +147,9 @@ impl ResponseDelivery {
         #[cfg(feature = "experimental-memory")]
         return match self.allocate_growth(growth_capacity, runtime_state) {
             Ok(growth) => Ok(Some(growth)),
-            Err(NacelleError::ResourceLimit("memory_bytes")) if growth_capacity != required_len => {
+            Err(NacelleError::ResourceLimit(NacelleResourceLimitReason::MemoryBytes))
+                if growth_capacity != required_len =>
+            {
                 self.allocate_growth(required_len, runtime_state).map(Some)
             }
             Err(error) => Err(error),
@@ -224,7 +228,7 @@ impl ResponseDelivery {
         let frame_start = self.pending.len();
         let required_len = frame_start.checked_add(frame_capacity).ok_or_else(|| {
             ResponseDeliveryError::before_delivery(NacelleError::ResourceLimit(
-                "response_frame_bytes",
+                NacelleResourceLimitReason::ResponseFrameBytes,
             ))
         })?;
         let mut growth = self
@@ -576,7 +580,9 @@ where
 {
     chunk_len
         .checked_add(protocol.max_response_frame_overhead())
-        .ok_or(NacelleError::ResourceLimit("response_frame_bytes"))
+        .ok_or(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::ResponseFrameBytes,
+        ))
 }
 
 impl ResponseDeliveryError {
@@ -614,10 +620,14 @@ fn validate_response_bytes(
     runtime_state: &NacelleRuntimeState,
 ) -> Result<(), NacelleError> {
     let Some(next) = total.checked_add(next_chunk_len) else {
-        return Err(NacelleError::ResourceLimit("response_body_bytes"));
+        return Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::ResponseBodyBytes,
+        ));
     };
     if next > runtime_state.limits().max_response_body_bytes {
-        return Err(NacelleError::ResourceLimit("response_body_bytes"));
+        return Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::ResponseBodyBytes,
+        ));
     }
     *total = next;
     Ok(())
@@ -746,7 +756,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(ResponseDeliveryError {
-                error: NacelleError::ResourceLimit("memory_bytes"),
+                error: NacelleError::ResourceLimit(NacelleResourceLimitReason::MemoryBytes),
                 delivered_bytes: 0,
                 ..
             })
@@ -844,7 +854,7 @@ mod tests {
 
         assert!(matches!(
             error.error,
-            NacelleError::ResourceLimit("memory_bytes")
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::MemoryBytes)
         ));
         assert!(!encoded.get());
         assert_eq!(&delivery.pending[..], b"existing");

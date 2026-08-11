@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 use nacelle_core::lifecycle::{NacelleShutdown, NacelleShutdownToken};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
@@ -60,7 +60,9 @@ impl WorkerSet {
     /// Select every logical CPU reported by the affinity provider.
     pub fn all() -> Result<Self, NacelleError> {
         let core_ids: Vec<_> = core_affinity::get_core_ids()
-            .ok_or(NacelleError::ResourceLimit("worker_discovery"))?
+            .ok_or(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerDiscovery,
+            ))?
             .into_iter()
             .map(|core| core.id)
             .collect();
@@ -70,11 +72,15 @@ impl WorkerSet {
     /// Select the first `count` logical CPUs.
     pub fn first(count: usize) -> Result<Self, NacelleError> {
         if count == 0 {
-            return Err(NacelleError::ResourceLimit("worker_count"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount,
+            ));
         }
         let all = Self::all()?;
         if count > all.len() {
-            return Err(NacelleError::ResourceLimit("worker_count"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount,
+            ));
         }
         Self::explicit(all.core_ids.into_iter().take(count))
     }
@@ -83,19 +89,26 @@ impl WorkerSet {
     pub fn explicit(core_ids: impl IntoIterator<Item = usize>) -> Result<Self, NacelleError> {
         let core_ids: Vec<_> = core_ids.into_iter().collect();
         if core_ids.is_empty() {
-            return Err(NacelleError::ResourceLimit("worker_count"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount,
+            ));
         }
         let unique: HashSet<_> = core_ids.iter().copied().collect();
         if unique.len() != core_ids.len() {
-            return Err(NacelleError::ResourceLimit("worker_duplicate"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerDuplicate,
+            ));
         }
-        let available =
-            core_affinity::get_core_ids().ok_or(NacelleError::ResourceLimit("worker_discovery"))?;
+        let available = core_affinity::get_core_ids().ok_or(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::WorkerDiscovery,
+        ))?;
         if core_ids
             .iter()
             .any(|requested| !available.iter().any(|core| core.id == *requested))
         {
-            return Err(NacelleError::ResourceLimit("worker_core"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCore,
+            ));
         }
         Ok(Self { core_ids })
     }
@@ -151,13 +164,15 @@ impl ThreadPerCoreLimits {
     /// share one hard process-wide ceiling.
     pub fn worker(limits: NacelleLimits, worker_count: usize) -> Result<Self, NacelleError> {
         if worker_count == 0 {
-            return Err(NacelleError::ResourceLimit("worker_count"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount,
+            ));
         }
         if limits.max_connection_opens_per_peer_per_second.is_some()
             && limits.connection_rate_limit_table_capacity < worker_count
         {
             return Err(NacelleError::ResourceLimit(
-                "connection_rate_limit_table_capacity",
+                NacelleResourceLimitReason::ConnectionRateLimitTableCapacity,
             ));
         }
         let partitions: Vec<_> = (0..worker_count)
@@ -170,10 +185,14 @@ impl ThreadPerCoreLimits {
     pub fn state_for(&self, worker: Worker) -> Result<NacelleRuntimeState, NacelleError> {
         match self {
             Self::Global(state) => Ok(state.clone()),
-            Self::Worker(states) => states
-                .get(worker.index)
-                .cloned()
-                .ok_or(NacelleError::ResourceLimit("worker_index")),
+            Self::Worker(states) => {
+                states
+                    .get(worker.index)
+                    .cloned()
+                    .ok_or(NacelleError::ResourceLimit(
+                        NacelleResourceLimitReason::WorkerIndex,
+                    ))
+            }
         }
     }
 }
@@ -219,7 +238,9 @@ impl ThreadPerCoreConfig {
     /// order. A limit larger than the selected set leaves that set unchanged.
     pub fn with_max_threads(mut self, max_threads: usize) -> Result<Self, NacelleError> {
         if max_threads == 0 {
-            return Err(NacelleError::ResourceLimit("worker_count"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount,
+            ));
         }
         self.workers.core_ids.truncate(max_threads);
         self.max_threads = Some(max_threads);
@@ -251,13 +272,15 @@ impl ThreadPerCoreConfig {
     pub fn validate(&self) -> Result<(), NacelleError> {
         #[cfg(not(target_os = "linux"))]
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_unsupported_platform",
+            NacelleResourceLimitReason::ThreadPerCoreUnsupportedPlatform,
         ));
 
         #[cfg(target_os = "linux")]
         {
             if self.workers.is_empty() {
-                return Err(NacelleError::ResourceLimit("worker_count"));
+                return Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::WorkerCount,
+                ));
             }
             Ok(())
         }
@@ -352,7 +375,9 @@ where
                 if pin_workers
                     && !core_affinity::set_for_current(core_affinity::CoreId { id: worker.core_id })
                 {
-                    return Err(NacelleError::ResourceLimit("worker_affinity"));
+                    return Err(NacelleError::ResourceLimit(
+                        NacelleResourceLimitReason::WorkerAffinity,
+                    ));
                 }
 
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -379,7 +404,9 @@ where
                 }
                 Err(_) => {
                     worker_shutdown.shutdown();
-                    let _ = startup_tx.send(Err(NacelleError::ResourceLimit("worker_panic")));
+                    let _ = startup_tx.send(Err(NacelleError::ResourceLimit(
+                        NacelleResourceLimitReason::WorkerPanic,
+                    )));
                     return Ok(());
                 }
             };
@@ -394,7 +421,9 @@ where
 
             let result = match result {
                 Ok(result) => result,
-                Err(_) => Err(NacelleError::ResourceLimit("worker_panic")),
+                Err(_) => Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::WorkerPanic,
+                )),
             };
             if result.is_err() {
                 worker_shutdown.shutdown();
@@ -442,7 +471,9 @@ where
             }
             Err(_) => {
                 if first_error.is_none() {
-                    first_error = Some(NacelleError::ResourceLimit("worker_panic"));
+                    first_error = Some(NacelleError::ResourceLimit(
+                        NacelleResourceLimitReason::WorkerPanic,
+                    ));
                     shutdown.shutdown();
                 }
             }
@@ -461,7 +492,7 @@ pub fn bind_reuse_port_listener(addr: SocketAddr) -> Result<tokio::net::TcpListe
     {
         let _ = addr;
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_unsupported_platform",
+            NacelleResourceLimitReason::ThreadPerCoreUnsupportedPlatform,
         ));
     }
 
@@ -697,7 +728,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -749,7 +780,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -802,7 +833,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -865,7 +896,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -928,7 +959,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -992,7 +1023,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -1047,7 +1078,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -1099,7 +1130,7 @@ where
 {
     if config.runtime.workers().len() > 1 && config.addr.port() == 0 {
         return Err(NacelleError::ResourceLimit(
-            "thread_per_core_ephemeral_port",
+            NacelleResourceLimitReason::ThreadPerCoreEphemeralPort,
         ));
     }
     let runtime = config.runtime;
@@ -1172,14 +1203,18 @@ mod tests {
     fn worker_set_rejects_empty_and_duplicate_workers() {
         assert!(matches!(
             WorkerSet::explicit([]),
-            Err(NacelleError::ResourceLimit("worker_count"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount
+            ))
         ));
         let core = core_affinity::get_core_ids()
             .and_then(|cores| cores.first().copied())
             .expect("test requires one logical CPU");
         assert!(matches!(
             WorkerSet::explicit([core.id, core.id]),
-            Err(NacelleError::ResourceLimit("worker_duplicate"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerDuplicate
+            ))
         ));
     }
 
@@ -1227,7 +1262,9 @@ mod tests {
         let workers = WorkerSet::first(1).expect("one worker should be available");
         assert!(matches!(
             ThreadPerCoreConfig::new(workers.clone()).with_max_threads(0),
-            Err(NacelleError::ResourceLimit("worker_count"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerCount
+            ))
         ));
 
         let config = ThreadPerCoreConfig::new(workers)
@@ -1302,7 +1339,9 @@ mod tests {
             let first_memory = first.allocate_memory(6).expect("first memory allocation");
             assert!(matches!(
                 second.allocate_memory(5),
-                Err(NacelleError::ResourceLimit("memory_bytes"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::MemoryBytes
+                ))
             ));
             assert_eq!(first.memory_used_bytes(), 6);
             assert_eq!(second.memory_used_bytes(), 6);
@@ -1324,7 +1363,7 @@ mod tests {
         assert!(matches!(
             ThreadPerCoreLimits::worker(limits, 2),
             Err(NacelleError::ResourceLimit(
-                "connection_rate_limit_table_capacity"
+                NacelleResourceLimitReason::ConnectionRateLimitTableCapacity
             ))
         ));
     }
@@ -1379,12 +1418,18 @@ mod tests {
     fn worker_error_is_returned_after_all_workers_join() {
         let workers = WorkerSet::first(1).expect("one worker should be available");
         let result = run_thread_per_core(ThreadPerCoreConfig::new(workers), |_context| {
-            Ok(async { Err(NacelleError::ResourceLimit("worker_test")) })
+            Ok(async {
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("worker_test"),
+                ))
+            })
         });
 
         assert!(matches!(
             result,
-            Err(NacelleError::ResourceLimit("worker_test"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Other("worker_test")
+            ))
         ));
     }
 
@@ -1399,7 +1444,9 @@ mod tests {
             .expect("two workers should be valid");
         let result = run_thread_per_core(ThreadPerCoreConfig::new(workers), |context| {
             if context.worker.index == 1 {
-                return Err(NacelleError::ResourceLimit("worker_startup_test"));
+                return Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("worker_startup_test"),
+                ));
             }
             Ok(async move {
                 let mut shutdown = context.shutdown;
@@ -1433,7 +1480,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(NacelleError::ResourceLimit("worker_panic"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::WorkerPanic
+            ))
         ));
     }
 

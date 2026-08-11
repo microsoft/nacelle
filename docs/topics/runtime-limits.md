@@ -74,7 +74,7 @@ Request body allocations wait in FIFO order when the budget is full. The default
 wait limit is `NacelleLimits::memory_allocation_timeout == Some(5s)`, and can
 be tuned with `with_memory_allocation_timeout(...)` or disabled with
 `without_memory_allocation_timeout()`. A timed-out waiter returns
-`NacelleError::Timeout("memory_allocation")`.
+`NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)`.
 
 The memory budget is an accounting guard, not a buffer allocator: it grants a
 `NacelleMemoryAllocation` that tracks bytes the transport or application intends to

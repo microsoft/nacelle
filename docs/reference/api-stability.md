@@ -27,7 +27,12 @@ Features prefixed with `experimental-` are default-off and use at your own
 risk. They are not part of the supported `0.3` contract and may change or be
 removed in a future minor release. `NacelleError::hint()` is supported, but its
 returned text is advisory operator guidance: do not parse it or treat it as a
-stable error identifier. Match the structured `NacelleError` variant instead.
+stable error identifier. Match `NacelleError::ResourceLimit` with
+`NacelleResourceLimitReason`, or `NacelleError::Timeout` with
+`NacelleTimeoutReason`, instead. Both reason enums are non-exhaustive; include a
+wildcard arm. Their `as_str()` methods return stable low-cardinality telemetry
+labels. Applications may use `Other(&'static str)` for their own static, bounded
+reason vocabulary.
 
 Application code should use the app-first path:
 `NacelleApp::new().tcp(...).http(...).run().await`. The app owns shared runtime

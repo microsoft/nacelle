@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tokio::task::JoinSet;
 
-use nacelle_core::error::NacelleError;
+#[cfg(test)]
+use nacelle_core::error::NacelleResourceLimitReason;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown, NacelleShutdownToken};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
@@ -1014,7 +1016,7 @@ where
         };
         tokio::time::timeout(drain_timeout, drain)
             .await
-            .map_err(|_| NacelleError::Timeout("shutdown_drain"))?;
+            .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::ShutdownDrain))?;
         Ok(())
     }
 }
@@ -1031,8 +1033,11 @@ mod tests {
         let mut shutdown = host.shutdown_token();
         let (drained_tx, drained_rx) = oneshot::channel();
 
-        host.tasks
-            .spawn(async { Err(NacelleError::ResourceLimit("test_listener_failure")) });
+        host.tasks.spawn(async {
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Other("test_listener_failure"),
+            ))
+        });
         host.tasks.spawn(async move {
             assert!(shutdown.changed().await);
             drained_tx.send(()).expect("drain observer should be open");
@@ -1043,7 +1048,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            NacelleError::ResourceLimit("test_listener_failure")
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("test_listener_failure"))
         ));
         drained_rx
             .await

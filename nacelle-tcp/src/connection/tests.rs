@@ -9,7 +9,7 @@ use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
 use metrics_util::debugging::DebuggingRecorder;
 use nacelle_codec::MessageDecoder;
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
@@ -629,7 +629,9 @@ async fn phase_limit_rejects_unauthenticated_body_before_reading_body() {
         .expect("server task should join");
     assert!(matches!(
         result,
-        Err(NacelleError::ResourceLimit("request_body_bytes"))
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes
+        ))
     ));
 }
 
@@ -841,7 +843,10 @@ async fn streaming_handler_timeout_does_not_wait_for_incomplete_body() {
         .await
         .expect("handler timeout should finish the connection")
         .expect("server task should join");
-    assert!(matches!(result, Err(NacelleError::Timeout("handler"))));
+    assert!(matches!(
+        result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+    ));
 }
 
 #[tokio::test]
@@ -1383,7 +1388,9 @@ async fn one_way_limit_rejects_before_body_read_or_handler_dispatch() {
 
     assert!(matches!(
         result,
-        Err(NacelleError::ResourceLimit("request_body_bytes"))
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes
+        ))
     ));
     assert!(!handler_called.load(Ordering::SeqCst));
 }
@@ -1728,7 +1735,10 @@ async fn serial_handler_timeout_cancels_mutable_loan_without_reentry() {
         .await
         .expect("handler timeout should finish the connection")
         .expect("server task should join");
-    assert!(matches!(result, Err(NacelleError::Timeout("handler"))));
+    assert!(matches!(
+        result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+    ));
     assert!(!in_call.load(Ordering::SeqCst));
 }
 
