@@ -12,8 +12,10 @@ use std::thread;
 use std::time::Duration;
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+#[cfg(feature = "tls-self-signed")]
+use nacelle::core::NacelleTimeoutReason;
 use nacelle::core::telemetry::NacelleTelemetryObserver;
-use nacelle::core::{NacelleError, NacelleTelemetry, NacelleTimeoutReason};
+use nacelle::core::{NacelleError, NacelleTelemetry};
 #[cfg(feature = "tls-self-signed")]
 use nacelle::rustls::NacelleTlsConfig;
 use nacelle::tcp::TcpHandler;
