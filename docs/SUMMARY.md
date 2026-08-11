@@ -18,6 +18,7 @@
 
 # How-to guides
 
+- [Migrate from beta.5 to beta.6](how-to/migrate-beta-6.md)
 - [Configure production limits](how-to/configure-production.md)
 - [Run stress tests](how-to/run-stress-tests.md)
 - [Compare performance profiles](how-to/compare-performance.md)
