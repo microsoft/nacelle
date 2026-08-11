@@ -29,25 +29,39 @@ pub use nacelle_tcp as tcp;
 
 mod app;
 mod host;
+#[cfg(feature = "experimental-thread-per-core")]
 mod thread_per_core;
 pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
-    #[cfg(all(feature = "http", feature = "rustls"))]
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
+        feature = "http",
+        feature = "rustls"
+    ))]
     pub use crate::thread_per_core::run_local_http_tls_thread_per_core;
-    #[cfg(all(feature = "tcp", feature = "rustls"))]
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
+        feature = "tcp",
+        feature = "rustls"
+    ))]
     pub use crate::thread_per_core::run_local_tcp_tls_thread_per_core;
-    #[cfg(feature = "http")]
+    #[cfg(all(feature = "experimental-thread-per-core", feature = "http"))]
     pub use crate::thread_per_core::{LocalHttpRuntimeConfig, run_local_http_thread_per_core};
-    #[cfg(feature = "tcp")]
+    #[cfg(all(feature = "experimental-thread-per-core", feature = "tcp"))]
     pub use crate::thread_per_core::{
         LocalTcpRuntimeConfig, run_local_serial_tcp_thread_per_core, run_local_tcp_thread_per_core,
     };
+    #[cfg(feature = "experimental-thread-per-core")]
     pub use crate::thread_per_core::{
         RuntimeMode, ThreadPerCoreConfig, ThreadPerCoreLimits, Worker, WorkerContext, WorkerSet,
         bind_reuse_port_listener, run_thread_per_core, run_thread_per_core_with_shutdown,
     };
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
+        feature = "tcp",
+        feature = "openssl"
+    ))]
     pub use crate::thread_per_core::{
         run_local_serial_tcp_openssl_thread_per_core,
         run_local_serial_tcp_optional_openssl_thread_per_core,
