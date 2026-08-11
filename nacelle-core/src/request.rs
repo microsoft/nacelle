@@ -17,6 +17,7 @@ use crate::telemetry::NacelleTransport;
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleConnectionTlsMeta {
     pub provider: &'static str,
@@ -65,6 +66,7 @@ impl NacelleConnectionTlsMeta {
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone)]
 pub struct NacelleConnectionMeta {
     pub connection_id: u64,

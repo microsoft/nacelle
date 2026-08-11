@@ -22,6 +22,7 @@ use crate::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
 use crate::telemetry::NacelleTransport;
 
 /// Immutable transport metadata for one accepted connection.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo {
     /// Stable connection identifier.
