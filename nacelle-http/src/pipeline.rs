@@ -103,11 +103,11 @@ impl Respond for HttpResponder {
     }
 }
 
-/// Typed HTTP request context with concrete connection state.
-pub type HttpRequestContext<State> = RequestContext<
+/// Typed HTTP request context with concrete connection and application state.
+pub type HttpRequestContext<State, AppState = ()> = RequestContext<
     HttpRequest,
     RequiredResponder<HttpResponder>,
-    (),
+    AppState,
     ConnectionContext<Arc<State>>,
 >;
 
@@ -115,28 +115,40 @@ pub type HttpRequestContext<State> = RequestContext<
 pub type HttpHandlerCompletion = RequiredCompletion<HttpCompletion>;
 
 /// Worker-local HTTP request context with concrete `!Send` connection state.
-pub type LocalHttpRequestContext<State> =
-    RequestContext<HttpRequest, RequiredResponder<HttpResponder>, (), ConnectionContext<Rc<State>>>;
+pub type LocalHttpRequestContext<State, AppState = ()> = RequestContext<
+    HttpRequest,
+    RequiredResponder<HttpResponder>,
+    AppState,
+    ConnectionContext<Rc<State>>,
+>;
 
 /// Statically dispatched typed HTTP handler.
-pub trait HttpHandler<State>:
-    Handler<HttpRequestContext<State>, Completion = HttpHandlerCompletion, Error = NacelleError>
+pub trait HttpHandler<State, AppState = ()>:
+    Handler<
+        HttpRequestContext<State, AppState>,
+        Completion = HttpHandlerCompletion,
+        Error = NacelleError,
+    >
 where
     State: Send + Sync + 'static,
 {
 }
 
-impl<State, H> HttpHandler<State> for H
+impl<State, AppState, H> HttpHandler<State, AppState> for H
 where
     State: Send + Sync + 'static,
-    H: Handler<HttpRequestContext<State>, Completion = HttpHandlerCompletion, Error = NacelleError>,
+    H: Handler<
+            HttpRequestContext<State, AppState>,
+            Completion = HttpHandlerCompletion,
+            Error = NacelleError,
+        >,
 {
 }
 
 /// Worker-local HTTP handler for explicit thread-per-core execution.
-pub trait LocalHttpHandler<State>:
+pub trait LocalHttpHandler<State, AppState = ()>:
     LocalHandler<
-        LocalHttpRequestContext<State>,
+        LocalHttpRequestContext<State, AppState>,
         Completion = HttpHandlerCompletion,
         Error = NacelleError,
     >
@@ -145,15 +157,86 @@ where
 {
 }
 
-impl<State, H> LocalHttpHandler<State> for H
+impl<State, AppState, H> LocalHttpHandler<State, AppState> for H
 where
     State: 'static,
     H: LocalHandler<
-            LocalHttpRequestContext<State>,
+            LocalHttpRequestContext<State, AppState>,
             Completion = HttpHandlerCompletion,
             Error = NacelleError,
         >,
 {
+}
+
+/// Shared-runtime adapter that installs application state before user dispatch.
+#[doc(hidden)]
+pub struct SharedHttpAppStateHandler<H, AppState> {
+    handler: Arc<H>,
+    app_state: Arc<AppState>,
+}
+
+impl<H, AppState> SharedHttpAppStateHandler<H, AppState> {
+    #[doc(hidden)]
+    pub const fn new(handler: Arc<H>, app_state: Arc<AppState>) -> Self {
+        Self { handler, app_state }
+    }
+}
+
+impl<State, H, AppState> Handler<HttpRequestContext<State>>
+    for SharedHttpAppStateHandler<H, AppState>
+where
+    State: Send + Sync + 'static,
+    H: HttpHandler<State, AppState>,
+    AppState: Send + Sync + 'static,
+{
+    type Completion = HttpHandlerCompletion;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: HttpRequestContext<State>,
+    ) -> impl std::future::Future<Output = Result<Self::Completion, Self::Error>> + Send {
+        Handler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+/// Worker-local adapter that installs application state before user dispatch.
+#[doc(hidden)]
+pub struct LocalHttpAppStateHandler<H, AppState> {
+    handler: Rc<H>,
+    app_state: Arc<AppState>,
+}
+
+impl<H, AppState> LocalHttpAppStateHandler<H, AppState> {
+    #[doc(hidden)]
+    pub const fn new(handler: Rc<H>, app_state: Arc<AppState>) -> Self {
+        Self { handler, app_state }
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<State, H, AppState> LocalHandler<LocalHttpRequestContext<State>>
+    for LocalHttpAppStateHandler<H, AppState>
+where
+    State: 'static,
+    H: LocalHttpHandler<State, AppState>,
+    AppState: 'static,
+{
+    type Completion = HttpHandlerCompletion;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: LocalHttpRequestContext<State>,
+    ) -> impl std::future::Future<Output = Result<Self::Completion, Self::Error>> {
+        LocalHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
 }
 
 /// Constructs concrete state once for each accepted HTTP connection.
@@ -188,4 +271,52 @@ impl LocalHttpConnectionStateFactory for NoHttpConnectionState {
     type State = ();
 
     fn create(&self, _connection: &ConnectionInfo) -> Self::State {}
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use nacelle_core::pipeline::{RequiredResponder, handler_fn};
+    use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn shared_adapter_preserves_application_state_identity() {
+        let app_state = Arc::new(String::from("shared"));
+        let expected_state = app_state.clone();
+        let observed = Arc::new(AtomicBool::new(false));
+        let handler_observed = observed.clone();
+        let handler = handler_fn(move |context: HttpRequestContext<(), String>| {
+            handler_observed.store(
+                std::ptr::eq(context.app_state(), expected_state.as_ref()),
+                Ordering::Relaxed,
+            );
+            async move { context.respond(HttpResponse::empty(StatusCode::OK)).await }
+        });
+        let adapter = SharedHttpAppStateHandler::new(Arc::new(handler), app_state);
+        let request = HttpRequest::new(
+            Method::GET,
+            Uri::from_static("/"),
+            HeaderMap::new(),
+            None,
+            NacelleBody::empty(),
+        );
+        let connection = ConnectionContext::new(
+            ConnectionInfo::from(&NacelleConnectionMeta::http_socket(None, None)),
+            Arc::new(()),
+        );
+        let context = HttpRequestContext::without_app_state(
+            request,
+            RequiredResponder::new(HttpResponder),
+            connection,
+        );
+
+        let _completion = Handler::call(&adapter, context)
+            .await
+            .expect("handler should complete");
+
+        assert!(observed.load(Ordering::Relaxed));
+    }
 }

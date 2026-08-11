@@ -9,7 +9,8 @@ context.respond(transport_response).await
 
 Each transport owns its request, response, and completion types. Handlers receive
 a typed context with a streaming `NacelleBody`, connection metadata, and concrete
-connection state, so services can process chunks without forcing full buffering.
+application and connection state, so services can process chunks without forcing
+full buffering.
 
 ## Status
 
@@ -72,6 +73,14 @@ async fn main() -> Result<(), NacelleError> {
 }
 ```
 
+Applications with shared dependencies use `NacelleApp::with_state(...)` or
+`NacelleApp::with_state_and_telemetry(...)` and declare that state as the final
+request-context type parameter. Handlers borrow it with `context.app_state()`.
+Nacelle keeps one internal `Arc` allocation and shares it across every listener;
+it does not expose mutable access or replace the dependency root at runtime.
+Reloadable configuration can live behind that root and return one owned snapshot
+per request before the handler awaits.
+
 ## Examples
 
 Run the checked-in examples from a local checkout:
@@ -107,6 +116,7 @@ cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 
 - Transport-owned typed request, response, and completion contracts.
 - Static handler and middleware dispatch without boxed hot-path futures.
 - App-core serving with swappable protocol adapters.
+- One typed application dependency root shared across registered listeners.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
 - Serial plain TCP, OpenSSL, experimental optional OpenSSL, and Unix socket handlers with

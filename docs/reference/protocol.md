@@ -57,7 +57,9 @@ for routing, reject it, or ignore it. If the handler rejects an opcode after
 draining the body and returns an error, the server encodes that error as a
 response frame.
 
-Handlers receive `TcpRequestContext<P>`. Its request contains the associated
+Handlers receive `TcpRequestContext<P, AppState>`, where application state
+defaults to `()`. `context.app_state()` borrows the dependency root shared by
+the app across listeners. Its request contains the associated
 protocol head under `request().head` and the bounded body under
 `request_mut().body`. Its connection context contains a stable connection id,
 peer/local addresses, listener label, TLS metadata, and

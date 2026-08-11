@@ -35,6 +35,11 @@ Start with these public entry points:
   when app/host composition is not sufficient.
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)` for the
   app-first serving path across TCP, Unix sockets, HTTP, and TLS.
+- `NacelleApp::with_state(...)` or `with_state_and_telemetry(...)` for one typed
+  dependency root shared across listeners. Declare it in
+  `TcpRequestContext<P, AppState>` or
+  `HttpRequestContext<ConnectionState, AppState>` and borrow it through
+  `RequestContext::app_state()`.
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
 - `nacelle::tcp::{NacelleTcpConfig, NacelleTcpLimits}` for TCP buffering,
   framing, and timeout policy. These structs are non-exhaustive; construct them
@@ -45,6 +50,9 @@ Start with these public entry points:
   worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL
   execution. These APIs require `experimental-thread-per-core`; this mode does
   not silently fall back to the shared runtime.
+- `LocalTcpRuntimeConfig::with_state(...)` and
+  `LocalHttpRuntimeConfig::with_state(...)` to share the same typed dependency
+  root across worker-local listeners.
 - `ThreadPerCoreConfig::with_max_threads(...)` to cap the worker threads selected by
   `WorkerSet::all()`, `WorkerSet::first(...)`, or `WorkerSet::explicit(...)` while preserving
   selection order. The shared runtime is caller-owned; configure its Tokio thread count on the

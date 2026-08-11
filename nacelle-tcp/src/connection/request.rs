@@ -196,7 +196,7 @@ where
         request: TcpRequest<P::Request>,
         responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
-        let context = RequestContext::new(request, responder, (), connection.clone());
+        let context = RequestContext::without_app_state(request, responder, connection.clone());
         nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
     }
 }
@@ -212,7 +212,7 @@ where
         request: TcpRequest<P::OneWayRequest>,
     ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
     {
-        let context = RequestContext::new(request, NoResponse, (), connection.clone());
+        let context = RequestContext::without_app_state(request, NoResponse, connection.clone());
         nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
     }
 }
@@ -231,7 +231,7 @@ where
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         SerialTcpHandler::call(
             self.0.as_ref(),
-            RequestContext::new(request, responder, (), connection),
+            RequestContext::without_app_state(request, responder, connection),
         )
     }
 }
@@ -250,7 +250,7 @@ where
     {
         SerialTcpOneWayHandler::call(
             self.0.as_ref(),
-            RequestContext::new(request, NoResponse, (), connection),
+            RequestContext::without_app_state(request, NoResponse, connection),
         )
     }
 }
@@ -267,7 +267,7 @@ where
         request: TcpRequest<P::Request>,
         responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
-        let context = RequestContext::new(request, responder, (), connection.clone());
+        let context = RequestContext::without_app_state(request, responder, connection.clone());
         nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
     }
 }
@@ -284,7 +284,7 @@ where
         request: TcpRequest<P::OneWayRequest>,
     ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
     {
-        let context = RequestContext::new(request, NoResponse, (), connection.clone());
+        let context = RequestContext::without_app_state(request, NoResponse, connection.clone());
         nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
     }
 }
@@ -303,7 +303,7 @@ where
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         LocalSerialTcpHandler::call(
             self.0.as_ref(),
-            RequestContext::new(request, responder, (), connection),
+            RequestContext::without_app_state(request, responder, connection),
         )
     }
 }
@@ -322,7 +322,7 @@ where
     {
         LocalSerialTcpOneWayHandler::call(
             self.0.as_ref(),
-            RequestContext::new(request, NoResponse, (), connection),
+            RequestContext::without_app_state(request, NoResponse, connection),
         )
     }
 }

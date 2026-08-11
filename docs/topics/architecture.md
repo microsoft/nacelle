@@ -22,17 +22,27 @@ becoming part of the published library API.
 ## App Core And Protocol Adapters
 
 Nacelle is organized so application behavior lives behind statically dispatched
-handler boundaries. TCP handlers receive `TcpRequestContext<P>` and complete
-requests with the response type associated with `P`. HTTP handlers receive
-`HttpRequestContext<State>` and complete through `HttpResponse`.
+handler boundaries. TCP handlers receive `TcpRequestContext<P, AppState>` and
+complete requests with the response type associated with `P`. HTTP handlers
+receive `HttpRequestContext<ConnectionState, AppState>` and complete through
+`HttpResponse`. Both state parameters default to `()`.
 
 TCP `Protocol` implementations are adapters: they decode a wire format into
 request metadata and encode responses back into frames. Swapping protocols
 should not require rewriting the app core. The app-first serving path wires
 concrete typed servers together with
-`NacelleApp::new().tcp(...).http(...).run()`. The app owns shared runtime state,
-telemetry, shutdown, and supervision. `nacelle::runtime::NacelleHost` remains
-available for services that need manual listener control.
+`NacelleApp::new().tcp(...).http(...).run()`. Applications that need shared
+dependencies start with `NacelleApp::with_state(...)`. The app owns one stable
+`Arc<AppState>` shared by every registered listener, plus runtime state,
+telemetry, shutdown, and supervision. Handlers receive only `&AppState` through
+`RequestContext::app_state()`; Nacelle provides no mutable accessor or runtime
+replacement for the whole dependency root. `nacelle::runtime::NacelleHost`
+remains available for services that need manual listener control.
+
+Reloadable configuration belongs behind the application root rather than in
+Nacelle. A configuration service may use `ArcSwap` or another snapshot mechanism
+internally. A handler should acquire one owned snapshot for a request and avoid
+holding a reload guard across `.await`.
 
 Per-connection TLS metadata lives in `nacelle-core`. Concrete configuration,
 certificate handling, reload policy, and negotiated metadata extraction live
@@ -103,7 +113,9 @@ retaining a single shared FIFO hard memory ceiling when `experimental-memory`
 is enabled.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
-must not scale with worker count.
+must not scale with worker count. `LocalTcpRuntimeConfig::with_state(...)` and
+`LocalHttpRuntimeConfig::with_state(...)` share one `Arc<AppState>` across
+workers while protocol, handler, and connection state remain worker-local.
 
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header

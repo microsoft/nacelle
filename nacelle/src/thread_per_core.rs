@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
+#[cfg(any(feature = "tcp", feature = "http"))]
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 
@@ -485,11 +487,12 @@ pub fn bind_reuse_port_listener(addr: SocketAddr) -> Result<tokio::net::TcpListe
 /// Configuration for one Linux worker-local plain TCP runtime.
 #[cfg(feature = "tcp")]
 #[derive(Debug, Clone)]
-pub struct LocalTcpRuntimeConfig<Observer = NoopObserver> {
+pub struct LocalTcpRuntimeConfig<Observer = NoopObserver, AppState = ()> {
     runtime: ThreadPerCoreConfig,
     shutdown: NacelleShutdown,
     limits: ThreadPerCoreLimits,
     telemetry: NacelleTelemetry<Observer>,
+    app_state: Arc<AppState>,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     drain_timeout: std::time::Duration,
@@ -498,17 +501,18 @@ pub struct LocalTcpRuntimeConfig<Observer = NoopObserver> {
 /// Configuration for one Linux worker-local plain HTTP runtime.
 #[cfg(feature = "http")]
 #[derive(Debug, Clone)]
-pub struct LocalHttpRuntimeConfig<Observer = NoopObserver> {
+pub struct LocalHttpRuntimeConfig<Observer = NoopObserver, AppState = ()> {
     runtime: ThreadPerCoreConfig,
     shutdown: NacelleShutdown,
     limits: ThreadPerCoreLimits,
     telemetry: NacelleTelemetry<Observer>,
+    app_state: Arc<AppState>,
     addr: SocketAddr,
     drain_timeout: std::time::Duration,
 }
 
 #[cfg(feature = "http")]
-impl LocalHttpRuntimeConfig<NoopObserver> {
+impl LocalHttpRuntimeConfig<NoopObserver, ()> {
     /// Construct local HTTP runtime configuration with global accounting.
     pub fn new(
         runtime: ThreadPerCoreConfig,
@@ -520,6 +524,7 @@ impl LocalHttpRuntimeConfig<NoopObserver> {
             shutdown: NacelleShutdown::new(),
             limits: ThreadPerCoreLimits::global(runtime_state),
             telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(()),
             addr,
             drain_timeout: std::time::Duration::from_secs(30),
         }
@@ -527,10 +532,23 @@ impl LocalHttpRuntimeConfig<NoopObserver> {
 }
 
 #[cfg(feature = "http")]
-impl<Observer> LocalHttpRuntimeConfig<Observer>
+impl<Observer, AppState> LocalHttpRuntimeConfig<Observer, AppState>
 where
     Observer: NacelleTelemetryObserver,
 {
+    /// Set the application dependency root before workers are started.
+    pub fn with_state<Next>(self, app_state: Next) -> LocalHttpRuntimeConfig<Observer, Next> {
+        LocalHttpRuntimeConfig {
+            runtime: self.runtime,
+            shutdown: self.shutdown,
+            limits: self.limits,
+            telemetry: self.telemetry,
+            app_state: Arc::new(app_state),
+            addr: self.addr,
+            drain_timeout: self.drain_timeout,
+        }
+    }
+
     /// Use a caller-owned shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
@@ -547,7 +565,7 @@ where
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> LocalHttpRuntimeConfig<Next>
+    ) -> LocalHttpRuntimeConfig<Next, AppState>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -556,6 +574,7 @@ where
             shutdown: self.shutdown,
             limits: self.limits,
             telemetry,
+            app_state: self.app_state,
             addr: self.addr,
             drain_timeout: self.drain_timeout,
         }
@@ -569,7 +588,7 @@ where
 }
 
 #[cfg(feature = "tcp")]
-impl LocalTcpRuntimeConfig<NoopObserver> {
+impl LocalTcpRuntimeConfig<NoopObserver, ()> {
     /// Construct local TCP runtime configuration with global accounting.
     pub fn new(
         runtime: ThreadPerCoreConfig,
@@ -581,6 +600,7 @@ impl LocalTcpRuntimeConfig<NoopObserver> {
             shutdown: NacelleShutdown::new(),
             limits: ThreadPerCoreLimits::global(runtime_state),
             telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(()),
             addr,
             tcp_options: NacelleTcpOptions::default(),
             drain_timeout: std::time::Duration::from_secs(30),
@@ -589,10 +609,24 @@ impl LocalTcpRuntimeConfig<NoopObserver> {
 }
 
 #[cfg(feature = "tcp")]
-impl<Observer> LocalTcpRuntimeConfig<Observer>
+impl<Observer, AppState> LocalTcpRuntimeConfig<Observer, AppState>
 where
     Observer: NacelleTelemetryObserver,
 {
+    /// Set the application dependency root before workers are started.
+    pub fn with_state<Next>(self, app_state: Next) -> LocalTcpRuntimeConfig<Observer, Next> {
+        LocalTcpRuntimeConfig {
+            runtime: self.runtime,
+            shutdown: self.shutdown,
+            limits: self.limits,
+            telemetry: self.telemetry,
+            app_state: Arc::new(app_state),
+            addr: self.addr,
+            tcp_options: self.tcp_options,
+            drain_timeout: self.drain_timeout,
+        }
+    }
+
     /// Use a caller-owned shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
@@ -609,7 +643,7 @@ where
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> LocalTcpRuntimeConfig<Next>
+    ) -> LocalTcpRuntimeConfig<Next, AppState>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -618,6 +652,7 @@ where
             shutdown: self.shutdown,
             limits: self.limits,
             telemetry,
+            app_state: self.app_state,
             addr: self.addr,
             tcp_options: self.tcp_options,
             drain_timeout: self.drain_timeout,
@@ -644,14 +679,15 @@ where
 /// its protocol and `!Send` handlers, and processes accepted connections only
 /// through `spawn_local` on that worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
-    config: LocalTcpRuntimeConfig<Observer>,
+pub fn run_local_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
+    H: LocalTcpHandler<P, AppState> + 'static,
+    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -668,6 +704,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -675,6 +712,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -693,14 +731,15 @@ where
 
 /// Run one worker-local serial TCP listener stack per configured worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_serial_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
-    config: LocalTcpRuntimeConfig<Observer>,
+pub fn run_local_serial_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -717,6 +756,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -724,6 +764,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -742,15 +783,16 @@ where
 
 /// Run one worker-local Rustls TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "rustls"))]
-pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
-    config: LocalTcpRuntimeConfig<Observer>,
+pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
+    H: LocalTcpHandler<P, AppState> + 'static,
+    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -767,6 +809,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -774,6 +817,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -794,15 +838,24 @@ where
 
 /// Run one worker-local required-OpenSSL TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-pub fn run_local_tcp_openssl_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
-    config: LocalTcpRuntimeConfig<Observer>,
+pub fn run_local_tcp_openssl_thread_per_core<
+    P,
+    H,
+    OH,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+>(
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
+    H: LocalTcpHandler<P, AppState> + 'static,
+    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -819,6 +872,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -826,6 +880,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -846,15 +901,24 @@ where
 
 /// Run one worker-local serial required-OpenSSL listener per configured worker.
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-pub fn run_local_serial_tcp_openssl_thread_per_core<P, H, OH, Observer, ServerObserver, Factory>(
-    config: LocalTcpRuntimeConfig<Observer>,
+pub fn run_local_serial_tcp_openssl_thread_per_core<
+    P,
+    H,
+    OH,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+>(
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -871,6 +935,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -878,6 +943,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -905,16 +971,18 @@ pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
     Observer,
     ServerObserver,
     Factory,
+    AppState,
 >(
-    config: LocalTcpRuntimeConfig<Observer>,
+    config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
     detection_options: NacelleTlsDetectionOptions,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
+    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
@@ -931,6 +999,7 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let tcp_options = config.tcp_options;
     let drain_timeout = config.drain_timeout;
@@ -938,6 +1007,7 @@ where
         let listener = bind_reuse_port_listener(addr)?;
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
+                .with_app_state(app_state.clone())
                 .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
         );
         let tcp_options = tcp_options.clone();
@@ -960,13 +1030,14 @@ where
 
 /// Run one worker-local HTTP/1 listener stack per configured worker.
 #[cfg(feature = "http")]
-pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory>(
-    config: LocalHttpRuntimeConfig<Observer>,
+pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory, AppState>(
+    config: LocalHttpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State> + 'static,
+    H: LocalHttpHandler<F::State, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
@@ -983,16 +1054,19 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let drain_timeout = config.drain_timeout;
     let shared_state = LocalHttpSharedState::default();
     run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
         let listener = bind_reuse_port_listener(addr)?;
-        let server = server_factory(context.worker)?.with_runtime_context(
-            telemetry.clone(),
-            limits.state_for(context.worker)?,
-            shared_state.clone(),
-        );
+        let server = server_factory(context.worker)?
+            .with_app_state(app_state.clone())
+            .with_runtime_context(
+                telemetry.clone(),
+                limits.state_for(context.worker)?,
+                shared_state.clone(),
+            );
         Ok(async move {
             server
                 .serve_listener(
@@ -1007,14 +1081,15 @@ where
 
 /// Run one worker-local Rustls HTTP/1 listener stack per configured worker.
 #[cfg(all(feature = "http", feature = "rustls"))]
-pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factory>(
-    config: LocalHttpRuntimeConfig<Observer>,
+pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factory, AppState>(
+    config: LocalHttpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State> + 'static,
+    H: LocalHttpHandler<F::State, AppState> + 'static,
+    AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
     Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
@@ -1031,16 +1106,19 @@ where
     let shutdown = config.shutdown;
     let limits = config.limits;
     let telemetry = config.telemetry;
+    let app_state = config.app_state;
     let addr = config.addr;
     let drain_timeout = config.drain_timeout;
     let shared_state = LocalHttpSharedState::default();
     run_thread_per_core_with_shutdown(runtime, shutdown, move |context| {
         let listener = bind_reuse_port_listener(addr)?;
-        let server = server_factory(context.worker)?.with_runtime_context(
-            telemetry.clone(),
-            limits.state_for(context.worker)?,
-            shared_state.clone(),
-        );
+        let server = server_factory(context.worker)?
+            .with_app_state(app_state.clone())
+            .with_runtime_context(
+                telemetry.clone(),
+                limits.state_for(context.worker)?,
+                shared_state.clone(),
+            );
         let tls_config = tls_config.clone();
         Ok(async move {
             server

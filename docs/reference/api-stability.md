@@ -35,6 +35,11 @@ state, telemetry, shutdown, and listener supervision. Concrete transport
 servers retain transport-specific limits and policy. `nacelle::runtime::NacelleHost`
 and lower-level server APIs remain available for advanced manual supervision.
 
+Use `NacelleApp::with_state(...)` when handlers need application dependencies.
+The app shares one typed root internally through `Arc`, while handlers borrow
+`&AppState` from `RequestContext::app_state()`. Mutable access, dynamic type
+maps, and runtime replacement of the whole root are outside the contract.
+
 Growth-prone connection metadata, `ConnectionInfo`, telemetry events and event
 kinds, and TCP/Unix listener option types are
 non-exhaustive. Consumers must include wildcard enum match arms and construct

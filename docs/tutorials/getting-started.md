@@ -49,6 +49,12 @@ NacelleApp::with_telemetry(NacelleTelemetry::default())
 # Ok::<(), NacelleError>(())
 ```
 
+For application dependencies, construct the app with
+`NacelleApp::with_state(...)`, annotate the handler context as
+`TcpRequestContext<LengthDelimitedProtocol, AppState>`, and borrow the root with
+`context.app_state()`. The same typed root is available to every TCP and HTTP
+listener registered on that app.
+
 ## Next steps
 
 - Run `cargo run -p nacelle-examples --bin app_core` to see one

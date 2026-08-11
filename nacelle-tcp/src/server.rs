@@ -9,8 +9,10 @@ use crate::connection::{
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{LocalTcpHandler, LocalTcpOneWayHandler};
-use crate::protocol::{NoOneWayHandler, Protocol, SharedProtocol, TcpHandler, TcpOneWayHandler};
+use crate::protocol::{LocalAppStateHandler, LocalTcpHandler, LocalTcpOneWayHandler};
+use crate::protocol::{
+    NoOneWayHandler, Protocol, SharedAppStateHandler, SharedProtocol, TcpHandler, TcpOneWayHandler,
+};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleConnectionMeta;
@@ -48,6 +50,40 @@ pub struct LocalTcpServer<P, H, OH = NoOneWayHandler<P>, Observer = NoopObserver
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
+}
+
+#[doc(hidden)]
+pub type LocalAppStateTcpServer<P, H, OH, Observer, AppState> = LocalTcpServer<
+    P,
+    LocalAppStateHandler<P, H, AppState>,
+    LocalAppStateHandler<P, OH, AppState>,
+    Observer,
+>;
+
+impl<P, H, OH, Observer> LocalTcpServer<P, H, OH, Observer> {
+    /// Bind application state before worker-local request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> LocalAppStateTcpServer<P, H, OH, Observer, AppState>
+    where
+        P: Protocol,
+        H: LocalTcpHandler<P, AppState>,
+        OH: LocalTcpOneWayHandler<P, AppState>,
+        AppState: 'static,
+    {
+        LocalTcpServer {
+            protocol: self.protocol,
+            handler: Rc::new(LocalAppStateHandler::new(self.handler, app_state.clone())),
+            one_way_handler: Rc::new(LocalAppStateHandler::new(self.one_way_handler, app_state)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        }
+    }
 }
 
 impl<P, H> LocalTcpServer<P, H, NoOneWayHandler<P>, NoopObserver>
@@ -212,6 +248,40 @@ where
             runtime_state: self.runtime_state.clone(),
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub type AppStateTcpServer<P, H, OH, Observer, AppState> = TcpServer<
+    P,
+    SharedAppStateHandler<P, H, AppState>,
+    SharedAppStateHandler<P, OH, AppState>,
+    Observer,
+>;
+
+impl<P, H, OH, Observer> TcpServer<P, H, OH, Observer> {
+    /// Bind application state before shared-runtime request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> AppStateTcpServer<P, H, OH, Observer, AppState>
+    where
+        P: SharedProtocol,
+        H: TcpHandler<P, AppState>,
+        OH: TcpOneWayHandler<P, AppState>,
+        AppState: Send + Sync + 'static,
+    {
+        TcpServer {
+            protocol: self.protocol,
+            handler: Arc::new(SharedAppStateHandler::new(self.handler, app_state.clone())),
+            one_way_handler: Arc::new(SharedAppStateHandler::new(self.one_way_handler, app_state)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
         }
     }
 }
@@ -559,9 +629,6 @@ impl<ProtocolState, HandlerState, P, H, OH, Observer>
 
 impl<P, H, OH, Observer> TcpServerBuilder<Present, Present, P, H, OH, Observer>
 where
-    P: SharedProtocol,
-    H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     pub fn build(self) -> Result<TcpServer<P, H, OH, Observer>, NacelleError> {

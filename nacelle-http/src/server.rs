@@ -36,8 +36,9 @@ use nacelle_rustls::NacelleTlsConfig;
 
 use crate::pipeline::{
     HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
-    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpConnectionStateFactory,
-    LocalHttpHandler, LocalHttpRequestContext, NoHttpConnectionState,
+    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpAppStateHandler,
+    LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpRequestContext,
+    NoHttpConnectionState, SharedHttpAppStateHandler,
 };
 
 trait HttpDispatch<State, Observer>
@@ -80,10 +81,9 @@ where
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
-        let context = HttpRequestContext::new(
+        let context = HttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
-            (),
             self.connection.clone(),
         );
         nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
@@ -119,10 +119,9 @@ where
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
-        let context = LocalHttpRequestContext::new(
+        let context = LocalHttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
-            (),
             self.connection.clone(),
         );
         nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
@@ -235,6 +234,24 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: Rc::new(factory),
+            runtime: self.runtime,
+        }
+    }
+
+    /// Bind application state before worker-local request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> LocalHyperServer<LocalHttpAppStateHandler<H, AppState>, F, Observer>
+    where
+        F: LocalHttpConnectionStateFactory,
+        H: LocalHttpHandler<F::State, AppState>,
+        AppState: 'static,
+    {
+        LocalHyperServer {
+            handler: Rc::new(LocalHttpAppStateHandler::new(self.handler, app_state)),
+            connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
         }
     }
@@ -494,6 +511,24 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
         HyperServer {
             handler: self.handler,
             connection_state_factory: Arc::new(factory),
+            runtime: self.runtime,
+        }
+    }
+
+    /// Bind application state before shared-runtime request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> HyperServer<SharedHttpAppStateHandler<H, AppState>, F, Observer>
+    where
+        F: HttpConnectionStateFactory,
+        H: HttpHandler<F::State, AppState>,
+        AppState: Send + Sync + 'static,
+    {
+        HyperServer {
+            handler: Arc::new(SharedHttpAppStateHandler::new(self.handler, app_state)),
+            connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
         }
     }
