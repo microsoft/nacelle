@@ -14,8 +14,8 @@ function Invoke-Step {
 }
 
 Invoke-Step "cargo fmt" { cargo fmt --all -- --check }
-Invoke-Step "workspace clippy" { cargo clippy --workspace --all-targets -- -D warnings }
-Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features "tls" --all-targets -- -D warnings }
+Invoke-Step "Rustls workspace clippy" { cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings }
+Invoke-Step "nacelle-core OpenSSL clippy" { cargo clippy -p nacelle-core --features "openssl" --all-targets -- -D warnings }
 Invoke-Step "nacelle-rustls full clippy" { cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings }
 Invoke-Step "nacelle-openssl clippy" { cargo clippy -p nacelle-openssl --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp clippy" { cargo clippy -p nacelle-tcp --all-targets -- -D warnings }

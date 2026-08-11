@@ -36,7 +36,7 @@ servers retain transport-specific limits and policy. `nacelle::runtime::NacelleH
 and lower-level server APIs remain available for advanced manual supervision.
 
 Growth-prone connection metadata, `ConnectionInfo`, telemetry events and event
-kinds, TLS provider identity, and TCP/Unix listener option types are
+kinds, and TCP/Unix listener option types are
 non-exhaustive. Consumers must include wildcard enum match arms and construct
 supported option values through `new`, `Default`, conversions, and `with_*` or
 `without_*` builders. `NacelleTcpConfig` and transport limit types follow the

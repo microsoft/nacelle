@@ -1,5 +1,5 @@
 //! Runtime-reloadable TCP proxy service used by the `nacelle-proxy` example.
-#![cfg(feature = "tls")]
+#![cfg(feature = "rustls")]
 
 /// Application composition, lifecycle, and Nacelle runtime assembly.
 pub mod app;

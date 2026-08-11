@@ -4,12 +4,7 @@ set -ex
 
 cmd="${1:-test}"
 
-# Run with each feature
-# * --each-feature includes both default/no-default features
-# * --optional-deps is needed for serde feature
-cargo hack "${cmd}" --each-feature --optional-deps
-# Run with all features
-cargo "${cmd}" --all-features
+.github/scripts/check-feature-matrix.sh "${cmd}"
 
 if [[ "${RUST_VERSION}" == "nightly"* ]]; then
     # Check benchmarks
@@ -21,5 +16,5 @@ if [[ "${RUST_VERSION}" == "nightly"* ]]; then
     cargo hack --remove-dev-deps --workspace
     # Update Cargo.lock to minimal version dependencies.
     cargo update -Z minimal-versions
-    cargo check --all-features
+    .github/scripts/check-feature-matrix.sh check
 fi

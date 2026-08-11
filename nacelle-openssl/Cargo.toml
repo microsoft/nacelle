@@ -16,7 +16,7 @@ default = []
 vendored = ["openssl/vendored"]
 
 [dependencies]
-nacelle-core = { workspace = true, features = ["tls"] }
+nacelle-core = { workspace = true, features = ["openssl"] }
 openssl = { workspace = true }
 
 [lints]

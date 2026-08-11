@@ -12,9 +12,13 @@ $previousRustdocFlags = $env:RUSTDOCFLAGS
 $env:RUSTDOCFLAGS = (($previousRustdocFlags, "-D warnings") | Where-Object { $_ } | Select-Object -Unique) -join " "
 
 try {
-    cargo doc --workspace --all-features --no-deps
+    cargo doc -p nacelle --no-default-features --features "buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed" --no-deps
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo doc --workspace --all-features --no-deps failed with exit code $LASTEXITCODE"
+        throw "Rustls facade documentation failed with exit code $LASTEXITCODE"
+    }
+    cargo doc -p nacelle-openssl --all-features --no-deps
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenSSL provider documentation failed with exit code $LASTEXITCODE"
     }
 } finally {
     $env:RUSTDOCFLAGS = $previousRustdocFlags

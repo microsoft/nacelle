@@ -161,7 +161,6 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
 | `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
-| `tls` | Provider-neutral TLS capability. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
@@ -176,6 +175,12 @@ the supported `0.3` contract. They remain opt-in and may change or be removed in
 a future minor release. `phase-timing` and `error-hints` are supported opt-ins;
 the exact text returned by `NacelleError::hint()` is advisory and must not be
 parsed or used as a programmatic error code.
+
+`rustls` and `openssl` are mutually exclusive compile-time choices. Select
+exactly one when TLS is required; Nacelle has no runtime provider selector.
+HTTP TLS requires `rustls`, while TCP supports either backend.
+Root-level Cargo commands use the Rustls workspace lane by default; validate
+OpenSSL explicitly with `-p nacelle-openssl` or the `openssl` facade feature.
 
 Nacelle emits metrics through the [`metrics`](https://crates.io/crates/metrics)
 facade and does not select an exporter. Install the recorder chosen by your
@@ -194,7 +199,7 @@ OpenSSL builds need native OpenSSL development files unless you enable
 ## Workspace Layout
 
 - `nacelle-core` contains shared typed pipeline, body, resource limit,
-    lifecycle, telemetry, and provider-neutral TLS metadata.
+    lifecycle, telemetry, and negotiated TLS connection metadata.
 - `nacelle-openssl` contains reloadable OpenSSL configuration and negotiated
     connection metadata extraction.
 - `nacelle-rustls` contains reloadable Rustls configuration, certificate
@@ -271,8 +276,7 @@ Verify the workspace before submitting changes:
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo test --workspace --all-features
+./scripts/validate-all.sh
 ```
 
 Build release binaries:
@@ -311,7 +315,8 @@ mdbook build
 Generate Rust API docs:
 
 ```bash
-cargo doc --workspace --all-features --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
 ## Contributing

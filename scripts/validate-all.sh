@@ -2,10 +2,10 @@
 set -euo pipefail
 
 cargo fmt --all -- --check
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p nacelle-core --features tls --all-targets
-cargo clippy -p nacelle-core --features tls --all-targets -- -D warnings
+cargo test --workspace --exclude nacelle-openssl --all-targets
+cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings
+cargo test -p nacelle-core --features openssl --all-targets
+cargo clippy -p nacelle-core --features openssl --all-targets -- -D warnings
 cargo test -p nacelle-rustls --all-features --all-targets
 cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings
 cargo test -p nacelle-openssl --all-targets
@@ -29,7 +29,7 @@ cargo clippy -p nacelle-examples --no-default-features --features http --all-tar
 cargo test -p nacelle --features http --all-targets
 cargo clippy -p nacelle --features http --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features http --all-targets
-cargo test -p nacelle --no-default-features --features tls --all-targets
+cargo test -p nacelle --no-default-features --features tcp,rustls --all-targets
 cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets
 cargo clippy -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets -- -D warnings
@@ -57,6 +57,7 @@ if cargo tree -p nacelle --no-default-features --features tcp,openssl -i rustls 
   echo "rustls is selected by the tcp,openssl feature set" >&2
   exit 1
 fi
+.github/scripts/check-tls-exclusivity.sh
 if cargo tree -p nacelle --no-default-features -i rustls >/dev/null 2>&1; then
   echo "rustls is selected by the nacelle no-default feature set" >&2
   exit 1

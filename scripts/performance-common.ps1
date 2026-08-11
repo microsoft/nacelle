@@ -87,7 +87,7 @@ function Get-NacellePerformanceBenchmarks {
     if (Test-Path (Join-Path $Workspace "nacelle-tcp/benches/telemetry_paths.rs")) {
         $available += [pscustomobject]@{
             Name      = "telemetry"
-            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--all-features")
+            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--features", "buffer-rotation experimental-memory phase-timing rustls tls-self-signed")
         }
     }
 

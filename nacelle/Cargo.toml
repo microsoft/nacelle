@@ -20,9 +20,8 @@ experimental-memory = ["nacelle-core/experimental-memory", "nacelle-http?/experi
 experimental-openssl-detection = ["tcp", "openssl", "nacelle-tcp/experimental-openssl-detection"]
 experimental-thread-per-core = ["dep:core_affinity", "dep:socket2"]
 http = ["dep:nacelle-http"]
-tls = ["nacelle-core/tls", "nacelle-http?/tls", "nacelle-tcp?/tls"]
-rustls = ["tls", "dep:nacelle-rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
-openssl = ["tls", "dep:nacelle-openssl", "nacelle-tcp?/openssl"]
+rustls = ["dep:nacelle-rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
+openssl = ["dep:nacelle-openssl", "nacelle-tcp?/openssl"]
 openssl-vendored = ["openssl", "nacelle-openssl/vendored", "nacelle-tcp?/openssl-vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed", "nacelle-http?/tls-self-signed", "nacelle-tcp?/tls-self-signed"]
 phase-timing = ["tcp", "nacelle-tcp/phase-timing"]
@@ -40,3 +39,8 @@ nacelle-rustls = { workspace = true, optional = true }
 nacelle-tcp = { workspace = true, optional = true }
 socket2 = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+
+[package.metadata.docs.rs]
+all-features = false
+no-default-features = true
+features = ["buffer-rotation", "error-hints", "experimental-memory", "experimental-thread-per-core", "http", "phase-timing", "rustls", "tcp", "tls-self-signed"]

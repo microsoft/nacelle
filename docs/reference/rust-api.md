@@ -3,7 +3,8 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc --workspace --all-features --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
 On Windows:
@@ -11,6 +12,10 @@ On Windows:
 ```powershell
 .\scripts\build-rustdoc.ps1
 ```
+
+The facade documentation uses the Rustls backend. OpenSSL configuration is
+documented separately from `nacelle-openssl` because both backend features
+cannot be enabled in one build.
 
 The generated index is:
 
@@ -84,7 +89,7 @@ Start with these public entry points:
 - `nacelle::tcp::TcpServer`, `nacelle::http::HyperServer`, `nacelle::runtime::NacelleHost`, and
   `nacelle::advanced::runtime` when a service needs lower-level listener control.
 
-Connection metadata, `ConnectionInfo`, telemetry event types, TLS provider
-identity, and TCP/Unix listener options are non-exhaustive. Observe them with
+Connection metadata, `ConnectionInfo`, telemetry event types, and TCP/Unix
+listener options are non-exhaustive. Observe them with
 wildcard enum matches and construct option values through their documented
 constructors, defaults, conversions, and builders.

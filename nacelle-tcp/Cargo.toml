@@ -16,9 +16,8 @@ default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
 experimental-memory = ["nacelle-core/experimental-memory"]
 experimental-openssl-detection = ["openssl"]
-tls = []
-rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
-openssl = ["tls", "dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl", "nacelle-core/tls"]
+rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
+openssl = ["dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl"]
 openssl-vendored = ["openssl", "openssl/vendored", "nacelle-openssl/vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 phase-timing = ["nacelle-core/phase-timing"]
@@ -49,3 +48,7 @@ harness = false
 [[bench]]
 name = "response_delivery"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = false
+features = ["buffer-rotation", "experimental-memory", "phase-timing", "rustls", "tls-self-signed"]

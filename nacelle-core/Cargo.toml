@@ -15,8 +15,9 @@ categories = ["asynchronous", "network-programming"]
 default = []
 error-hints = []
 experimental-memory = []
-tls = []
+openssl = []
 phase-timing = []
+rustls = []
 
 [dependencies]
 bytes = { workspace = true }
@@ -28,3 +29,10 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 metrics-util = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }
+
+[package.metadata.docs.rs]
+all-features = false
+features = ["error-hints", "experimental-memory", "phase-timing", "rustls"]

@@ -16,7 +16,7 @@ default = []
 self-signed = ["dep:rcgen"]
 
 [dependencies]
-nacelle-core = { workspace = true, features = ["tls"] }
+nacelle-core = { workspace = true, features = ["rustls"] }
 pem = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
