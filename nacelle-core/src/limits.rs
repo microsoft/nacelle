@@ -118,6 +118,11 @@ impl NacelleLimits {
         self.handler_timeout = Some(timeout);
         self
     }
+
+    pub fn without_handler_timeout(mut self) -> Self {
+        self.handler_timeout = None;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1137,6 +1142,13 @@ mod tests {
             Some(Duration::from_secs(5))
         );
         assert!(limits.handler_timeout.is_some());
+    }
+
+    #[test]
+    fn handler_timeout_can_be_disabled() {
+        let limits = NacelleLimits::default().without_handler_timeout();
+
+        assert_eq!(limits.handler_timeout, None);
     }
 
     #[cfg(feature = "experimental-memory")]
