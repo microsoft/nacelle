@@ -37,9 +37,9 @@ Start with these public entry points:
   defaults.
 - `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
   the `run_local_*_thread_per_core(...)` functions for experimental Linux-only
-  worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL execution. This mode
-  requires explicit selection and does not silently fall back to the shared
-  runtime.
+  worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL
+  execution. These APIs require `experimental-thread-per-core`; this mode does
+  not silently fall back to the shared runtime.
 - `ThreadPerCoreConfig::with_max_threads(...)` to cap the worker threads selected by
   `WorkerSet::all()`, `WorkerSet::first(...)`, or `WorkerSet::explicit(...)` while preserving
   selection order. The shared runtime is caller-owned; configure its Tokio thread count on the
@@ -57,18 +57,25 @@ Start with these public entry points:
 - With `experimental-memory`, `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to
   retain declared-length admission or account only live streaming chunks.
 - `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
-  required OpenSSL, optional OpenSSL, and Unix sockets.
+  required OpenSSL, optional OpenSSL, and Unix sockets. Optional plaintext/
+  OpenSSL methods require `experimental-openssl-detection`, which implies the
+  `tcp` and `openssl` features.
 - `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and
   `run_local_serial_tcp_openssl_thread_per_core(...)` for worker-local serial
   plain TCP and required OpenSSL. Use
   `run_local_serial_tcp_optional_openssl_thread_per_core(...)` when plaintext and OpenSSL must
-  share one worker-local listener. Worker factories run once per worker, so
+  share one worker-local listener; it requires both experimental features.
+  Worker factories run once per worker, so
   externally bounded pools should be shared deliberately rather than
   constructed per worker.
+- Use `without_handler_timeout()`, the four `NacelleTcpLimits::without_*_timeout()`
+  builders, and the HTTP `without_*_timeout()` / `without_max_connection_age()`
+  builders when an explicitly unbounded policy is required.
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
 - `nacelle::core::NacelleError::hint()` with the `error-hints` feature for
   optional operator guidance. `NacelleError::Display` remains stable across
   feature combinations; applications append hints deliberately where suitable.
+  Hint text is advisory and must not be parsed as a stable identifier.
 - With `experimental-memory`,
   `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
@@ -76,3 +83,8 @@ Start with these public entry points:
   capacity with `NacelleMemoryAllocation::shrink_to(...)`.
 - `nacelle::tcp::TcpServer`, `nacelle::http::HyperServer`, `nacelle::runtime::NacelleHost`, and
   `nacelle::advanced::runtime` when a service needs lower-level listener control.
+
+Connection metadata, `ConnectionInfo`, telemetry event types, TLS provider
+identity, and TCP/Unix listener options are non-exhaustive. Observe them with
+wildcard enum matches and construct option values through their documented
+constructors, defaults, conversions, and builders.

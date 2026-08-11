@@ -17,9 +17,10 @@ Nacelle is currently `0.3.x`. It is ready for experiments and prototype
 integrations, but the public API is still allowed to change before `1.0`.
 
 The typed pipeline contracts, runtime limits, host/app builders, and telemetry
-observer contract are the most stable parts of the API. Transport metadata, listener options,
-stress-tool configuration, optional OpenSSL TLS detection, and metrics exporter
-integration are still moving.
+observer contract are the most stable parts of the API. Transport metadata and
+listener options are retained as non-exhaustive APIs. Stress-tool configuration,
+experimental OpenSSL detection, experimental memory accounting, and
+experimental thread-per-core execution are still moving.
 
 Authentication and compression are not implemented in Nacelle. Keep those in
 your application, protocol layer, or edge proxy.
@@ -108,14 +109,14 @@ cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 
 - App-core serving with swappable protocol adapters.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
-- Serial plain TCP, OpenSSL, optional OpenSSL, and Unix socket handlers with
+- Serial plain TCP, OpenSSL, experimental optional OpenSSL, and Unix socket handlers with
     exclusive mutable connection state and no async mutex on the connection
     path.
 - Explicit bounded TCP response coalescing for already-buffered request bursts;
     immediate delivery remains the default.
 - HTTP/1 serving through Hyper.
 - Rustls TLS for HTTP and TCP.
-- OpenSSL TLS for TCP, including optional plain/TLS detection on one listener.
+- OpenSSL TLS for TCP, with experimental plain/TLS detection on one listener.
 - Shared runtime limits, backpressure, graceful shutdown, and telemetry hooks.
 - A stress server and stress client for local performance validation.
 
@@ -139,6 +140,12 @@ nacelle = { version = "0.3", features = ["phase-timing"] }
 # Experimental runtime memory accounting and admission
 nacelle = { version = "0.3", features = ["experimental-memory"] }
 
+# Experimental Linux thread-per-core runtime with TCP
+nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
+
+# Experimental plaintext/OpenSSL detection; implies TCP and OpenSSL
+nacelle = { version = "0.3", default-features = false, features = ["experimental-openssl-detection"] }
+
 # Expose structured setup hints through NacelleError::hint()
 nacelle = { version = "0.3", features = ["error-hints"] }
 
@@ -161,6 +168,14 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
 | `experimental-memory` | Compile runtime memory accounting, admission, ownership tracking, and related telemetry. Disabled by default. |
+| `experimental-thread-per-core` | Compile the explicit Linux thread-per-core runtime and worker-local listener APIs. Disabled by default. |
+| `experimental-openssl-detection` | Compile plaintext/OpenSSL detection and mixed-mode listener APIs. Implies `tcp` and `openssl`; disabled by default. |
+
+Features prefixed with `experimental-` are use-at-your-own-risk APIs outside
+the supported `0.3` contract. They remain opt-in and may change or be removed in
+a future minor release. `phase-timing` and `error-hints` are supported opt-ins;
+the exact text returned by `NacelleError::hint()` is advisory and must not be
+parsed or used as a programmatic error code.
 
 Nacelle emits metrics through the [`metrics`](https://crates.io/crates/metrics)
 facade and does not select an exporter. Install the recorder chosen by your

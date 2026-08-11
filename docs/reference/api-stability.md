@@ -1,6 +1,7 @@
 # API stability
 
-Nacelle is `0.3.x`, so public APIs are still experimental.
+Nacelle is pre-`1.0`, but the `0.3` line distinguishes supported opt-in APIs
+from explicitly experimental features.
 
 Stable enough for prototype integrations:
 
@@ -12,15 +13,21 @@ Stable enough for prototype integrations:
 - `nacelle::prelude::*` for common application imports
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}`
 - `nacelle::core::NacelleTelemetryObserver` for statically dispatched application telemetry
+- the `phase-timing` feature and its documented low-cardinality phase schema
+- the `error-hints` feature and `NacelleError::hint()` method
 
 Experimental:
 
-- transport-specific metadata
-- transport listener option structs
-- optional OpenSSL TLS detection on shared TCP listeners
-- telemetry observer event details
+- runtime memory accounting behind `experimental-memory`
+- Linux thread-per-core execution behind `experimental-thread-per-core`
+- plaintext/OpenSSL detection behind `experimental-openssl-detection`
 - stress tooling config
-- feature combinations involving `phase-timing`, TLS providers, and `error-hints`
+
+Features prefixed with `experimental-` are default-off and use at your own
+risk. They are not part of the supported `0.3` contract and may change or be
+removed in a future minor release. `NacelleError::hint()` is supported, but its
+returned text is advisory operator guidance: do not parse it or treat it as a
+stable error identifier. Match the structured `NacelleError` variant instead.
 
 Application code should use the app-first path:
 `NacelleApp::new().tcp(...).http(...).run().await`. The app owns shared runtime
@@ -28,11 +35,13 @@ state, telemetry, shutdown, and listener supervision. Concrete transport
 servers retain transport-specific limits and policy. `nacelle::runtime::NacelleHost`
 and lower-level server APIs remain available for advanced manual supervision.
 
-Public transport configuration structs may be non-exhaustive so fields can be
-added without breaking downstream struct literals. Construct
-`NacelleTcpConfig` and `NacelleTcpLimits` with `Default`, then use their
-`with_*` builders or mutate existing public fields. This preserves defaults for
-settings introduced by later releases.
+Growth-prone connection metadata, `ConnectionInfo`, telemetry events and event
+kinds, TLS provider identity, and TCP/Unix listener option types are
+non-exhaustive. Consumers must include wildcard enum match arms and construct
+supported option values through `new`, `Default`, conversions, and `with_*` or
+`without_*` builders. `NacelleTcpConfig` and transport limit types follow the
+same builder-first rule so settings introduced by later releases retain their
+defaults.
 
 The former detached `NacelleRequest`/`NacelleResponse` handler and Tower adapter
 were removed. Transport pipelines now remain strongly typed through completion;

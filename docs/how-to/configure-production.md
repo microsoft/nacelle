@@ -6,7 +6,9 @@ deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
 and transport timeouts are bounded by default. Runtime memory accounting is
 experimental and not compiled by default. Enable `experimental-memory` and set
-`max_memory_bytes` only after measuring the limiter for your service.
+`max_memory_bytes` only after measuring the limiter for your service. This
+feature is use at your own risk and may change or be removed in a future minor
+release.
 
 Recommended presets:
 
@@ -16,7 +18,7 @@ Recommended presets:
 - Direct HTTPS listener: enable `http,tls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,tls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
-- Optional TCP OpenSSL listener: enable `tcp,openssl` and use `serve_tcp_optional_openssl(...)` or the matching host/app builder method when one listener must accept both plain and TLS clients; keep `NacelleTlsDetectionOptions::timeout` short enough to avoid tying up idle accepted connections.
+- Optional TCP OpenSSL listener: enable `experimental-openssl-detection` (which implies `tcp,openssl`) and use `serve_tcp_optional_openssl(...)` or the matching host/app builder method when one listener must accept both plain and TLS clients; keep `NacelleTlsDetectionOptions::timeout` short enough to avoid tying up idle accepted connections.
 - IPv4 plus IPv6 TCP bind: use the `NacelleApp::*_dual_stack(...)` helpers to register separate IPv4 and IPv6 listeners while forcing the IPv6 listener to v6-only mode.
 - Unix socket listener: enable `tcp` on Unix and call `NacelleApp::unix_socket(...)`; use `NacelleUnixSocketOptions` only when this process owns stale-path cleanup or socket-file permissions.
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
@@ -74,9 +76,14 @@ batch size when using larger thresholds.
 
 Use `NacelleTcpLimits` for TCP socket read, socket write, final writer shutdown,
 and idle timeouts. Set `shutdown_timeout` independently when finalization needs
-a shorter deadline than ordinary response delivery.
+a shorter deadline than ordinary response delivery. Disable these only through
+the corresponding `without_*_timeout()` builders when an explicitly unbounded
+policy is required.
 Use `NacelleHttpLimits` on `HyperServer` for HTTP header read, request body
-read, response write, keep-alive, and max connection age behavior.
+read, response write, keep-alive, and max connection age behavior. Use its
+`without_*_timeout()` and `without_max_connection_age()` builders to disable
+optional deadlines, and `NacelleLimits::without_handler_timeout()` for handler
+execution.
 
 Dangerous configurations:
 
