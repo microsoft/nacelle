@@ -14,11 +14,11 @@ pub use config::TcpStreamingBodyMemoryPolicy;
 pub use config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 pub use connection::{serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;
+#[cfg(feature = "experimental-openssl-detection")]
+pub use options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 pub use options::NacelleUnixSocketOptions;
-pub use options::{
-    NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions, NacelleTlsDetectionOptions,
-};
+pub use options::{NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions};
 pub use protocol::{
     DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
     LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler, NoOneWayHandler, Protocol,

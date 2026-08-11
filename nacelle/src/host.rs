@@ -15,7 +15,7 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopOb
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
 use nacelle_rustls::NacelleTlsConfig;
-#[cfg(all(feature = "tcp", feature = "openssl"))]
+#[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]
 use nacelle_tcp::NacelleUnixSocketOptions;
@@ -659,7 +659,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -683,7 +683,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -709,7 +709,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -753,7 +753,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -778,7 +778,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     #[allow(clippy::too_many_arguments)]
     pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,

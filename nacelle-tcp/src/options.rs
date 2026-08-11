@@ -118,11 +118,13 @@ impl Default for NacelleTcpKeepalive {
     }
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleTlsDetectionOptions {
     pub timeout: Duration,
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
 impl Default for NacelleTlsDetectionOptions {
     fn default() -> Self {
         Self {
@@ -131,6 +133,7 @@ impl Default for NacelleTlsDetectionOptions {
     }
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
 impl NacelleTlsDetectionOptions {
     pub fn new() -> Self {
         Self::default()
@@ -213,6 +216,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental-openssl-detection")]
     fn tls_detection_defaults_to_bounded_timeout() {
         let options = NacelleTlsDetectionOptions::default();
 

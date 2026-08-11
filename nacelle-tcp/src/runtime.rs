@@ -4,7 +4,7 @@ mod common;
 mod local;
 #[cfg(feature = "openssl")]
 mod openssl;
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 mod openssl_optional;
 #[cfg(feature = "rustls")]
 mod rustls;
@@ -20,7 +20,7 @@ mod rustls_tests;
 pub use local::*;
 #[cfg(feature = "openssl")]
 pub use openssl::*;
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 pub use openssl_optional::*;
 #[cfg(feature = "rustls")]
 pub use rustls::*;

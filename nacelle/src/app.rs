@@ -16,7 +16,7 @@ use crate::host::NacelleHost;
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
 use nacelle_rustls::NacelleTlsConfig;
-#[cfg(all(feature = "tcp", feature = "openssl"))]
+#[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]
 use nacelle_tcp::NacelleUnixSocketOptions;
@@ -498,7 +498,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a listener that accepts typed plain or OpenSSL TCP connections.
     pub fn tcp_optional_openssl<P, H, OH, ServerObserver>(
         self,
@@ -523,7 +523,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a plain-or-OpenSSL TCP listener with explicit edge options.
     #[allow(clippy::too_many_arguments)]
     pub fn tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
@@ -555,7 +555,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a serial listener that accepts plaintext or OpenSSL TCP connections.
     pub fn serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
         self,
@@ -581,7 +581,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a serial plaintext-or-OpenSSL TCP listener with edge options.
     #[allow(clippy::too_many_arguments)]
     pub fn serial_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
@@ -614,7 +614,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register IPv4 and IPv6 plain-or-OpenSSL TCP listeners.
     pub fn tcp_optional_openssl_dual_stack<P, H, OH, ServerObserver>(
         self,

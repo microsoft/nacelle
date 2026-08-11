@@ -20,7 +20,7 @@ use nacelle_http::{
 };
 #[cfg(feature = "tcp")]
 use nacelle_tcp::options::NacelleTcpOptions;
-#[cfg(all(feature = "openssl", feature = "tcp"))]
+#[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::options::NacelleTlsDetectionOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::protocol::{LocalTcpHandler, LocalTcpOneWayHandler, Protocol};
@@ -897,7 +897,7 @@ where
 }
 
 /// Run one worker-local serial plaintext-or-OpenSSL listener per configured worker.
-#[cfg(all(feature = "tcp", feature = "openssl"))]
+#[cfg(feature = "experimental-openssl-detection")]
 pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
     P,
     H,

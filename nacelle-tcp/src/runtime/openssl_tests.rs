@@ -20,14 +20,14 @@ use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::LocalTcpServer;
 use crate::server::TcpServer;
 
-use super::local::{
-    serve_local_serial_tcp_openssl_listener, serve_local_serial_tcp_optional_openssl_listener,
-    serve_local_tcp_openssl_listener,
-};
+#[cfg(feature = "experimental-openssl-detection")]
+use super::local::serve_local_serial_tcp_optional_openssl_listener;
+use super::local::{serve_local_serial_tcp_openssl_listener, serve_local_tcp_openssl_listener};
 use super::openssl::{
     serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline,
     serve_tcp_openssl_listener_with_shutdown_deadline,
 };
+#[cfg(feature = "experimental-openssl-detection")]
 use super::openssl_optional::{
     peeked_bytes_can_be_tls,
     serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline,
@@ -134,6 +134,7 @@ impl Protocol for PlainProtocol {
 }
 
 #[test]
+#[cfg(feature = "experimental-openssl-detection")]
 fn tls_detection_accepts_tls_handshake_prefix() {
     assert!(peeked_bytes_can_be_tls(&[0x16]));
     assert!(peeked_bytes_can_be_tls(&[0x16, 0x03]));
@@ -141,6 +142,7 @@ fn tls_detection_accepts_tls_handshake_prefix() {
 }
 
 #[test]
+#[cfg(feature = "experimental-openssl-detection")]
 fn tls_detection_rejects_plain_protocol_prefix() {
     assert!(!peeked_bytes_can_be_tls(&[0x01]));
     assert!(!peeked_bytes_can_be_tls(&[0x16, 0x02]));
@@ -260,6 +262,7 @@ async fn serial_required_openssl_accepts_tls_request() {
 }
 
 #[tokio::test]
+#[cfg(feature = "experimental-openssl-detection")]
 async fn serial_optional_openssl_preserves_plaintext_request() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -299,6 +302,7 @@ async fn serial_optional_openssl_preserves_plaintext_request() {
 }
 
 #[tokio::test]
+#[cfg(feature = "experimental-openssl-detection")]
 async fn serial_optional_openssl_accepts_tls_request() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -484,6 +488,7 @@ async fn local_serial_required_openssl_accepts_tls_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "experimental-openssl-detection")]
 async fn local_serial_optional_openssl_preserves_plaintext_request() {
     let local = tokio::task::LocalSet::new();
     local
@@ -528,6 +533,7 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[cfg(feature = "experimental-openssl-detection")]
 async fn local_serial_optional_openssl_accepts_tls_request() {
     let local = tokio::task::LocalSet::new();
     local
