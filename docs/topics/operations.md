@@ -101,7 +101,7 @@ Compile and activate TCP phase timing only for a diagnostic build:
 
 ```toml
 [dependencies]
-nacelle = { version = "0.3.0-rc.1", features = ["phase-timing"] }
+nacelle = { version = "0.3.0-rc.2", features = ["phase-timing"] }
 ```
 
 ```rust
