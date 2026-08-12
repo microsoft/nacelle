@@ -353,7 +353,12 @@ case "$TOOL" in
         SERVER_PID=""
         wait "$PROFILER_PID" 2>/dev/null || true
         PROFILER_PID=""
-        heaptrack_print "$OUTPUT_DIRECTORY/heaptrack.zst" \
+        HEAPTRACK_DATA="$(find "$OUTPUT_DIRECTORY" -maxdepth 1 -type f -name 'heaptrack.*' -print -quit)"
+        if [[ -z "$HEAPTRACK_DATA" ]]; then
+            echo "Heaptrack data file was not produced" >&2
+            exit 1
+        fi
+        heaptrack_print "$HEAPTRACK_DATA" \
             > "$OUTPUT_DIRECTORY/heaptrack-report.txt"
         ;;
 esac
