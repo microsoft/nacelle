@@ -11,6 +11,7 @@ DISABLE_TIMEOUTS="false"
 DISABLE_HANDLER_TIMEOUT="false"
 DISABLE_TCP_TIMEOUTS="false"
 RESPONSE_WRITE_MODE="immediate"
+BYTE_METRICS="false"
 TLS_INSECURE="false"
 CONNECTIONS="256"
 PIPELINE="8"
@@ -38,6 +39,7 @@ Options:
     --disable-handler-timeout
     --disable-tcp-timeouts
     --response-write-mode immediate|coalesce-buffered
+    --byte-metrics
     --tls-insecure
   --connections N
   --pipeline N
@@ -65,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --disable-handler-timeout) DISABLE_HANDLER_TIMEOUT="true"; shift ;;
         --disable-tcp-timeouts) DISABLE_TCP_TIMEOUTS="true"; shift ;;
         --response-write-mode) RESPONSE_WRITE_MODE="$2"; shift 2 ;;
+        --byte-metrics) BYTE_METRICS="true"; shift ;;
         --tls-insecure) TLS_INSECURE="true"; shift ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
         --pipeline) PIPELINE="$2"; shift 2 ;;
@@ -189,6 +192,7 @@ fi
     echo "disable_handler_timeout=$EFFECTIVE_DISABLE_HANDLER_TIMEOUT"
     echo "disable_tcp_timeouts=$EFFECTIVE_DISABLE_TCP_TIMEOUTS"
     echo "response_write_mode=$RESPONSE_WRITE_MODE"
+    echo "byte_metrics=$BYTE_METRICS"
     echo "tls_insecure=$TLS_INSECURE"
     echo "connections=$CONNECTIONS"
     echo "pipeline=$PIPELINE"
@@ -216,6 +220,11 @@ SERVER_ARGS=(
     --handler-mode "$HANDLER_MODE"
     --response-write-mode "$RESPONSE_WRITE_MODE"
 )
+if [[ "$BYTE_METRICS" == "true" ]]; then
+    SERVER_ARGS+=(--byte-metrics)
+else
+    SERVER_ARGS+=(--no-byte-metrics)
+fi
 if [[ "$DISABLE_TIMEOUTS" == "true" ]]; then
     SERVER_ARGS+=(--disable-timeouts)
 fi
