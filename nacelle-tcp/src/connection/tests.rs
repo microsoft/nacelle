@@ -691,6 +691,66 @@ async fn authenticated_phase_uses_default_request_body_limit() {
 }
 
 #[tokio::test]
+async fn fragmented_body_does_not_consume_following_frame() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let bodies = bodies.clone();
+            move |mut context: TcpRequestContext<PhaseProtocol>| {
+                let bodies = bodies.clone();
+                async move {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        body.extend_from_slice(&chunk?);
+                    }
+                    bodies.lock().expect("body recorder poisoned").push(body);
+                    context.respond(TcpResponse::bytes("ok")).await
+                }
+            }
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[3, b'h'])
+        .await
+        .expect("first body fragment should write");
+    tokio::task::yield_now().await;
+    client
+        .write_all(&[b'e', b'y', 0])
+        .await
+        .expect("final body fragment and following frame should write");
+
+    let mut responses = [0_u8; 4];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut responses))
+        .await
+        .expect("responses should arrive")
+        .expect("responses should read");
+    assert_eq!(&responses, b"okok");
+    assert_eq!(
+        *bodies.lock().expect("body recorder poisoned"),
+        vec![b"hey".to_vec(), Vec::new()]
+    );
+
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join")
+        .expect("connection should close cleanly");
+}
+
+#[tokio::test]
 async fn connection_state_transition_changes_next_request_body_limit() {
     let (mut client, server_io) = tokio::io::duplex(1024);
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1592,6 +1652,46 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
         .shutdown()
         .await
         .expect("caller should recover and shut down borrowed I/O");
+}
+
+#[tokio::test]
+async fn by_value_connection_releases_io_and_permit_on_cancellation() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        ))
+        .runtime_state(runtime_state.clone())
+        .build()
+        .expect("server should build");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), server.serve_io(server_io))
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime_state.active_connections(), 0);
+    let permit = runtime_state
+        .acquire_connection()
+        .expect("connection capacity should recover after cancellation");
+    drop(permit);
+
+    let mut byte = [0_u8; 1];
+    assert_eq!(
+        client
+            .read(&mut byte)
+            .await
+            .expect("owned I/O should close when serving future is dropped"),
+        0
+    );
 }
 
 #[test]

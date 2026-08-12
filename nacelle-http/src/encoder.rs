@@ -262,12 +262,43 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::incoming_body_is_empty;
+    use http::StatusCode;
+    use http_body_util::BodyExt;
+
+    use super::{incoming_body_is_empty, response_to_http};
+    use crate::pipeline::HttpResponse;
+    use crate::policy::NacelleHttpPolicy;
+    use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
+    use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+    use nacelle_core::telemetry::NacelleTelemetry;
 
     #[test]
     fn only_exact_zero_body_hint_skips_body_pump() {
         assert!(incoming_body_is_empty(Some(0)));
         assert!(!incoming_body_is_empty(Some(1)));
         assert!(!incoming_body_is_empty(None));
+    }
+
+    #[tokio::test]
+    async fn oversized_response_chunk_fails_before_emitting_bytes() {
+        let runtime_state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_response_body_bytes(4));
+        let response = response_to_http(
+            HttpResponse::bytes(StatusCode::OK, "hello"),
+            runtime_state,
+            NacelleTelemetry::default(),
+            &NacelleHttpPolicy::default(),
+        )
+        .expect("response should build");
+
+        let error = response
+            .into_body()
+            .collect()
+            .await
+            .expect_err("oversized response should fail before collection");
+        assert!(matches!(
+            error,
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::ResponseBodyBytes)
+        ));
     }
 }

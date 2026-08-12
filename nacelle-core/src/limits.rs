@@ -1599,6 +1599,62 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_per_peer_connection_admission_does_not_exceed_limit() {
+        const CONTENDERS: usize = 16;
+
+        let peer = "127.0.0.1".parse().expect("valid ip");
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_connections(CONTENDERS)
+                .with_max_connections_per_peer(1),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS + 1));
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        let threads: Vec<_> = (0..CONTENDERS)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                let results_tx = results_tx.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    results_tx
+                        .send(state.acquire_connection_for_peer(peer))
+                        .expect("result receiver should remain open");
+                })
+            })
+            .collect();
+        drop(results_tx);
+
+        barrier.wait();
+        let results: Vec<_> = results_rx.into_iter().collect();
+        for thread in threads {
+            thread.join().expect("admission thread should not panic");
+        }
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results
+                .iter()
+                .filter(|result| result.is_err())
+                .all(|result| {
+                    matches!(
+                        result,
+                        Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::PeerConnections
+                        ))
+                    )
+                })
+        );
+        assert_eq!(state.active_connections(), 1);
+
+        drop(results);
+        assert_eq!(state.active_connections(), 0);
+        let _connection = state
+            .acquire_connection_for_peer(peer)
+            .expect("peer capacity should recover after permits drop");
+    }
+
+    #[test]
     fn per_peer_connection_open_rate_rejects_churn_after_drop() {
         let peer = "127.0.0.1".parse().expect("valid ip");
         let state = NacelleRuntimeState::new(
