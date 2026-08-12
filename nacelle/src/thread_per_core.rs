@@ -1458,7 +1458,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", panic = "unwind"))]
     #[test]
     fn panic_before_readiness_does_not_deadlock_startup() {
         let available = core_affinity::get_core_ids().expect("logical CPUs should be discoverable");
