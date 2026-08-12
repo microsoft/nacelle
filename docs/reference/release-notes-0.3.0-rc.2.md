@@ -7,8 +7,10 @@ an observable metrics-schema correction required another prerelease.
 ## Included changes
 
 - Add external-consumer and internal regressions that keep representative
-  serving futures below the 16 KiB compiler-pressure ceiling without a crate
-  recursion override.
+  serving-future layouts below the 16 KiB compiler-pressure ceiling. Crates
+  that instantiate serial connection futures may also require
+  `#![recursion_limit = "256"]` for compiler query depth; see the
+  [RC.2 migration guide](../how-to/migrate-rc-2.md#raise-the-recursion-limit-for-serial-connection-futures).
 - Add direct correctness evidence for concurrent per-peer admission, by-value
   cancellation, fragmented frame boundaries, unknown-length body limits,
   shutdown ordering, connection-task panic supervision, and repeated listener

@@ -7,7 +7,7 @@ permissions:
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
 
 env:
   RUSTFLAGS: -Dwarnings
@@ -40,6 +40,10 @@ jobs:
 
   public-api:
     name: public API
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) ||
+      (github.event_name == 'pull_request' &&
+      (startsWith(github.head_ref, 'release/') || startsWith(github.base_ref, 'release/')))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout full history

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
