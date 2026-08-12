@@ -11,7 +11,7 @@ use crate::protocol::{
 };
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
@@ -313,7 +313,7 @@ where
                             server
                                 .telemetry()
                                 .timeout(NacelleTransport::new("tcp"), "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection =
@@ -662,7 +662,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection =
@@ -698,7 +698,7 @@ pub(super) async fn detect_tls_handshake(
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(NacelleError::Timeout("tls_detect"));
+            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsDetect));
         }
 
         match tokio::time::timeout(remaining, stream.peek(&mut peek_buf)).await {
@@ -707,7 +707,7 @@ pub(super) async fn detect_tls_handshake(
             Ok(Ok(len)) if len >= 3 => return Ok(true),
             Ok(Ok(_)) => {}
             Ok(Err(error)) => return Err(NacelleError::Io(error)),
-            Err(_) => return Err(NacelleError::Timeout("tls_detect")),
+            Err(_) => return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsDetect)),
         }
 
         tokio::time::sleep(Duration::from_millis(25)).await;

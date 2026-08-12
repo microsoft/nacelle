@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-openssl"
-version = "0.3.0-beta.4"
+version = "0.3.0-beta.5"
 edition = "2024"
 rust-version.workspace = true
 description = "OpenSSL configuration and metadata integration for Nacelle."
@@ -16,7 +16,7 @@ default = []
 vendored = ["openssl/vendored"]
 
 [dependencies]
-nacelle-core = { workspace = true, features = ["tls"] }
+nacelle-core = { workspace = true, features = ["openssl"] }
 openssl = { workspace = true }
 
 [lints]

@@ -39,7 +39,7 @@ both PEM paths in a configuration file and use:
 
 ```bash
 cargo run -p nacelle-proxy \
-	--no-default-features --features tls -- path/to/proxy.toml
+	--no-default-features --features rustls -- path/to/proxy.toml
 ```
 
 When no path argument is supplied, the binary uses the example configuration

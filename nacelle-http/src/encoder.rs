@@ -14,7 +14,7 @@ use hyper::body::{Frame, Incoming};
 use crate::limits::NacelleHttpLimits;
 use crate::pipeline::HttpResponse;
 use crate::policy::{NacelleHttpPolicy, apply_security_headers};
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
 #[cfg(feature = "experimental-memory")]
@@ -81,7 +81,9 @@ async fn pump_incoming_body<Observer>(
         && body_len_hint > runtime_state.limits().max_request_body_bytes
     {
         let _ = tx
-            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+            .send(Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::RequestBodyBytes,
+            )))
             .await;
         return;
     }
@@ -118,7 +120,11 @@ async fn pump_incoming_body<Observer>(
                     Ok(frame) => frame,
                     Err(_) => {
                         telemetry.timeout(NacelleTransport::new("http"), "http_body_read");
-                        let _ = tx.send(Err(NacelleError::Timeout("http_body_read"))).await;
+                        let _ = tx
+                            .send(Err(NacelleError::Timeout(
+                                NacelleTimeoutReason::HttpBodyRead,
+                            )))
+                            .await;
                         break;
                     }
                 }
@@ -134,13 +140,17 @@ async fn pump_incoming_body<Observer>(
                 if let Some(data) = frame.data_ref() {
                     let Some(next) = body_bytes.checked_add(data.len()) else {
                         let _ = tx
-                            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+                            .send(Err(NacelleError::ResourceLimit(
+                                NacelleResourceLimitReason::RequestBodyBytes,
+                            )))
                             .await;
                         break;
                     };
                     if next > runtime_state.limits().max_request_body_bytes {
                         let _ = tx
-                            .send(Err(NacelleError::ResourceLimit("request_body_bytes")))
+                            .send(Err(NacelleError::ResourceLimit(
+                                NacelleResourceLimitReason::RequestBodyBytes,
+                            )))
                             .await;
                         break;
                     }
@@ -222,12 +232,12 @@ where
             Poll::Ready(Some(Ok(chunk))) => {
                 let Some(next) = this.response_body_bytes.checked_add(chunk.len()) else {
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
-                        "response_body_bytes",
+                        NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 };
                 if next > this.runtime_state.limits().max_response_body_bytes {
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
-                        "response_body_bytes",
+                        NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 }
                 this.response_body_bytes = next;

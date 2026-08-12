@@ -36,5 +36,5 @@ process.
 For OpenSSL-backed TCP TLS, enable `openssl` and use
 `NacelleOpenSslConfig::from_pem_files(...)` with `serve_tcp_openssl(...)`. Use
 `openssl-vendored` only when the build machine has the tooling needed to compile
-OpenSSL from source. The `openssl` feature enables provider-neutral `tls`
-without selecting Rustls.
+OpenSSL from source. Select either `rustls` or `openssl`; the backends are
+mutually exclusive compile-time choices and cannot be swapped at runtime.

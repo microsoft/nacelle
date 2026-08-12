@@ -6,17 +6,19 @@ deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
 and transport timeouts are bounded by default. Runtime memory accounting is
 experimental and not compiled by default. Enable `experimental-memory` and set
-`max_memory_bytes` only after measuring the limiter for your service.
+`max_memory_bytes` only after measuring the limiter for your service. This
+feature is use at your own risk and may change or be removed in a future minor
+release.
 
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
 - Proxy-aware HTTP: configure `NacelleHttpPolicy::with_trusted_proxy_ips(...)` only with known proxy addresses before allowing `Forwarded` or `X-Forwarded-For` to affect per-peer request limits or request metadata.
-- Direct HTTPS listener: enable `http,tls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
-- Direct TCP Rustls listener: enable `tcp,tls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
+- Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
+- Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
-- Optional TCP OpenSSL listener: enable `tcp,openssl`, use `serve_tcp_optional_openssl` or the matching host/app builder method, and keep `NacelleTlsDetectionOptions::timeout` short enough for your accepted-connection budget.
+- Optional TCP OpenSSL listener: enable `experimental-openssl-detection` (which implies `tcp,openssl`), use `serve_tcp_optional_openssl` or the matching host/app builder method, and keep `NacelleTlsDetectionOptions::timeout` short enough for your accepted-connection budget.
 - IPv4 plus IPv6 TCP bind: use the `NacelleApp::*_dual_stack(...)` helpers to register separate IPv4 and IPv6 listeners while forcing the IPv6 listener to v6-only mode.
 - Unix socket listener: enable `tcp` on Unix and use `NacelleUnixSocketOptions` only when this process owns stale-path cleanup or socket-file permissions.
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
@@ -84,9 +86,13 @@ temporary allocation cannot be charged.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
 and idle timeouts. Shutdown uses its own deadline so finalization policy can be
-tuned independently of ordinary response delivery.
+tuned independently of ordinary response delivery. The corresponding
+`without_*_timeout()` builders make an explicitly unbounded policy possible.
 `NacelleHttpLimits` controls HTTP header read, request body read, response
-write, keep-alive, and max connection age behavior on `HyperServer`.
+write, keep-alive, and max connection age behavior on `HyperServer`. Its
+`without_*_timeout()` and `without_max_connection_age()` builders disable those
+optional deadlines; `NacelleLimits::without_handler_timeout()` disables the
+core handler deadline.
 
 Dangerous configurations:
 

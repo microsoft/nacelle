@@ -4,7 +4,7 @@ Nacelle is organized as a small core plus protocol-specific transport crates.
 
 ## Crate Layout
 
-- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and provider-neutral TLS metadata.
+- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and negotiated TLS connection metadata.
 - `nacelle-openssl`: OpenSSL configuration reload and negotiated metadata extraction.
 - `nacelle-rustls`: Rustls configuration reload, certificate parsing, SNI policy, and negotiated metadata extraction.
 - `nacelle-tcp`: TCP/Unix socket server, protocol trait, connection loop, and listener runtime.
@@ -22,24 +22,37 @@ becoming part of the published library API.
 ## App Core And Protocol Adapters
 
 Nacelle is organized so application behavior lives behind statically dispatched
-handler boundaries. TCP handlers receive `TcpRequestContext<P>` and complete
-requests with the response type associated with `P`. HTTP handlers receive
-`HttpRequestContext<State>` and complete through `HttpResponse`.
+handler boundaries. TCP handlers receive `TcpRequestContext<P, AppState>` and
+complete requests with the response type associated with `P`. HTTP handlers
+receive `HttpRequestContext<ConnectionState, AppState>` and complete through
+`HttpResponse`. Both state parameters default to `()`.
 
 TCP `Protocol` implementations are adapters: they decode a wire format into
 request metadata and encode responses back into frames. Swapping protocols
 should not require rewriting the app core. The app-first serving path wires
 concrete typed servers together with
-`NacelleApp::new().tcp(...).http(...).run()`. The app owns shared runtime state,
-telemetry, shutdown, and supervision. `nacelle::runtime::NacelleHost` remains
-available for services that need manual listener control.
+`NacelleApp::new().tcp(...).http(...).run()`. Applications that need shared
+dependencies start with `NacelleApp::with_state(...)`. The app owns one stable
+`Arc<AppState>` shared by every registered listener, plus runtime state,
+telemetry, shutdown, and supervision. Handlers receive only `&AppState` through
+`RequestContext::app_state()`; Nacelle provides no mutable accessor or runtime
+replacement for the whole dependency root. `nacelle::runtime::NacelleHost`
+remains available for services that need manual listener control.
 
-Provider-neutral TLS identity and per-connection metadata live in `nacelle-core`.
-Concrete configuration, certificate handling, reload policy, and negotiated
-metadata extraction live in `nacelle-rustls` and `nacelle-openssl`. Transport
-crates retain listener lifecycle and async I/O adaptation so provider crates do
-not depend back on TCP or HTTP. The `nacelle` facade preserves the `rustls`,
-`openssl`, and `tls-self-signed` feature names and exposes provider namespaces.
+Reloadable configuration belongs behind the application root rather than in
+Nacelle. A configuration service may use `ArcSwap` or another snapshot mechanism
+internally. A handler should acquire one owned snapshot for a request and avoid
+holding a reload guard across `.await`.
+
+Per-connection TLS metadata lives in `nacelle-core`. Concrete configuration,
+certificate handling, reload policy, and negotiated metadata extraction live
+in `nacelle-rustls` and `nacelle-openssl`. Transport crates retain listener
+lifecycle and async I/O adaptation so provider crates do not depend back on TCP
+or HTTP. The `nacelle` facade exposes mutually exclusive `rustls` and `openssl`
+features plus the Rustls-based `tls-self-signed` helper. The backend is fixed at
+compile time; there is no runtime provider abstraction or selection path. The
+workspace defaults to its Rustls members, while validation runs OpenSSL through
+explicit package and feature lanes.
 
 ## Request Flow
 
@@ -73,17 +86,21 @@ confined to one serial connection loop. No dynamic extension map participates
 in either request path.
 
 The shared multi-thread Tokio runtime remains the default. Experimental
-thread-per-core execution is explicit and currently supports TCP, HTTP, Rustls
-TCP/HTTPS, required OpenSSL TCP, and optional plaintext/OpenSSL TCP on Linux. Each selected worker owns a
-current-thread Tokio runtime, `LocalSet`, reuse-port listener, protocol, and
-`LocalHandler` pipeline. Accepted streams, handshakes, and connection tasks
-remain on the accepting worker. Unsupported platforms fail configuration;
-Nacelle does not silently switch runtime topology.
+thread-per-core execution requires `experimental-thread-per-core` and currently
+supports TCP, HTTP, Rustls TCP/HTTPS, required OpenSSL TCP, and optional
+plaintext/OpenSSL TCP on Linux. Each selected worker owns a current-thread Tokio
+runtime, `LocalSet`, reuse-port listener, protocol, and `LocalHandler` pipeline.
+Accepted streams, handshakes, and connection tasks remain on the accepting
+worker. Unsupported platforms fail configuration; Nacelle does not silently
+switch runtime topology.
 
 Serial mutable-state listeners support plain TCP, required OpenSSL, optional
 OpenSSL detection, and Unix sockets in the shared runtime. Worker-local serial
 listeners support plain TCP, required OpenSSL, and optional OpenSSL detection.
 Rustls serial and worker-local Unix socket serial variants are not exposed.
+Optional plaintext/OpenSSL detection requires
+`experimental-openssl-detection`; required OpenSSL remains available with the
+ordinary `openssl` feature.
 
 `ThreadPerCoreConfig::with_max_threads(...)` caps the selected worker set after
 automatic or explicit selection and before any worker thread is created. It
@@ -96,7 +113,9 @@ retaining a single shared FIFO hard memory ceiling when `experimental-memory`
 is enabled.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
-must not scale with worker count.
+must not scale with worker count. `LocalTcpRuntimeConfig::with_state(...)` and
+`LocalHttpRuntimeConfig::with_state(...)` share one `Arc<AppState>` across
+workers while protocol, handler, and connection state remain worker-local.
 
 HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header

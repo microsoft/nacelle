@@ -2,10 +2,13 @@
 use std::net::SocketAddr;
 #[cfg(all(feature = "tcp", unix))]
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio::task::JoinSet;
 
-use nacelle_core::error::NacelleError;
+#[cfg(test)]
+use nacelle_core::error::NacelleResourceLimitReason;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown, NacelleShutdownToken};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
@@ -15,31 +18,33 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopOb
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
 use nacelle_rustls::NacelleTlsConfig;
-#[cfg(all(feature = "tcp", feature = "openssl"))]
+#[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 
-pub struct NacelleHost<Observer = NoopObserver> {
+pub struct NacelleHost<Observer = NoopObserver, AppState = ()> {
     telemetry: NacelleTelemetry<Observer>,
+    app_state: Arc<AppState>,
     runtime_state: NacelleRuntimeState,
     shutdown: NacelleShutdown,
     drain_deadline: NacelleDrainDeadline,
     tasks: JoinSet<Result<(), NacelleError>>,
 }
 
-impl Default for NacelleHost<NoopObserver> {
+impl Default for NacelleHost<NoopObserver, ()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NacelleHost<NoopObserver> {
+impl NacelleHost<NoopObserver, ()> {
     pub fn new() -> Self {
         Self {
             telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(()),
             runtime_state: NacelleRuntimeState::default(),
             shutdown: NacelleShutdown::new(),
             drain_deadline: NacelleDrainDeadline::default(),
@@ -48,7 +53,21 @@ impl NacelleHost<NoopObserver> {
     }
 }
 
-impl<Observer> NacelleHost<Observer>
+impl<AppState> NacelleHost<NoopObserver, AppState> {
+    /// Create a host with one typed application dependency root.
+    pub fn with_state(app_state: AppState) -> Self {
+        Self {
+            telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(app_state),
+            runtime_state: NacelleRuntimeState::default(),
+            shutdown: NacelleShutdown::new(),
+            drain_deadline: NacelleDrainDeadline::default(),
+            tasks: JoinSet::new(),
+        }
+    }
+}
+
+impl<Observer> NacelleHost<Observer, ()>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -56,11 +75,45 @@ where
     pub fn with_telemetry(telemetry: NacelleTelemetry<Observer>) -> Self {
         Self {
             telemetry,
+            app_state: Arc::new(()),
             runtime_state: NacelleRuntimeState::default(),
             shutdown: NacelleShutdown::new(),
             drain_deadline: NacelleDrainDeadline::default(),
             tasks: JoinSet::new(),
         }
+    }
+}
+
+impl<Observer, AppState> NacelleHost<Observer, AppState>
+where
+    Observer: NacelleTelemetryObserver,
+    AppState: Send + Sync + 'static,
+{
+    /// Create a host with concrete process-wide telemetry and application state.
+    pub fn with_state_and_telemetry(
+        app_state: AppState,
+        telemetry: NacelleTelemetry<Observer>,
+    ) -> Self {
+        Self::with_shared_state_and_telemetry(Arc::new(app_state), telemetry)
+    }
+
+    pub(crate) fn with_shared_state_and_telemetry(
+        app_state: Arc<AppState>,
+        telemetry: NacelleTelemetry<Observer>,
+    ) -> Self {
+        Self {
+            telemetry,
+            app_state,
+            runtime_state: NacelleRuntimeState::default(),
+            shutdown: NacelleShutdown::new(),
+            drain_deadline: NacelleDrainDeadline::default(),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    /// Borrow the typed application dependency root.
+    pub fn app_state(&self) -> &AppState {
+        self.app_state.as_ref()
     }
 
     pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
@@ -101,8 +154,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -110,6 +163,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -144,8 +198,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_with_bind_options(
@@ -167,8 +221,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -176,6 +230,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -212,8 +267,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -221,6 +276,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -256,8 +312,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -265,6 +321,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -299,8 +356,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -310,6 +367,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
@@ -344,8 +402,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -355,6 +413,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
@@ -390,8 +449,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_unix_socket_with_options(
@@ -413,8 +472,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -424,6 +483,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
@@ -460,8 +520,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -469,6 +529,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -504,8 +565,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_openssl_with_options(
@@ -528,8 +589,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_openssl_with_bind_options(
@@ -552,8 +613,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -561,6 +622,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -599,8 +661,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_openssl_with_bind_options(
@@ -624,8 +686,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -633,6 +695,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -659,7 +722,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -669,8 +732,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_optional_openssl_with_options(
@@ -683,7 +746,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -695,8 +758,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
@@ -709,7 +772,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -721,8 +784,8 @@ where
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -730,6 +793,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -753,7 +817,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub fn enable_serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -764,8 +828,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_optional_openssl_with_bind_options(
@@ -778,7 +842,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     #[allow(clippy::too_many_arguments)]
     pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
@@ -792,8 +856,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -801,6 +865,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
@@ -837,7 +902,7 @@ where
     ) -> &mut Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State>,
+        H: nacelle_http::HttpHandler<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -845,6 +910,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
@@ -875,7 +941,7 @@ where
     ) -> &mut Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State>,
+        H: nacelle_http::HttpHandler<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -883,6 +949,7 @@ where
         let shutdown = self.shutdown.token();
         let drain_deadline = self.drain_deadline.clone();
         let server = server
+            .with_app_state(self.app_state.clone())
             .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
@@ -949,7 +1016,7 @@ where
         };
         tokio::time::timeout(drain_timeout, drain)
             .await
-            .map_err(|_| NacelleError::Timeout("shutdown_drain"))?;
+            .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::ShutdownDrain))?;
         Ok(())
     }
 }
@@ -966,8 +1033,11 @@ mod tests {
         let mut shutdown = host.shutdown_token();
         let (drained_tx, drained_rx) = oneshot::channel();
 
-        host.tasks
-            .spawn(async { Err(NacelleError::ResourceLimit("test_listener_failure")) });
+        host.tasks.spawn(async {
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Other("test_listener_failure"),
+            ))
+        });
         host.tasks.spawn(async move {
             assert!(shutdown.changed().await);
             drained_tx.send(()).expect("drain observer should be open");
@@ -978,7 +1048,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            NacelleError::ResourceLimit("test_listener_failure")
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("test_listener_failure"))
         ));
         drained_rx
             .await

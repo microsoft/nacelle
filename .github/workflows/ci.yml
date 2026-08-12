@@ -51,8 +51,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Rust with Clippy
         run: rustup update stable && rustup component add clippy
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
       - name: Check workspace lints
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+        run: .github/scripts/check-feature-matrix.sh clippy --all-targets -- -D warnings
+      - name: Reject multiple TLS backends
+        run: .github/scripts/check-tls-exclusivity.sh
 
   # This represents the minimum supported Rust version
   minrust:
@@ -65,7 +69,14 @@ jobs:
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - name: Check
-        run: cargo hack check --feature-powerset --depth 2 --optional-deps --rust-version
+        run: >-
+          cargo hack check --feature-powerset --depth 2 --optional-deps --rust-version
+          --mutually-exclusive-features rustls,openssl
+          --mutually-exclusive-features rustls,openssl-vendored
+          --mutually-exclusive-features rustls,experimental-openssl-detection
+          --mutually-exclusive-features tls-self-signed,openssl
+          --mutually-exclusive-features tls-self-signed,openssl-vendored
+          --mutually-exclusive-features tls-self-signed,experimental-openssl-detection
 
   # Stable
   stable:
@@ -172,5 +183,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
       - name: Run tests with -Cpanic=abort
         run: .github/scripts/panic-abort.sh

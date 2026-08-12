@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 use crate::options::NacelleUnixSocketOptions;
@@ -382,7 +382,7 @@ where
         .await
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub async fn serve_tcp_optional_openssl(
         &self,
         addr: SocketAddr,
@@ -396,7 +396,7 @@ where
         .await
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub async fn serve_tcp_optional_openssl_with_shutdown(
         &self,
         addr: SocketAddr,
@@ -412,7 +412,7 @@ where
         .await
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub async fn serve_tcp_optional_openssl_with_options(
         &self,
         addr: SocketAddr,
@@ -430,7 +430,7 @@ where
         .await
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "experimental-openssl-detection")]
     pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -452,7 +452,7 @@ where
         .await
     }
 
-    #[cfg(feature = "openssl")]
+    #[cfg(feature = "experimental-openssl-detection")]
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(

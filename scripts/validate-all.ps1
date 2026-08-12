@@ -16,16 +16,20 @@ function Invoke-Step {
 }
 
 Invoke-Step "cargo fmt" { cargo fmt --all -- --check }
-Invoke-Step "workspace tests" { cargo test --workspace --all-targets }
-Invoke-Step "workspace clippy" { cargo clippy --workspace --all-targets -- -D warnings }
-Invoke-Step "nacelle-core full tests" { cargo test -p nacelle-core --features "tls" --all-targets }
-Invoke-Step "nacelle-core full clippy" { cargo clippy -p nacelle-core --features "tls" --all-targets -- -D warnings }
+Invoke-Step "Rustls workspace tests" { cargo test --workspace --exclude nacelle-openssl --all-targets }
+Invoke-Step "Rustls workspace clippy" { cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings }
+Invoke-Step "nacelle-core OpenSSL tests" { cargo test -p nacelle-core --features "openssl" --all-targets }
+Invoke-Step "nacelle-core OpenSSL clippy" { cargo clippy -p nacelle-core --features "openssl" --all-targets -- -D warnings }
 Invoke-Step "nacelle-rustls full tests" { cargo test -p nacelle-rustls --all-features --all-targets }
 Invoke-Step "nacelle-rustls full clippy" { cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings }
 Invoke-Step "nacelle-openssl tests" { cargo test -p nacelle-openssl --all-targets }
 Invoke-Step "nacelle-openssl clippy" { cargo clippy -p nacelle-openssl --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp tests" { cargo test -p nacelle-tcp --all-targets }
 Invoke-Step "nacelle-tcp clippy" { cargo clippy -p nacelle-tcp --all-targets -- -D warnings }
+Invoke-Step "nacelle-tcp OpenSSL tests" { cargo test -p nacelle-tcp --features openssl --all-targets }
+Invoke-Step "nacelle-tcp OpenSSL clippy" { cargo clippy -p nacelle-tcp --features openssl --all-targets -- -D warnings }
+Invoke-Step "nacelle-tcp experimental OpenSSL detection tests" { cargo test -p nacelle-tcp --features experimental-openssl-detection --all-targets }
+Invoke-Step "nacelle-tcp experimental OpenSSL detection clippy" { cargo clippy -p nacelle-tcp --features experimental-openssl-detection --all-targets -- -D warnings }
 Invoke-Step "nacelle-tcp tls tests" { cargo test -p nacelle-tcp --features tls-self-signed --all-targets }
 Invoke-Step "nacelle-tcp tls clippy" { cargo clippy -p nacelle-tcp --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "nacelle-http full tests" { cargo test -p nacelle-http --features tls-self-signed --all-targets }
@@ -39,8 +43,13 @@ Invoke-Step "examples HTTP-only clippy" { cargo clippy -p nacelle-examples --no-
 Invoke-Step "nacelle full tests" { cargo test -p nacelle --features "http" --all-targets }
 Invoke-Step "nacelle full clippy" { cargo clippy -p nacelle --features "http" --all-targets -- -D warnings }
 Invoke-Step "nacelle http tests" { cargo test -p nacelle --no-default-features --features http --all-targets }
-Invoke-Step "nacelle tls tests" { cargo test -p nacelle --no-default-features --features tls --all-targets }
+Invoke-Step "nacelle Rustls tests" { cargo test -p nacelle --no-default-features --features "tcp,rustls" --all-targets }
 Invoke-Step "nacelle tcp-only clippy" { cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings }
+Invoke-Step "nacelle experimental thread-per-core tests" { cargo test -p nacelle --no-default-features --features "experimental-thread-per-core,tcp" --all-targets }
+Invoke-Step "nacelle experimental thread-per-core clippy" { cargo clippy -p nacelle --no-default-features --features "experimental-thread-per-core,tcp" --all-targets -- -D warnings }
+Invoke-Step "nacelle experimental OpenSSL detection tests" { cargo test -p nacelle --no-default-features --features experimental-openssl-detection --all-targets }
+Invoke-Step "nacelle experimental OpenSSL detection clippy" { cargo clippy -p nacelle --no-default-features --features experimental-openssl-detection --all-targets -- -D warnings }
+Invoke-Step "nacelle combined experimental runtime tests" { cargo test -p nacelle --no-default-features --features "experimental-thread-per-core,experimental-openssl-detection" --all-targets }
 Invoke-Step "nacelle self-signed tls tests" { cargo test -p nacelle --no-default-features --features tls-self-signed --all-targets }
 Invoke-Step "nacelle https self-signed tests" { cargo test -p nacelle --no-default-features --features "http,tls-self-signed" --all-targets }
 Invoke-Step "nacelle TCP self-signed tests" { cargo test -p nacelle --features tls-self-signed --all-targets }
@@ -64,6 +73,15 @@ if ($LASTEXITCODE -eq 0) {
 cargo tree -p nacelle --no-default-features --features "tcp,openssl" -i rustls *> $null
 if ($LASTEXITCODE -eq 0) {
     throw "rustls is selected by the tcp,openssl feature set"
+}
+
+$dualProviderOutput = cargo check -p nacelle --no-default-features --features "tcp,rustls,openssl" 2>&1
+if ($LASTEXITCODE -eq 0) {
+    throw "dual-provider build unexpectedly succeeded"
+}
+if (-not ($dualProviderOutput -match "Nacelle supports exactly one TLS backend")) {
+    $dualProviderOutput | Write-Host
+    throw "dual-provider build failed without the expected Nacelle provider guard"
 }
 
 cargo tree -p nacelle --no-default-features -i rustls *> $null

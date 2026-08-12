@@ -1,5 +1,8 @@
 //! Shared primitives for Nacelle transports.
 
+#[cfg(all(feature = "openssl", feature = "rustls", not(rust_analyzer)))]
+compile_error!("Nacelle supports exactly one TLS backend; enable either `rustls` or `openssl`");
+
 pub mod error;
 pub mod lifecycle;
 pub mod limits;
@@ -8,10 +11,8 @@ pub mod pipeline;
 pub mod request;
 pub mod runtime;
 pub mod telemetry;
-#[cfg(feature = "tls")]
-pub mod tls;
 
-pub use error::{BoxError, NacelleError};
+pub use error::{BoxError, NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
 pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
 #[cfg(feature = "experimental-memory")]
@@ -25,5 +26,3 @@ pub use telemetry::{
     NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
     NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
-#[cfg(feature = "tls")]
-pub use tls::NacelleTlsProvider;

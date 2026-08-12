@@ -12,5 +12,5 @@ applyTo: "**/*.rs"
 - Keep feature-gated code valid for the smallest supported feature set. In particular, `openssl` must not implicitly select `rustls`.
 - Put unit tests near the owning module and integration or property tests in the existing crate test targets. Use Tokio's paused-time facilities for timing-sensitive tests when the local tests do so.
 - Run a focused crate or test-target check immediately after editing.
-- Before finalizing Rust changes, run `cargo fmt --all`, `cargo clippy --workspace --all-features --all-targets -- -D warnings`, and `cargo test --workspace --all-features`.
+- Before finalizing Rust changes, run `cargo fmt --all`, `.github/scripts/check-feature-matrix.sh clippy --all-targets -- -D warnings`, and `.github/scripts/check-feature-matrix.sh test`.
 - Run `./scripts/validate-all.sh` as the broader feature-matrix check when feature wiring, TLS, cross-crate behavior, or release readiness is affected.

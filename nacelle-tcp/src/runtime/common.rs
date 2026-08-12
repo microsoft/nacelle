@@ -56,7 +56,7 @@ pub(super) fn log_connection_result(
 
 pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     match error {
-        NacelleError::ResourceLimit(reason) => reason,
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
         _ => "connections",
     }
 }

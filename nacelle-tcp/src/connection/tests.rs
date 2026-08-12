@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
+use metrics_util::debugging::DebuggingRecorder;
 use nacelle_codec::MessageDecoder;
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown};
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
@@ -348,6 +349,59 @@ async fn response_write_policies_reduce_writes_and_preserve_order() {
     assert_eq!(threshold, vec![b"ab".to_vec(), b"c".to_vec()]);
 }
 
+#[test]
+fn direct_stream_applies_disabled_metrics_before_runtime_permits() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let runtime_state = NacelleRuntimeState::new(
+        NacelleLimits::default()
+            .with_max_connections(1)
+            .with_max_in_flight_requests(1),
+    );
+    let permit_observed = Arc::new(AtomicBool::new(false));
+
+    metrics::with_local_recorder(&recorder, || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(serve_stream_with_connection_meta(
+                RecordingIo {
+                    input: vec![0],
+                    position: 0,
+                    writes: Arc::new(std::sync::Mutex::new(Vec::new())),
+                },
+                Arc::new(PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }),
+                handler_fn({
+                    let runtime_state = runtime_state.clone();
+                    let permit_observed = permit_observed.clone();
+                    move |context: TcpRequestContext<PhaseProtocol>| {
+                        permit_observed.store(
+                            runtime_state.active_connections() == 1
+                                && runtime_state.active_requests() == 1,
+                            Ordering::SeqCst,
+                        );
+                        async move { context.respond(TcpResponse::empty()).await }
+                    }
+                }),
+                NacelleTcpConfig::default(),
+                NacelleTelemetry::default().with_metrics(false),
+                runtime_state.clone(),
+                NacelleConnectionMeta::tcp(None, None),
+            ))
+            .expect("direct stream should complete");
+    });
+
+    assert!(permit_observed.load(Ordering::SeqCst));
+    assert_eq!(runtime_state.active_connections(), 0);
+    assert_eq!(runtime_state.active_requests(), 0);
+    assert!(snapshotter.snapshot().into_vec().is_empty());
+}
+
 #[tokio::test]
 async fn coalesced_single_response_flushes_before_waiting_for_input() {
     let (mut client, server_io) = tokio::io::duplex(64);
@@ -575,7 +629,9 @@ async fn phase_limit_rejects_unauthenticated_body_before_reading_body() {
         .expect("server task should join");
     assert!(matches!(
         result,
-        Err(NacelleError::ResourceLimit("request_body_bytes"))
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes
+        ))
     ));
 }
 
@@ -787,7 +843,10 @@ async fn streaming_handler_timeout_does_not_wait_for_incomplete_body() {
         .await
         .expect("handler timeout should finish the connection")
         .expect("server task should join");
-    assert!(matches!(result, Err(NacelleError::Timeout("handler"))));
+    assert!(matches!(
+        result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+    ));
 }
 
 #[tokio::test]
@@ -1329,7 +1388,9 @@ async fn one_way_limit_rejects_before_body_read_or_handler_dispatch() {
 
     assert!(matches!(
         result,
-        Err(NacelleError::ResourceLimit("request_body_bytes"))
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes
+        ))
     ));
     assert!(!handler_called.load(Ordering::SeqCst));
 }
@@ -1674,7 +1735,10 @@ async fn serial_handler_timeout_cancels_mutable_loan_without_reentry() {
         .await
         .expect("handler timeout should finish the connection")
         .expect("server task should join");
-    assert!(matches!(result, Err(NacelleError::Timeout("handler"))));
+    assert!(matches!(
+        result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+    ));
     assert!(!in_call.load(Ordering::SeqCst));
 }
 

@@ -147,7 +147,7 @@ async fn supervise_application(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, panic = "unwind"))]
 mod tests {
     use super::*;
     use crate::ProxyErrorKind;

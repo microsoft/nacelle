@@ -21,7 +21,9 @@ use crate::limits::NacelleHttpLimits;
 pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
 use crate::rate_limit::forwarded_peer_ip;
-use nacelle_core::error::NacelleError;
+#[cfg(test)]
+use nacelle_core::error::NacelleResourceLimitReason;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponder};
@@ -36,8 +38,9 @@ use nacelle_rustls::NacelleTlsConfig;
 
 use crate::pipeline::{
     HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
-    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpConnectionStateFactory,
-    LocalHttpHandler, LocalHttpRequestContext, NoHttpConnectionState,
+    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpAppStateHandler,
+    LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpRequestContext,
+    NoHttpConnectionState, SharedHttpAppStateHandler,
 };
 
 trait HttpDispatch<State, Observer>
@@ -80,10 +83,9 @@ where
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
-        let context = HttpRequestContext::new(
+        let context = HttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
-            (),
             self.connection.clone(),
         );
         nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
@@ -119,10 +121,9 @@ where
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
-        let context = LocalHttpRequestContext::new(
+        let context = LocalHttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
-            (),
             self.connection.clone(),
         );
         nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
@@ -235,6 +236,24 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: Rc::new(factory),
+            runtime: self.runtime,
+        }
+    }
+
+    /// Bind application state before worker-local request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> LocalHyperServer<LocalHttpAppStateHandler<H, AppState>, F, Observer>
+    where
+        F: LocalHttpConnectionStateFactory,
+        H: LocalHttpHandler<F::State, AppState>,
+        AppState: 'static,
+    {
+        LocalHyperServer {
+            handler: Rc::new(LocalHttpAppStateHandler::new(self.handler, app_state)),
+            connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
         }
     }
@@ -435,7 +454,9 @@ where
                                     NacelleTransport::new("http"),
                                     "tls_handshake",
                                 );
-                                return Err(NacelleError::Timeout("tls_handshake"));
+                                return Err(NacelleError::Timeout(
+                                    NacelleTimeoutReason::TlsHandshake,
+                                ));
                             }
                         };
                         let connection =
@@ -494,6 +515,24 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
         HyperServer {
             handler: self.handler,
             connection_state_factory: Arc::new(factory),
+            runtime: self.runtime,
+        }
+    }
+
+    /// Bind application state before shared-runtime request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> HyperServer<SharedHttpAppStateHandler<H, AppState>, F, Observer>
+    where
+        F: HttpConnectionStateFactory,
+        H: HttpHandler<F::State, AppState>,
+        AppState: Send + Sync + 'static,
+    {
+        HyperServer {
+            handler: Arc::new(SharedHttpAppStateHandler::new(self.handler, app_state)),
+            connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
         }
     }
@@ -833,7 +872,9 @@ where
                                 server
                                     .runtime.telemetry
                                     .timeout(NacelleTransport::new("http"), "tls_handshake");
-                                return Err(NacelleError::Timeout("tls_handshake"));
+                                return Err(NacelleError::Timeout(
+                                    NacelleTimeoutReason::TlsHandshake,
+                                ));
                             }
                         };
                         let connection = connection.with_tls(nacelle_rustls::connection_tls_meta(tls_stream.get_ref().1));
@@ -995,7 +1036,7 @@ where
         let handler_result = if let Some(timeout) = self.runtime_state.limits().handler_timeout {
             tokio::time::timeout(timeout, handler_with_body)
                 .await
-                .map_err(|_| NacelleError::Timeout("handler"))?
+                .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
         } else {
             handler_with_body.await
         };
@@ -1136,7 +1177,7 @@ fn elapsed_since(started: Option<Instant>) -> Duration {
 
 fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     match error {
-        NacelleError::ResourceLimit(reason) => reason,
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
         _ => "connections",
     }
 }
@@ -1178,7 +1219,9 @@ where
                     .runtime
                     .telemetry
                     .timeout(NacelleTransport::new("http"), "http_max_connection_age");
-                Err(NacelleError::Timeout("http_max_connection_age"))
+                Err(NacelleError::Timeout(
+                    NacelleTimeoutReason::HttpMaxConnectionAge,
+                ))
             }
         }
     } else {
@@ -1232,7 +1275,9 @@ where
                     .runtime
                     .telemetry
                     .timeout(NacelleTransport::new("http"), "http_max_connection_age");
-                Err(NacelleError::Timeout("http_max_connection_age"))
+                Err(NacelleError::Timeout(
+                    NacelleTimeoutReason::HttpMaxConnectionAge,
+                ))
             }
         }
     } else {
@@ -1477,7 +1522,9 @@ mod tests {
         let policy = NacelleHttpPolicy::new().with_max_requests_per_peer_per_second(1);
         let first = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
             |_context: crate::LocalHttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit("unused_test_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("unused_test_handler"),
+                ))
             },
         ))
         .with_http_policy(policy.clone())
@@ -1488,7 +1535,9 @@ mod tests {
         );
         let second = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
             |_context: crate::LocalHttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit("unused_test_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("unused_test_handler"),
+                ))
             },
         ))
         .with_http_policy(policy)
@@ -1513,7 +1562,9 @@ mod tests {
     fn http_peer_rate_table_rejects_new_peers_when_full() {
         let server = HyperServer::new(nacelle_core::pipeline::handler_fn(
             |_context: crate::HttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit("unused_test_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("unused_test_handler"),
+                ))
             },
         ))
         .with_http_policy(

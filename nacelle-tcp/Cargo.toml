@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-tcp"
-version = "0.3.0-beta.4"
+version = "0.3.0-beta.5"
 edition = "2024"
 rust-version.workspace = true
 description = "TCP transport and protocol runtime for Nacelle streaming handlers."
@@ -15,9 +15,9 @@ categories = ["asynchronous", "network-programming"]
 default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
 experimental-memory = ["nacelle-core/experimental-memory"]
-tls = []
-rustls = ["tls", "dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls", "nacelle-core/tls"]
-openssl = ["tls", "dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl", "nacelle-core/tls"]
+experimental-openssl-detection = ["openssl"]
+rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
+openssl = ["dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl"]
 openssl-vendored = ["openssl", "openssl/vendored", "nacelle-openssl/vendored"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 phase-timing = ["nacelle-core/phase-timing"]
@@ -38,6 +38,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["async_tokio"] }
+metrics = { workspace = true }
+metrics-util = { workspace = true }
 
 [[bench]]
 name = "telemetry_paths"
@@ -46,3 +48,7 @@ harness = false
 [[bench]]
 name = "response_delivery"
 harness = false
+
+[package.metadata.docs.rs]
+all-features = false
+features = ["buffer-rotation", "experimental-memory", "phase-timing", "rustls", "tls-self-signed"]

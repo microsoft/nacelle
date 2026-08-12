@@ -4,8 +4,11 @@ use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 #[cfg(all(feature = "tcp", unix))]
 use std::path::Path;
+use std::sync::Arc;
 
 use nacelle_core::error::NacelleError;
+#[cfg(all(test, feature = "http"))]
+use nacelle_core::error::NacelleResourceLimitReason;
 use nacelle_core::lifecycle::NacelleShutdown;
 use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
@@ -16,40 +19,43 @@ use crate::host::NacelleHost;
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
 use nacelle_rustls::NacelleTlsConfig;
-#[cfg(all(feature = "tcp", feature = "openssl"))]
+#[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::NacelleTlsDetectionOptions;
 #[cfg(all(feature = "tcp", unix))]
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 
-type ListenerInstaller<Observer> = Box<dyn FnOnce(&mut NacelleHost<Observer>) + Send + 'static>;
+type ListenerInstaller<Observer, AppState> =
+    Box<dyn FnOnce(&mut NacelleHost<Observer, AppState>) + Send + 'static>;
 
 /// Canonical application composition root.
 ///
 /// Listener registrations may erase their concrete startup closure type, but
 /// each transport retains its concrete protocol, handler, and responder types
 /// after installation. No listener registry participates in request dispatch.
-pub struct NacelleApp<Observer = NoopObserver> {
+pub struct NacelleApp<Observer = NoopObserver, AppState = ()> {
     telemetry: NacelleTelemetry<Observer>,
+    app_state: Arc<AppState>,
     runtime_state: NacelleRuntimeState,
     shutdown: NacelleShutdown,
     ctrl_c_shutdown: bool,
     drain_timeout: std::time::Duration,
-    listeners: Vec<ListenerInstaller<Observer>>,
+    listeners: Vec<ListenerInstaller<Observer, AppState>>,
 }
 
-impl Default for NacelleApp<NoopObserver> {
+impl Default for NacelleApp<NoopObserver, ()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NacelleApp<NoopObserver> {
+impl NacelleApp<NoopObserver, ()> {
     /// Create an application with no registered listeners.
     pub fn new() -> Self {
         Self {
             telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(()),
             runtime_state: NacelleRuntimeState::default(),
             shutdown: NacelleShutdown::new(),
             ctrl_c_shutdown: false,
@@ -59,7 +65,22 @@ impl NacelleApp<NoopObserver> {
     }
 }
 
-impl<Observer> NacelleApp<Observer>
+impl<AppState> NacelleApp<NoopObserver, AppState> {
+    /// Create an application with one typed dependency root.
+    pub fn with_state(app_state: AppState) -> Self {
+        Self {
+            telemetry: NacelleTelemetry::default(),
+            app_state: Arc::new(app_state),
+            runtime_state: NacelleRuntimeState::default(),
+            shutdown: NacelleShutdown::new(),
+            ctrl_c_shutdown: false,
+            drain_timeout: std::time::Duration::from_secs(30),
+            listeners: Vec::new(),
+        }
+    }
+}
+
+impl<Observer> NacelleApp<Observer, ()>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -67,6 +88,7 @@ where
     pub fn with_telemetry(telemetry: NacelleTelemetry<Observer>) -> Self {
         Self {
             telemetry,
+            app_state: Arc::new(()),
             runtime_state: NacelleRuntimeState::default(),
             shutdown: NacelleShutdown::new(),
             ctrl_c_shutdown: false,
@@ -76,10 +98,27 @@ where
     }
 }
 
-impl<Observer> NacelleApp<Observer>
+impl<Observer, AppState> NacelleApp<Observer, AppState>
 where
     Observer: NacelleTelemetryObserver,
+    AppState: Send + Sync + 'static,
 {
+    /// Create an application with concrete process-wide telemetry and application state.
+    pub fn with_state_and_telemetry(
+        app_state: AppState,
+        telemetry: NacelleTelemetry<Observer>,
+    ) -> Self {
+        Self {
+            telemetry,
+            app_state: Arc::new(app_state),
+            runtime_state: NacelleRuntimeState::default(),
+            shutdown: NacelleShutdown::new(),
+            ctrl_c_shutdown: false,
+            drain_timeout: std::time::Duration::from_secs(30),
+            listeners: Vec::new(),
+        }
+    }
+
     /// Set process-wide limits used by every registered listener.
     pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
         self.runtime_state = NacelleRuntimeState::new(limits);
@@ -126,8 +165,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_with_bind_options(name, addr, NacelleTcpBindOptions::default(), server)
@@ -144,8 +183,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.serial_tcp_with_bind_options(name, addr, NacelleTcpBindOptions::default(), server)
@@ -163,8 +202,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -185,8 +224,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_with_bind_options(name, addr, NacelleTcpBindOptions::from(options), server)
@@ -203,8 +242,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -224,8 +263,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_dual_stack_with_options(name, port, NacelleTcpOptions::default(), server)
@@ -242,8 +281,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -264,8 +303,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.unix_socket_with_options(name, path, NacelleUnixSocketOptions::default(), server)
@@ -282,8 +321,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -305,8 +344,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.serial_unix_socket_with_options(
@@ -329,8 +368,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -352,8 +391,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -374,8 +413,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_openssl_with_bind_options(
@@ -399,8 +438,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -422,8 +461,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.serial_tcp_openssl_with_bind_options(
@@ -448,8 +487,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -476,8 +515,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -498,7 +537,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a listener that accepts typed plain or OpenSSL TCP connections.
     pub fn tcp_optional_openssl<P, H, OH, ServerObserver>(
         self,
@@ -509,8 +548,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.tcp_optional_openssl_with_options(
@@ -523,7 +562,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a plain-or-OpenSSL TCP listener with explicit edge options.
     #[allow(clippy::too_many_arguments)]
     pub fn tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
@@ -537,8 +576,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -555,7 +594,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a serial listener that accepts plaintext or OpenSSL TCP connections.
     pub fn serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
         self,
@@ -567,8 +606,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.serial_tcp_optional_openssl_with_options(
@@ -581,7 +620,7 @@ where
         )
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register a serial plaintext-or-OpenSSL TCP listener with edge options.
     #[allow(clippy::too_many_arguments)]
     pub fn serial_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
@@ -596,8 +635,8 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P>,
-        OH: nacelle_tcp::SerialTcpOneWayHandler<P>,
+        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        OH: nacelle_tcp::SerialTcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -614,7 +653,7 @@ where
         self
     }
 
-    #[cfg(all(feature = "tcp", feature = "openssl"))]
+    #[cfg(feature = "experimental-openssl-detection")]
     /// Register IPv4 and IPv6 plain-or-OpenSSL TCP listeners.
     pub fn tcp_optional_openssl_dual_stack<P, H, OH, ServerObserver>(
         self,
@@ -626,8 +665,8 @@ where
     ) -> Self
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P>,
-        OH: nacelle_tcp::TcpOneWayHandler<P>,
+        H: nacelle_tcp::TcpHandler<P, AppState>,
+        OH: nacelle_tcp::TcpOneWayHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -661,7 +700,7 @@ where
     ) -> Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State>,
+        H: nacelle_http::HttpHandler<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -682,7 +721,7 @@ where
     ) -> Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State>,
+        H: nacelle_http::HttpHandler<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -697,7 +736,7 @@ where
         let ctrl_c_task = self
             .ctrl_c_shutdown
             .then(|| spawn_ctrl_c_shutdown(self.shutdown.clone()));
-        let mut host = NacelleHost::with_telemetry(self.telemetry)
+        let mut host = NacelleHost::with_shared_state_and_telemetry(self.app_state, self.telemetry)
             .with_runtime_state(self.runtime_state)
             .with_shutdown(self.shutdown)
             .with_shutdown_drain_timeout(self.drain_timeout);
@@ -872,6 +911,24 @@ mod tests {
         );
 
         assert_eq!(app.listener_count(), 1);
+
+        let state_handler = handler_fn(
+            |context: TcpRequestContext<TestProtocol, String>| async move {
+                assert_eq!(context.app_state(), "application-state");
+                context.respond(TcpResponse::empty()).await
+            },
+        );
+        let state_server = TcpServer::<TestProtocol>::builder()
+            .protocol(TestProtocol)
+            .handler(state_handler)
+            .build()
+            .expect("state-aware TCP server should build");
+        let state_app = NacelleApp::with_state(String::from("application-state")).tcp(
+            "state-tcp-test",
+            "127.0.0.1:0".parse().expect("valid socket address"),
+            state_server,
+        );
+        assert_eq!(state_app.listener_count(), 1);
 
         struct SerialHandler;
 
@@ -1064,7 +1121,9 @@ mod tests {
     fn app_registers_concrete_http_listener() {
         let handler = handler_fn(
             |_context: nacelle_http::HttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit("test_http_handler"))
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("test_http_handler"),
+                ))
             },
         );
         let app = NacelleApp::new().http(
@@ -1074,5 +1133,21 @@ mod tests {
         );
 
         assert_eq!(app.listener_count(), 1);
+
+        let state_handler = handler_fn(
+            |context: nacelle_http::HttpRequestContext<(), String>| async move {
+                assert_eq!(context.app_state(), "application-state");
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Other("test_http_handler"),
+                ))
+            },
+        );
+        let state_app = NacelleApp::with_state(String::from("application-state")).http(
+            "state-http-test",
+            "127.0.0.1:0".parse().expect("valid socket address"),
+            nacelle_http::HyperServer::new(state_handler),
+        );
+
+        assert_eq!(state_app.listener_count(), 1);
     }
 }

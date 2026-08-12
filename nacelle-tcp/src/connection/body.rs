@@ -230,8 +230,8 @@ where
 
 fn body_read_error(error: &NacelleError) -> NacelleError {
     match error {
-        NacelleError::Timeout(name) => NacelleError::Timeout(name),
-        NacelleError::ResourceLimit(name) => NacelleError::ResourceLimit(name),
+        NacelleError::Timeout(reason) => NacelleError::Timeout(*reason),
+        NacelleError::ResourceLimit(reason) => NacelleError::ResourceLimit(*reason),
         NacelleError::Io(error) => {
             NacelleError::Io(std::io::Error::new(error.kind(), error.to_string()))
         }

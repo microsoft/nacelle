@@ -50,7 +50,7 @@ The TCP crate also measures one complete connection plus one request through the
 metrics facade, with independent phase-timing coverage:
 
 ```bash
-cargo bench -p nacelle-tcp --bench telemetry_paths --all-features -- --noplot
+cargo bench -p nacelle-tcp --bench telemetry_paths --features "buffer-rotation experimental-memory phase-timing rustls tls-self-signed" -- --noplot
 ```
 
 Response delivery policies have a separate end-to-end benchmark:
@@ -384,7 +384,7 @@ base connection allocation and do not exercise overflow growth.
 Run them with:
 
 ```bash
-cargo bench -p nacelle-tcp --bench response_delivery --all-features
+cargo bench -p nacelle-tcp --bench response_delivery --features "buffer-rotation experimental-memory phase-timing rustls tls-self-signed"
 ```
 
 A local confidence run based on commit `9be59a0` with a modified worktree used

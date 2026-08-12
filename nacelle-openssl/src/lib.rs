@@ -6,7 +6,6 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use nacelle_core::tls::NacelleTlsProvider;
 use openssl::ssl::{NameType, SslAcceptor, SslFiletype, SslMethod, SslRef};
 
 /// Reloadable OpenSSL server configuration.
@@ -20,7 +19,6 @@ impl std::fmt::Debug for NacelleOpenSslConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NacelleOpenSslConfig")
-            .field("provider", &NacelleTlsProvider::OpenSsl)
             .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
@@ -77,12 +75,6 @@ impl NacelleOpenSslConfig {
             .expect("OpenSSL acceptor lock poisoned") = Arc::new(acceptor);
     }
 
-    /// Return the provider identity.
-    #[must_use]
-    pub const fn provider(&self) -> NacelleTlsProvider {
-        NacelleTlsProvider::OpenSsl
-    }
-
     /// Snapshot the acceptor used by a new connection.
     #[doc(hidden)]
     #[must_use]
@@ -101,7 +93,7 @@ impl NacelleOpenSslConfig {
     }
 }
 
-/// Extract provider-neutral metadata from an established OpenSSL connection.
+/// Extract negotiated TLS metadata from an established OpenSSL connection.
 #[must_use]
 pub fn connection_tls_meta(ssl: &SslRef) -> NacelleConnectionTlsMeta {
     let mut metadata = NacelleConnectionTlsMeta::new("openssl").with_protocol(ssl.version_str());

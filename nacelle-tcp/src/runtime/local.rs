@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
 use nacelle_core::error::NacelleError;
+#[cfg(any(feature = "openssl", feature = "rustls"))]
+use nacelle_core::error::NacelleTimeoutReason;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
@@ -17,7 +19,7 @@ use crate::connection::{
     serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
 };
 use crate::options::NacelleTcpOptions;
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
 use crate::protocol::{
     LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler,
@@ -26,7 +28,7 @@ use crate::protocol::{
 use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
 
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 use super::openssl_optional::detect_tls_handshake;
 
 /// Serve one worker-local TCP listener until shared shutdown is requested.
@@ -248,7 +250,7 @@ where
                             server
                                 .telemetry()
                                 .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     };
                     let connection = connection
@@ -349,7 +351,7 @@ where
                             server
                                 .telemetry()
                                 .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -450,7 +452,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -488,7 +490,7 @@ where
 }
 
 /// Serve one worker-local serial plaintext-or-OpenSSL listener until shutdown.
-#[cfg(feature = "openssl")]
+#[cfg(feature = "experimental-openssl-detection")]
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, OH, Observer>(
     server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
@@ -579,7 +581,7 @@ where
                         Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                         Err(_) => {
                             server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout("tls_handshake"));
+                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
                         }
                     }
                     let connection = connection.with_tls(
@@ -618,7 +620,7 @@ where
 
 fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     match error {
-        NacelleError::ResourceLimit(reason) => reason,
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
         _ => "connections",
     }
 }

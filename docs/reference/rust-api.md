@@ -3,7 +3,8 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc --workspace --all-features --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
 On Windows:
@@ -11,6 +12,10 @@ On Windows:
 ```powershell
 .\scripts\build-rustdoc.ps1
 ```
+
+The facade documentation uses the Rustls backend. OpenSSL configuration is
+documented separately from `nacelle-openssl` because both backend features
+cannot be enabled in one build.
 
 The generated index is:
 
@@ -30,6 +35,11 @@ Start with these public entry points:
   when app/host composition is not sufficient.
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)` for the
   app-first serving path across TCP, Unix sockets, HTTP, and TLS.
+- `NacelleApp::with_state(...)` or `with_state_and_telemetry(...)` for one typed
+  dependency root shared across listeners. Declare it in
+  `TcpRequestContext<P, AppState>` or
+  `HttpRequestContext<ConnectionState, AppState>` and borrow it through
+  `RequestContext::app_state()`.
 - `nacelle::core::pipeline::Handler` for typed shared-runtime handlers.
 - `nacelle::tcp::{NacelleTcpConfig, NacelleTcpLimits}` for TCP buffering,
   framing, and timeout policy. These structs are non-exhaustive; construct them
@@ -37,9 +47,12 @@ Start with these public entry points:
   defaults.
 - `nacelle::runtime::{ThreadPerCoreConfig, WorkerSet}` and
   the `run_local_*_thread_per_core(...)` functions for experimental Linux-only
-  worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL execution. This mode
-  requires explicit selection and does not silently fall back to the shared
-  runtime.
+  worker-local TCP, HTTP, Rustls, required OpenSSL, and optional OpenSSL
+  execution. These APIs require `experimental-thread-per-core`; this mode does
+  not silently fall back to the shared runtime.
+- `LocalTcpRuntimeConfig::with_state(...)` and
+  `LocalHttpRuntimeConfig::with_state(...)` to share the same typed dependency
+  root across worker-local listeners.
 - `ThreadPerCoreConfig::with_max_threads(...)` to cap the worker threads selected by
   `WorkerSet::all()`, `WorkerSet::first(...)`, or `WorkerSet::explicit(...)` while preserving
   selection order. The shared runtime is caller-owned; configure its Tokio thread count on the
@@ -57,18 +70,30 @@ Start with these public entry points:
 - With `experimental-memory`, `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to
   retain declared-length admission or account only live streaming chunks.
 - `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
-  required OpenSSL, optional OpenSSL, and Unix sockets.
+  required OpenSSL, optional OpenSSL, and Unix sockets. Optional plaintext/
+  OpenSSL methods require `experimental-openssl-detection`, which implies the
+  `tcp` and `openssl` features.
 - `nacelle::runtime::run_local_serial_tcp_thread_per_core(...)` and
   `run_local_serial_tcp_openssl_thread_per_core(...)` for worker-local serial
   plain TCP and required OpenSSL. Use
   `run_local_serial_tcp_optional_openssl_thread_per_core(...)` when plaintext and OpenSSL must
-  share one worker-local listener. Worker factories run once per worker, so
+  share one worker-local listener; it requires both experimental features.
+  Worker factories run once per worker, so
   externally bounded pools should be shared deliberately rather than
   constructed per worker.
+- Use `without_handler_timeout()`, the four `NacelleTcpLimits::without_*_timeout()`
+  builders, and the HTTP `without_*_timeout()` / `without_max_connection_age()`
+  builders when an explicitly unbounded policy is required.
 - `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
 - `nacelle::core::NacelleError::hint()` with the `error-hints` feature for
   optional operator guidance. `NacelleError::Display` remains stable across
   feature combinations; applications append hints deliberately where suitable.
+  Hint text is advisory and must not be parsed as a stable identifier.
+- Match `NacelleError::ResourceLimit(NacelleResourceLimitReason::...)` and
+  `NacelleError::Timeout(NacelleTimeoutReason::...)` for programmatic handling.
+  The reason enums are non-exhaustive and their `as_str()` methods expose stable
+  low-cardinality labels. Use `Other(&'static str)` only for application-owned
+  static reason vocabularies.
 - With `experimental-memory`,
   `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
   `NacelleRuntimeState::memory_budget()` for shared application/transport
@@ -76,3 +101,8 @@ Start with these public entry points:
   capacity with `NacelleMemoryAllocation::shrink_to(...)`.
 - `nacelle::tcp::TcpServer`, `nacelle::http::HyperServer`, `nacelle::runtime::NacelleHost`, and
   `nacelle::advanced::runtime` when a service needs lower-level listener control.
+
+Connection metadata, `ConnectionInfo`, telemetry event types, and TCP/Unix
+listener options are non-exhaustive. Observe them with
+wildcard enum matches and construct option values through their documented
+constructors, defaults, conversions, and builders.

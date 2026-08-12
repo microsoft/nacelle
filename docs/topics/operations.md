@@ -23,13 +23,16 @@ services. For production services, record:
 - feature flags
 - allocator settings
 
-Thread-per-core mode is experimental and Linux-only. Select workers explicitly,
-record logical CPU ids and affinity settings, and treat any bind, affinity, or
-worker initialization failure as a whole-runtime startup failure. TCP, HTTP,
-Rustls TCP/HTTPS, required OpenSSL TCP, and optional plaintext/OpenSSL TCP have
-worker-local stacks. Performance qualification remains under implementation.
-Use `ThreadPerCoreConfig::with_max_threads(...)` to cap any selected worker set;
-configure the caller-owned Tokio builder separately for shared-runtime thread limits.
+Thread-per-core mode requires `experimental-thread-per-core`, is experimental,
+and is Linux-only. Select workers explicitly, record logical CPU ids and
+affinity settings, and treat any bind, affinity, or worker initialization
+failure as a whole-runtime startup failure. TCP, HTTP, Rustls TCP/HTTPS,
+required OpenSSL TCP, and optional plaintext/OpenSSL TCP have worker-local
+stacks; optional OpenSSL detection additionally requires
+`experimental-openssl-detection`. Performance qualification remains under
+implementation. Use `ThreadPerCoreConfig::with_max_threads(...)` to cap any
+selected worker set; configure the caller-owned Tokio builder separately for
+shared-runtime thread limits.
 
 ## Shutdown
 

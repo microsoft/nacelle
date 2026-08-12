@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use tokio::net::TcpStream;
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleTcpOptions {
     pub nodelay: bool,
@@ -17,6 +18,7 @@ impl Default for NacelleTcpOptions {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NacelleTcpBindOptions {
     pub stream: NacelleTcpOptions,
@@ -76,6 +78,7 @@ impl NacelleTcpOptions {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleTcpKeepalive {
     pub time: Option<Duration>,
@@ -118,11 +121,14 @@ impl Default for NacelleTcpKeepalive {
     }
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleTlsDetectionOptions {
     pub timeout: Duration,
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
 impl Default for NacelleTlsDetectionOptions {
     fn default() -> Self {
         Self {
@@ -131,6 +137,7 @@ impl Default for NacelleTlsDetectionOptions {
     }
 }
 
+#[cfg(feature = "experimental-openssl-detection")]
 impl NacelleTlsDetectionOptions {
     pub fn new() -> Self {
         Self::default()
@@ -143,6 +150,7 @@ impl NacelleTlsDetectionOptions {
 }
 
 #[cfg(unix)]
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NacelleUnixSocketOptions {
     pub unlink_stale_path: bool,
@@ -213,6 +221,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "experimental-openssl-detection")]
     fn tls_detection_defaults_to_bounded_timeout() {
         let options = NacelleTlsDetectionOptions::default();
 

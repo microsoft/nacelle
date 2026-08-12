@@ -28,6 +28,7 @@ impl std::fmt::Display for NacelleTransport {
     }
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NacelleTelemetryEventKind {
     ListenerConfigured,
@@ -47,6 +48,7 @@ pub enum NacelleTelemetryEventKind {
     ConnectionsAborted,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NacelleTelemetryEvent {
     pub kind: NacelleTelemetryEventKind,

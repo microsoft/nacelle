@@ -770,7 +770,7 @@ where
         metrics::counter!("nacelle.errors", attributes).increment(1);
         if let crate::error::NacelleError::ResourceLimit(limit) = error {
             let mut attributes = context.request_attributes.to_vec();
-            attributes.push(metrics::Label::from_static_parts("limit", limit));
+            attributes.push(metrics::Label::from_static_parts("limit", limit.as_str()));
             attributes.push(metrics::Label::from_static_parts("phase", phase));
             metrics::counter!("nacelle.resource_limit.rejections", attributes).increment(1);
         }
@@ -873,9 +873,9 @@ where
 
 fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     match error {
-        crate::error::NacelleError::ResourceLimit(reason)
-        | crate::error::NacelleError::Timeout(reason)
-        | crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
+        crate::error::NacelleError::ResourceLimit(reason) => Some(reason.as_str()),
+        crate::error::NacelleError::Timeout(reason) => Some(reason.as_str()),
+        crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
         crate::error::NacelleError::FrameTooLarge { .. } => Some("frame_too_large"),
         crate::error::NacelleError::UnexpectedEof => Some("unexpected_eof"),
         crate::error::NacelleError::ConnectionClosed => Some("connection_closed"),

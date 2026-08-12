@@ -1,11 +1,12 @@
 use std::convert::Infallible;
 use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 use nacelle_core::pipeline::{
     Completed, ConnectionContext, ConnectionInfo, Handler, LocalHandler, NoResponse,
     RequestContext, RequiredCompletion, RequiredResponder, Respond,
@@ -88,9 +89,13 @@ impl<'buffer> FrameBuffer<'buffer> {
         let next = self
             .len()
             .checked_add(additional)
-            .ok_or(NacelleError::ResourceLimit("response_frame_bytes"))?;
+            .ok_or(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes,
+            ))?;
         if next > self.max_len {
-            return Err(NacelleError::ResourceLimit("response_frame_bytes"));
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes,
+            ));
         }
         Ok(())
     }
@@ -152,10 +157,10 @@ pub struct TcpCompletion<Response, ResponseContext> {
 }
 
 /// Concrete application context for one required-response TCP request.
-pub type TcpRequestContext<P> = RequestContext<
+pub type TcpRequestContext<P, AppState = ()> = RequestContext<
     TcpRequest<<P as Protocol>::Request>,
     RequiredResponder<TcpResponder<<P as Protocol>::Response, <P as Protocol>::ResponseContext>>,
-    (),
+    AppState,
     ConnectionContext<Arc<<P as Protocol>::ConnectionState>>,
 >;
 
@@ -164,17 +169,21 @@ pub type TcpHandlerCompletion<P> =
     RequiredCompletion<TcpCompletion<<P as Protocol>::Response, <P as Protocol>::ResponseContext>>;
 
 /// Statically dispatched application handler for one TCP protocol.
-pub trait TcpHandler<P>:
-    Handler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>
+pub trait TcpHandler<P, AppState = ()>:
+    Handler<TcpRequestContext<P, AppState>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>
 where
     P: SharedProtocol,
 {
 }
 
-impl<P, H> TcpHandler<P> for H
+impl<P, H, AppState> TcpHandler<P, AppState> for H
 where
     P: SharedProtocol,
-    H: Handler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>,
+    H: Handler<
+            TcpRequestContext<P, AppState>,
+            Completion = TcpHandlerCompletion<P>,
+            Error = NacelleError,
+        >,
 {
 }
 
@@ -182,18 +191,22 @@ where
 ///
 /// Unlike [`TcpHandler`], this contract permits `!Send` futures and handler
 /// state. It is accepted only by the explicit thread-per-core runtime.
-pub trait LocalTcpHandler<P>:
-    LocalHandler<TcpRequestContext<P>, Completion = TcpHandlerCompletion<P>, Error = NacelleError>
+pub trait LocalTcpHandler<P, AppState = ()>:
+    LocalHandler<
+        TcpRequestContext<P, AppState>,
+        Completion = TcpHandlerCompletion<P>,
+        Error = NacelleError,
+    >
 where
     P: Protocol,
 {
 }
 
 /// Exclusive connection-state context for one serial required-response request.
-pub type SerialTcpRequestContext<'connection, P> = RequestContext<
+pub type SerialTcpRequestContext<'connection, P, AppState = ()> = RequestContext<
     TcpRequest<<P as Protocol>::Request>,
     RequiredResponder<TcpResponder<<P as Protocol>::Response, <P as Protocol>::ResponseContext>>,
-    (),
+    AppState,
     &'connection mut ConnectionContext<<P as Protocol>::ConnectionState>,
 >;
 
@@ -201,34 +214,34 @@ pub type SerialTcpRequestContext<'connection, P> = RequestContext<
 ///
 /// The connection loop awaits each call before decoding the next request, so
 /// safe implementations cannot overlap mutable access for one connection.
-pub trait SerialTcpHandler<P>: Send + Sync + 'static
+pub trait SerialTcpHandler<P, AppState = ()>: Send + Sync + 'static
 where
     P: Protocol,
     P::ConnectionState: Send,
 {
     fn call<'connection>(
         &'connection self,
-        context: SerialTcpRequestContext<'connection, P>,
+        context: SerialTcpRequestContext<'connection, P, AppState>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + Send + 'connection;
 }
 
 /// Worker-local serial handler with exclusive mutable connection state.
 #[allow(clippy::future_not_send)]
-pub trait LocalSerialTcpHandler<P>
+pub trait LocalSerialTcpHandler<P, AppState = ()>
 where
     P: Protocol,
 {
     fn call<'connection>(
         &'connection self,
-        context: SerialTcpRequestContext<'connection, P>,
+        context: SerialTcpRequestContext<'connection, P, AppState>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection;
 }
 
-impl<P, H> LocalTcpHandler<P> for H
+impl<P, H, AppState> LocalTcpHandler<P, AppState> for H
 where
     P: Protocol,
     H: LocalHandler<
-            TcpRequestContext<P>,
+            TcpRequestContext<P, AppState>,
             Completion = TcpHandlerCompletion<P>,
             Error = NacelleError,
         >,
@@ -236,72 +249,72 @@ where
 }
 
 /// Concrete application context for one one-way TCP message.
-pub type TcpOneWayContext<P> = RequestContext<
+pub type TcpOneWayContext<P, AppState = ()> = RequestContext<
     TcpRequest<<P as Protocol>::OneWayRequest>,
     NoResponse,
-    (),
+    AppState,
     ConnectionContext<Arc<<P as Protocol>::ConnectionState>>,
 >;
 
 /// Statically dispatched one-way handler for one TCP protocol.
-pub trait TcpOneWayHandler<P>:
-    Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>
+pub trait TcpOneWayHandler<P, AppState = ()>:
+    Handler<TcpOneWayContext<P, AppState>, Completion = Completed, Error = NacelleError>
 where
     P: SharedProtocol,
 {
 }
 
-impl<P, H> TcpOneWayHandler<P> for H
+impl<P, H, AppState> TcpOneWayHandler<P, AppState> for H
 where
     P: SharedProtocol,
-    H: Handler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>,
+    H: Handler<TcpOneWayContext<P, AppState>, Completion = Completed, Error = NacelleError>,
 {
 }
 
 /// Worker-local one-way handler for one TCP protocol.
-pub trait LocalTcpOneWayHandler<P>:
-    LocalHandler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>
+pub trait LocalTcpOneWayHandler<P, AppState = ()>:
+    LocalHandler<TcpOneWayContext<P, AppState>, Completion = Completed, Error = NacelleError>
 where
     P: Protocol,
 {
 }
 
 /// Exclusive connection-state context for one serial one-way message.
-pub type SerialTcpOneWayContext<'connection, P> = RequestContext<
+pub type SerialTcpOneWayContext<'connection, P, AppState = ()> = RequestContext<
     TcpRequest<<P as Protocol>::OneWayRequest>,
     NoResponse,
-    (),
+    AppState,
     &'connection mut ConnectionContext<<P as Protocol>::ConnectionState>,
 >;
 
 /// Shared-runtime serial one-way handler.
-pub trait SerialTcpOneWayHandler<P>: Send + Sync + 'static
+pub trait SerialTcpOneWayHandler<P, AppState = ()>: Send + Sync + 'static
 where
     P: Protocol,
     P::ConnectionState: Send,
 {
     fn call<'connection>(
         &'connection self,
-        context: SerialTcpOneWayContext<'connection, P>,
+        context: SerialTcpOneWayContext<'connection, P, AppState>,
     ) -> impl Future<Output = Result<Completed, NacelleError>> + Send + 'connection;
 }
 
 /// Worker-local serial one-way handler.
 #[allow(clippy::future_not_send)]
-pub trait LocalSerialTcpOneWayHandler<P>
+pub trait LocalSerialTcpOneWayHandler<P, AppState = ()>
 where
     P: Protocol,
 {
     fn call<'connection>(
         &'connection self,
-        context: SerialTcpOneWayContext<'connection, P>,
+        context: SerialTcpOneWayContext<'connection, P, AppState>,
     ) -> impl Future<Output = Result<Completed, NacelleError>> + 'connection;
 }
 
-impl<P, H> LocalTcpOneWayHandler<P> for H
+impl<P, H, AppState> LocalTcpOneWayHandler<P, AppState> for H
 where
     P: Protocol,
-    H: LocalHandler<TcpOneWayContext<P>, Completion = Completed, Error = NacelleError>,
+    H: LocalHandler<TcpOneWayContext<P, AppState>, Completion = Completed, Error = NacelleError>,
 {
 }
 
@@ -315,54 +328,252 @@ impl<P> NoOneWayHandler<P> {
     }
 }
 
-impl<P> Handler<TcpOneWayContext<P>> for NoOneWayHandler<P>
+impl<P, AppState> Handler<TcpOneWayContext<P, AppState>> for NoOneWayHandler<P>
 where
     P: SharedProtocol<OneWayRequest = Infallible>,
+    AppState: Send + Sync + 'static,
 {
     type Completion = Completed;
     type Error = NacelleError;
 
-    async fn call(&self, _context: TcpOneWayContext<P>) -> Result<Self::Completion, Self::Error> {
+    async fn call(
+        &self,
+        _context: TcpOneWayContext<P, AppState>,
+    ) -> Result<Self::Completion, Self::Error> {
         unreachable!("an Infallible one-way request cannot be decoded")
     }
 }
 
 #[allow(clippy::future_not_send)]
-impl<P> LocalHandler<TcpOneWayContext<P>> for NoOneWayHandler<P>
+impl<P, AppState> LocalHandler<TcpOneWayContext<P, AppState>> for NoOneWayHandler<P>
 where
     P: Protocol<OneWayRequest = Infallible>,
 {
     type Completion = Completed;
     type Error = NacelleError;
 
-    async fn call(&self, _context: TcpOneWayContext<P>) -> Result<Self::Completion, Self::Error> {
+    async fn call(
+        &self,
+        _context: TcpOneWayContext<P, AppState>,
+    ) -> Result<Self::Completion, Self::Error> {
         unreachable!("an Infallible one-way request cannot be decoded")
     }
 }
 
-impl<P> SerialTcpOneWayHandler<P> for NoOneWayHandler<P>
+impl<P, AppState> SerialTcpOneWayHandler<P, AppState> for NoOneWayHandler<P>
 where
     P: Protocol<OneWayRequest = Infallible>,
     P::ConnectionState: Send,
+    AppState: Send + Sync + 'static,
 {
     async fn call<'connection>(
         &'connection self,
-        _context: SerialTcpOneWayContext<'connection, P>,
+        _context: SerialTcpOneWayContext<'connection, P, AppState>,
     ) -> Result<Completed, NacelleError> {
         unreachable!("an Infallible one-way request cannot be decoded")
     }
 }
 
 #[allow(clippy::future_not_send)]
-impl<P> LocalSerialTcpOneWayHandler<P> for NoOneWayHandler<P>
+impl<P, AppState> LocalSerialTcpOneWayHandler<P, AppState> for NoOneWayHandler<P>
 where
     P: Protocol<OneWayRequest = Infallible>,
+    AppState: 'static,
 {
     async fn call<'connection>(
         &'connection self,
-        _context: SerialTcpOneWayContext<'connection, P>,
+        _context: SerialTcpOneWayContext<'connection, P, AppState>,
     ) -> Result<Completed, NacelleError> {
         unreachable!("an Infallible one-way request cannot be decoded")
+    }
+}
+
+/// Shared-runtime adapter that installs application state before user dispatch.
+#[doc(hidden)]
+pub struct SharedAppStateHandler<P, H, AppState> {
+    handler: Arc<H>,
+    app_state: Arc<AppState>,
+    protocol: PhantomData<fn() -> P>,
+}
+
+impl<P, H, AppState> SharedAppStateHandler<P, H, AppState> {
+    #[doc(hidden)]
+    pub const fn new(handler: Arc<H>, app_state: Arc<AppState>) -> Self {
+        Self {
+            handler,
+            app_state,
+            protocol: PhantomData,
+        }
+    }
+}
+
+impl<P, H, AppState> Handler<TcpRequestContext<P>> for SharedAppStateHandler<P, H, AppState>
+where
+    P: SharedProtocol,
+    H: TcpHandler<P, AppState>,
+    AppState: Send + Sync + 'static,
+{
+    type Completion = TcpHandlerCompletion<P>;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: TcpRequestContext<P>,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send {
+        Handler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+impl<P, H, AppState> Handler<TcpOneWayContext<P>> for SharedAppStateHandler<P, H, AppState>
+where
+    P: SharedProtocol,
+    H: TcpOneWayHandler<P, AppState>,
+    AppState: Send + Sync + 'static,
+{
+    type Completion = Completed;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: TcpOneWayContext<P>,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send {
+        Handler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+impl<P, H, AppState> SerialTcpHandler<P> for SharedAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpHandler<P, AppState>,
+    AppState: Send + Sync + 'static,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + Send + 'connection
+    {
+        SerialTcpHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+impl<P, H, AppState> SerialTcpOneWayHandler<P> for SharedAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpOneWayHandler<P, AppState>,
+    AppState: Send + Sync + 'static,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpOneWayContext<'connection, P>,
+    ) -> impl Future<Output = Result<Completed, NacelleError>> + Send + 'connection {
+        SerialTcpOneWayHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+/// Worker-local adapter that installs application state before user dispatch.
+#[doc(hidden)]
+pub struct LocalAppStateHandler<P, H, AppState> {
+    handler: Rc<H>,
+    app_state: Arc<AppState>,
+    protocol: PhantomData<fn() -> P>,
+}
+
+impl<P, H, AppState> LocalAppStateHandler<P, H, AppState> {
+    #[doc(hidden)]
+    pub const fn new(handler: Rc<H>, app_state: Arc<AppState>) -> Self {
+        Self {
+            handler,
+            app_state,
+            protocol: PhantomData,
+        }
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H, AppState> LocalHandler<TcpRequestContext<P>> for LocalAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    H: LocalTcpHandler<P, AppState>,
+{
+    type Completion = TcpHandlerCompletion<P>;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: TcpRequestContext<P>,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
+        LocalHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H, AppState> LocalHandler<TcpOneWayContext<P>> for LocalAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    H: LocalTcpOneWayHandler<P, AppState>,
+{
+    type Completion = Completed;
+    type Error = NacelleError;
+
+    fn call(
+        &self,
+        context: TcpOneWayContext<P>,
+    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
+        LocalHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H, AppState> LocalSerialTcpHandler<P> for LocalAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P, AppState>,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<'connection, P>,
+    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
+        LocalSerialTcpHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
+    }
+}
+
+#[allow(clippy::future_not_send)]
+impl<P, H, AppState> LocalSerialTcpOneWayHandler<P> for LocalAppStateHandler<P, H, AppState>
+where
+    P: Protocol,
+    H: LocalSerialTcpOneWayHandler<P, AppState>,
+{
+    fn call<'connection>(
+        &'connection self,
+        context: SerialTcpOneWayContext<'connection, P>,
+    ) -> impl Future<Output = Result<Completed, NacelleError>> + 'connection {
+        LocalSerialTcpOneWayHandler::call(
+            self.handler.as_ref(),
+            context.map_app_state(self.app_state.clone()),
+        )
     }
 }
 
@@ -513,7 +724,9 @@ mod tests {
             .expect("remaining cumulative capacity should be available");
         assert!(matches!(
             frame.extend_from_slice(b"x"),
-            Err(NacelleError::ResourceLimit("response_frame_bytes"))
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ResponseFrameBytes
+            ))
         ));
         assert_eq!(&bytes[..], b"prior!");
     }

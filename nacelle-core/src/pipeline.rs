@@ -1,8 +1,4 @@
-//! Experimental statically dispatched request pipeline contracts.
-//!
-//! These contracts are additive and are not yet used by the TCP or HTTP
-//! transports. They remain under `nacelle_core::pipeline` until both adapters
-//! prove their completion, cancellation, and connection-state semantics.
+//! Statically dispatched request pipeline contracts used by TCP and HTTP.
 //!
 //! A transport enforces required completion by accepting only a handler whose
 //! successful `Completion` is the corresponding [`RequiredCompletion`] or
@@ -22,6 +18,7 @@ use crate::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
 use crate::telemetry::NacelleTransport;
 
 /// Immutable transport metadata for one accepted connection.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo {
     /// Stable connection identifier.
@@ -164,8 +161,23 @@ pub trait Respond {
 pub struct RequestContext<Request, Responder, AppState, Connection = ConnectionContext<()>> {
     request: Request,
     responder: Responder,
-    app_state: AppState,
+    app_state: AppStateStorage<AppState>,
     connection: Connection,
+}
+
+#[derive(Debug)]
+enum AppStateStorage<AppState> {
+    Inline(AppState),
+    Shared(Arc<AppState>),
+}
+
+impl<AppState> AppStateStorage<AppState> {
+    fn get(&self) -> &AppState {
+        match self {
+            Self::Inline(app_state) => app_state,
+            Self::Shared(app_state) => app_state.as_ref(),
+        }
+    }
 }
 
 impl<Request, Responder, AppState, Connection>
@@ -175,13 +187,13 @@ impl<Request, Responder, AppState, Connection>
     pub const fn new(
         request: Request,
         responder: Responder,
-        app_state: AppState,
+        app_state: Arc<AppState>,
         connection: Connection,
     ) -> Self {
         Self {
             request,
             responder,
-            app_state,
+            app_state: AppStateStorage::Shared(app_state),
             connection,
         }
     }
@@ -196,9 +208,23 @@ impl<Request, Responder, AppState, Connection>
         &mut self.request
     }
 
-    /// Borrow application state.
-    pub const fn app_state(&self) -> &AppState {
-        &self.app_state
+    /// Borrow the typed application dependency root.
+    pub fn app_state(&self) -> &AppState {
+        self.app_state.get()
+    }
+
+    /// Replace application state while preserving the request and connection.
+    #[doc(hidden)]
+    pub fn map_app_state<Next>(
+        self,
+        app_state: Arc<Next>,
+    ) -> RequestContext<Request, Responder, Next, Connection> {
+        RequestContext {
+            request: self.request,
+            responder: self.responder,
+            app_state: AppStateStorage::Shared(app_state),
+            connection: self.connection,
+        }
     }
 
     /// Borrow the concrete connection access value.
@@ -236,6 +262,23 @@ impl<Request, Responder, AppState, Connection>
         Responder: Respond,
     {
         self.responder.respond(response)
+    }
+}
+
+impl<Request, Responder, Connection> RequestContext<Request, Responder, (), Connection> {
+    /// Construct a transport context before application state is installed.
+    #[doc(hidden)]
+    pub const fn without_app_state(
+        request: Request,
+        responder: Responder,
+        connection: Connection,
+    ) -> Self {
+        Self {
+            request,
+            responder,
+            app_state: AppStateStorage::Inline(()),
+            connection,
+        }
     }
 }
 
@@ -553,8 +596,12 @@ mod tests {
 
     #[tokio::test]
     async fn required_responder_completes_once() {
-        let context =
-            RequestContext::new(5, RequiredResponder::new(TestResponder), (), connection(()));
+        let context = RequestContext::new(
+            5,
+            RequiredResponder::new(TestResponder),
+            Arc::new(()),
+            connection(()),
+        );
 
         let completion = context.respond(7).await.expect("infallible response");
 
@@ -563,9 +610,13 @@ mod tests {
 
     #[test]
     fn optional_and_one_way_requests_complete_without_output() {
-        let optional =
-            RequestContext::new(5, OptionalResponder::new(TestResponder), (), connection(()));
-        let one_way = RequestContext::new(5, NoResponse, (), connection(()));
+        let optional = RequestContext::new(
+            5,
+            OptionalResponder::new(TestResponder),
+            Arc::new(()),
+            connection(()),
+        );
+        let one_way = RequestContext::new(5, NoResponse, Arc::new(()), connection(()));
 
         assert!(!optional.complete().responded());
         let completion = one_way.complete();
@@ -575,7 +626,7 @@ mod tests {
     #[tokio::test]
     async fn shared_handler_accepts_send_state() {
         let handler = handler_fn(
-            |context: RequestContext<u64, RequiredResponder<TestResponder>, Arc<str>>| async move {
+            |context: RequestContext<u64, RequiredResponder<TestResponder>, String>| async move {
                 let response = context.request() + context.app_state().len() as u64;
                 context.respond(response).await
             },
@@ -583,7 +634,7 @@ mod tests {
         let context = RequestContext::new(
             5,
             RequiredResponder::new(TestResponder),
-            Arc::<str>::from("state"),
+            Arc::new("state".to_string()),
             connection(()),
         );
 
@@ -592,13 +643,31 @@ mod tests {
         assert_eq!(completion.into_inner(), 10);
     }
 
+    #[test]
+    fn mapping_app_state_preserves_context_and_state_identity() {
+        let app_state = Arc::new(String::from("shared"));
+        let context = RequestContext::without_app_state(
+            5,
+            OptionalResponder::new(TestResponder),
+            connection(7_u64),
+        );
+
+        assert!(matches!(context.app_state, AppStateStorage::Inline(())));
+
+        let context = context.map_app_state(app_state.clone());
+
+        assert_eq!(*context.request(), 5);
+        assert_eq!(context.connection().state, 7);
+        assert!(std::ptr::eq(context.app_state(), app_state.as_ref()));
+    }
+
     #[tokio::test]
     async fn request_borrows_connection_state_without_consuming_it() {
         let mut connection = connection(10_u64);
         let context = RequestContext::new(
             5,
             RequiredResponder::new(TestResponder),
-            (),
+            Arc::new(()),
             &mut connection,
         );
 
@@ -613,16 +682,20 @@ mod tests {
 
     #[tokio::test]
     async fn local_handler_accepts_non_send_state() {
+        let local_state = Rc::<str>::from("local");
         let handler = local_handler_fn(
-            |context: RequestContext<u64, RequiredResponder<TestResponder>, Rc<str>>| async move {
-                let response = context.request() + context.app_state().len() as u64;
-                context.respond(response).await
+            move |context: RequestContext<u64, RequiredResponder<TestResponder>, String>| {
+                let local_state = local_state.clone();
+                async move {
+                    let response = context.request() + local_state.len() as u64;
+                    context.respond(response).await
+                }
             },
         );
         let context = RequestContext::new(
             5,
             RequiredResponder::new(TestResponder),
-            Rc::<str>::from("local"),
+            Arc::new(String::from("shared")),
             connection(()),
         );
 
@@ -661,7 +734,7 @@ mod tests {
         let context = RequestContext::new(
             5_u64,
             RequiredResponder::new(TestResponder),
-            (),
+            Arc::new(()),
             connection(()),
         )
         .map_responder(|responder| {

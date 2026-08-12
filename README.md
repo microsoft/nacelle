@@ -9,7 +9,8 @@ context.respond(transport_response).await
 
 Each transport owns its request, response, and completion types. Handlers receive
 a typed context with a streaming `NacelleBody`, connection metadata, and concrete
-connection state, so services can process chunks without forcing full buffering.
+application and connection state, so services can process chunks without forcing
+full buffering.
 
 ## Status
 
@@ -17,9 +18,10 @@ Nacelle is currently `0.3.x`. It is ready for experiments and prototype
 integrations, but the public API is still allowed to change before `1.0`.
 
 The typed pipeline contracts, runtime limits, host/app builders, and telemetry
-observer contract are the most stable parts of the API. Transport metadata, listener options,
-stress-tool configuration, optional OpenSSL TLS detection, and metrics exporter
-integration are still moving.
+observer contract are the most stable parts of the API. Transport metadata and
+listener options are retained as non-exhaustive APIs. Stress-tool configuration,
+experimental OpenSSL detection, experimental memory accounting, and
+experimental thread-per-core execution are still moving.
 
 Authentication and compression are not implemented in Nacelle. Keep those in
 your application, protocol layer, or edge proxy.
@@ -71,6 +73,14 @@ async fn main() -> Result<(), NacelleError> {
 }
 ```
 
+Applications with shared dependencies use `NacelleApp::with_state(...)` or
+`NacelleApp::with_state_and_telemetry(...)` and declare that state as the final
+request-context type parameter. Handlers borrow it with `context.app_state()`.
+Nacelle keeps one internal `Arc` allocation and shares it across every listener;
+it does not expose mutable access or replace the dependency root at runtime.
+Reloadable configuration can live behind that root and return one owned snapshot
+per request before the handler awaits.
+
 ## Examples
 
 Run the checked-in examples from a local checkout:
@@ -106,16 +116,17 @@ cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 
 - Transport-owned typed request, response, and completion contracts.
 - Static handler and middleware dispatch without boxed hot-path futures.
 - App-core serving with swappable protocol adapters.
+- One typed application dependency root shared across registered listeners.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
-- Serial plain TCP, OpenSSL, optional OpenSSL, and Unix socket handlers with
+- Serial plain TCP, OpenSSL, experimental optional OpenSSL, and Unix socket handlers with
     exclusive mutable connection state and no async mutex on the connection
     path.
 - Explicit bounded TCP response coalescing for already-buffered request bursts;
     immediate delivery remains the default.
 - HTTP/1 serving through Hyper.
 - Rustls TLS for HTTP and TCP.
-- OpenSSL TLS for TCP, including optional plain/TLS detection on one listener.
+- OpenSSL TLS for TCP, with experimental plain/TLS detection on one listener.
 - Shared runtime limits, backpressure, graceful shutdown, and telemetry hooks.
 - A stress server and stress client for local performance validation.
 
@@ -139,6 +150,12 @@ nacelle = { version = "0.3", features = ["phase-timing"] }
 # Experimental runtime memory accounting and admission
 nacelle = { version = "0.3", features = ["experimental-memory"] }
 
+# Experimental Linux thread-per-core runtime with TCP
+nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
+
+# Experimental plaintext/OpenSSL detection; implies TCP and OpenSSL
+nacelle = { version = "0.3", default-features = false, features = ["experimental-openssl-detection"] }
+
 # Expose structured setup hints through NacelleError::hint()
 nacelle = { version = "0.3", features = ["error-hints"] }
 
@@ -154,13 +171,32 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
 | `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
-| `tls` | Provider-neutral TLS capability. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
 | `experimental-memory` | Compile runtime memory accounting, admission, ownership tracking, and related telemetry. Disabled by default. |
+| `experimental-thread-per-core` | Compile the explicit Linux thread-per-core runtime and worker-local listener APIs. Disabled by default. |
+| `experimental-openssl-detection` | Compile plaintext/OpenSSL detection and mixed-mode listener APIs. Implies `tcp` and `openssl`; disabled by default. |
+
+Features prefixed with `experimental-` are use-at-your-own-risk APIs outside
+the supported `0.3` contract. They remain opt-in and may change or be removed in
+a future minor release. `phase-timing` and `error-hints` are supported opt-ins;
+the exact text returned by `NacelleError::hint()` is advisory and must not be
+parsed or used as a programmatic error code.
+
+Match resource and timeout failures through `NacelleResourceLimitReason` and
+`NacelleTimeoutReason`, not through `Display` or hint text. Their `as_str()`
+methods expose the stable low-cardinality labels used by Nacelle telemetry.
+Applications can use the explicit `Other(&'static str)` variants for their own
+static, bounded reason vocabulary.
+
+`rustls` and `openssl` are mutually exclusive compile-time choices. Select
+exactly one when TLS is required; Nacelle has no runtime provider selector.
+HTTP TLS requires `rustls`, while TCP supports either backend.
+Root-level Cargo commands use the Rustls workspace lane by default; validate
+OpenSSL explicitly with `-p nacelle-openssl` or the `openssl` facade feature.
 
 Nacelle emits metrics through the [`metrics`](https://crates.io/crates/metrics)
 facade and does not select an exporter. Install the recorder chosen by your
@@ -179,7 +215,7 @@ OpenSSL builds need native OpenSSL development files unless you enable
 ## Workspace Layout
 
 - `nacelle-core` contains shared typed pipeline, body, resource limit,
-    lifecycle, telemetry, and provider-neutral TLS metadata.
+    lifecycle, telemetry, and negotiated TLS connection metadata.
 - `nacelle-openssl` contains reloadable OpenSSL configuration and negotiated
     connection metadata extraction.
 - `nacelle-rustls` contains reloadable Rustls configuration, certificate
@@ -256,8 +292,7 @@ Verify the workspace before submitting changes:
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo test --workspace --all-features
+./scripts/validate-all.sh
 ```
 
 Build release binaries:
@@ -296,7 +331,8 @@ mdbook build
 Generate Rust API docs:
 
 ```bash
-cargo doc --workspace --all-features --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
 ## Contributing

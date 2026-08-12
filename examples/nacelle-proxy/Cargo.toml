@@ -12,9 +12,9 @@ publish = false
 [features]
 default = ["tls-self-signed"]
 experimental-memory = ["nacelle/experimental-memory"]
-tls = ["nacelle/tcp", "nacelle/rustls"]
+rustls = ["nacelle/tcp", "nacelle/rustls"]
 tls-self-signed = [
-	"tls",
+	"rustls",
 	"nacelle/tls-self-signed",
 	"dep:pem",
 	"dep:rustls",
@@ -23,7 +23,7 @@ tls-self-signed = [
 
 [dependencies]
 bytes = { workspace = true }
-nacelle = { path = "../../nacelle", version = "0.3.0-beta.4", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.0-beta.5", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 pem = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
@@ -38,17 +38,17 @@ criterion = { workspace = true, features = ["async_tokio"] }
 [[bench]]
 name = "simple_rtt"
 harness = false
-required-features = ["tls"]
+required-features = ["rustls"]
 
 [[bench]]
 name = "protocol_efficiency"
 harness = false
-required-features = ["tls"]
+required-features = ["rustls"]
 
 [[bin]]
 name = "nacelle-proxy"
 path = "src/main.rs"
-required-features = ["tls"]
+required-features = ["rustls"]
 
 [lints]
 workspace = true

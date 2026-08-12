@@ -30,14 +30,24 @@ and transport timeouts are bounded by default. Runtime memory budgeting is
 compiled only with the non-default `experimental-memory` feature. Without that
 feature, memory fields, allocation APIs, transport accounting, ownership
 tracking, waiters, and the memory gauge are absent.
+The feature is use at your own risk and may change or be removed in a future
+minor release.
+
+Optional deadlines can be disabled without direct field mutation. Use
+`NacelleLimits::without_handler_timeout()`, the TCP
+`without_read_timeout()`, `without_write_timeout()`,
+`without_shutdown_timeout()`, and `without_idle_timeout()` builders, and the
+corresponding HTTP `without_*_timeout()` or
+`without_max_connection_age()` builders. Keep bounded defaults for public-edge
+listeners unless another layer enforces an equivalent deadline.
 
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
 - Proxy-aware HTTP: configure `NacelleHttpPolicy::with_trusted_proxy_ips(...)` only with known proxy addresses before allowing `Forwarded` or `X-Forwarded-For` to affect per-peer request limits or request metadata.
-- Direct HTTPS listener: enable `http,tls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
-- Direct TCP Rustls listener: enable `tcp,tls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
+- Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
+- Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
@@ -64,7 +74,7 @@ Request body allocations wait in FIFO order when the budget is full. The default
 wait limit is `NacelleLimits::memory_allocation_timeout == Some(5s)`, and can
 be tuned with `with_memory_allocation_timeout(...)` or disabled with
 `without_memory_allocation_timeout()`. A timed-out waiter returns
-`NacelleError::Timeout("memory_allocation")`.
+`NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)`.
 
 The memory budget is an accounting guard, not a buffer allocator: it grants a
 `NacelleMemoryAllocation` that tracks bytes the transport or application intends to
@@ -98,10 +108,11 @@ choose a per-request limit from the decoded head, immutable connection metadata,
 and concrete connection state before body-specific allocation or additional
 body reads. There is no dynamically typed connection extension.
 
-Thread-per-core server factories execute once per configured worker. Nacelle's
-global or partitioned runtime counters do not partition external client pools or
-backend resources automatically; pass explicitly shared resources into worker
-factories when process-wide budgets must remain global.
+With `experimental-thread-per-core`, server factories execute once per
+configured worker. Nacelle's global or partitioned runtime counters do not
+partition external client pools or backend resources automatically; pass
+explicitly shared resources into worker factories when process-wide budgets
+must remain global.
 
 Cap Nacelle-owned worker threads after any worker-selection strategy with
 `ThreadPerCoreConfig::with_max_threads(...)`. The effective capped worker count

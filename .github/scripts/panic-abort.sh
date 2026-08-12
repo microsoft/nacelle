@@ -6,4 +6,5 @@ rustup toolchain install "${toolchain}" --component miri
 cargo +"${toolchain}" miri setup
 
 set -ex
-RUSTFLAGS="$RUSTFLAGS -Cpanic=abort -Zpanic-abort-tests" cargo +"${toolchain}" test --all-features --test '*'
+RUSTUP_TOOLCHAIN="${toolchain}" RUSTFLAGS="$RUSTFLAGS -Cpanic=abort -Zpanic-abort-tests" \
+	.github/scripts/check-feature-matrix.sh test

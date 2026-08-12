@@ -7,7 +7,6 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use nacelle_core::tls::NacelleTlsProvider;
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -243,12 +242,6 @@ impl NacelleTlsConfig {
         self.reload_from_pem(&fs::read(certificate_path)?, &fs::read(private_key_path)?)
     }
 
-    /// Return the provider identity.
-    #[must_use]
-    pub const fn provider(&self) -> NacelleTlsProvider {
-        NacelleTlsProvider::Rustls
-    }
-
     /// Return the normalized SNI allowlist.
     ///
     /// # Panics
@@ -284,7 +277,7 @@ impl NacelleTlsConfig {
     }
 }
 
-/// Extract provider-neutral metadata from an established Rustls connection.
+/// Extract negotiated TLS metadata from an established Rustls connection.
 #[must_use]
 pub fn connection_tls_meta(connection: &rustls::ServerConnection) -> NacelleConnectionTlsMeta {
     let mut metadata = NacelleConnectionTlsMeta::new("rustls");
@@ -421,7 +414,6 @@ mod tests {
         let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed config");
         assert!(generated.certificate_pem.contains("BEGIN CERTIFICATE"));
         assert!(generated.private_key_pem.contains("BEGIN PRIVATE KEY"));
-        assert_eq!(generated.tls_config.provider(), NacelleTlsProvider::Rustls);
         generated
             .tls_config
             .reload_from_pem(

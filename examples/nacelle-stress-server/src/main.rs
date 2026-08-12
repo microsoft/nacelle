@@ -12,6 +12,8 @@ use std::thread;
 use std::time::Duration;
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+#[cfg(feature = "tls-self-signed")]
+use nacelle::core::NacelleTimeoutReason;
 use nacelle::core::telemetry::NacelleTelemetryObserver;
 use nacelle::core::{NacelleError, NacelleTelemetry};
 #[cfg(feature = "tls-self-signed")]
@@ -104,7 +106,7 @@ where
         let tls_stream =
             tokio::time::timeout(tls_config.handshake_timeout(), acceptor.accept(stream))
                 .await
-                .map_err(|_| NacelleError::Timeout("tls_handshake"))??;
+                .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake))??;
         return server.serve_io(tls_stream).await;
     }
 

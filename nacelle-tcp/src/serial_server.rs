@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -15,8 +14,8 @@ use crate::connection::{
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
-    LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol,
-    SerialTcpHandler, SerialTcpOneWayHandler,
+    LocalAppStateHandler, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, NoOneWayHandler,
+    Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedAppStateHandler,
 };
 
 /// Shared-runtime TCP server with exclusive mutable connection state.
@@ -31,12 +30,15 @@ pub struct SerialTcpServer<P, H, OH = NoOneWayHandler<P>, Observer = NoopObserve
     listener: Arc<str>,
 }
 
-impl<P, H> SerialTcpServer<P, H, NoOneWayHandler<P>, NoopObserver>
-where
-    P: Protocol<OneWayRequest = Infallible>,
-    P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
-{
+#[doc(hidden)]
+pub type AppStateSerialTcpServer<P, H, OH, Observer, AppState> = SerialTcpServer<
+    P,
+    SharedAppStateHandler<P, H, AppState>,
+    SharedAppStateHandler<P, OH, AppState>,
+    Observer,
+>;
+
+impl<P, H> SerialTcpServer<P, H, NoOneWayHandler<P>, NoopObserver> {
     /// Construct a serial server for a required-response-only protocol.
     pub fn new(protocol: P, handler: H) -> Self {
         Self {
@@ -52,13 +54,7 @@ where
     }
 }
 
-impl<P, H, OH> SerialTcpServer<P, H, OH, NoopObserver>
-where
-    P: Protocol,
-    P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
-{
+impl<P, H, OH> SerialTcpServer<P, H, OH, NoopObserver> {
     /// Construct a serial server with required-response and one-way handlers.
     pub fn with_handlers(protocol: P, handler: H, one_way_handler: OH) -> Self {
         Self {
@@ -70,6 +66,33 @@ where
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: Arc::from("direct"),
+        }
+    }
+}
+
+impl<P, H, OH, Observer> SerialTcpServer<P, H, OH, Observer> {
+    /// Bind application state before serial request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> AppStateSerialTcpServer<P, H, OH, Observer, AppState>
+    where
+        P: Protocol,
+        P::ConnectionState: Send,
+        H: SerialTcpHandler<P, AppState>,
+        OH: SerialTcpOneWayHandler<P, AppState>,
+        AppState: Send + Sync + 'static,
+    {
+        SerialTcpServer {
+            protocol: self.protocol,
+            handler: Arc::new(SharedAppStateHandler::new(self.handler, app_state.clone())),
+            one_way_handler: Arc::new(SharedAppStateHandler::new(self.one_way_handler, app_state)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
         }
     }
 }
@@ -261,11 +284,15 @@ pub struct LocalSerialTcpServer<P, H, OH = NoOneWayHandler<P>, Observer = NoopOb
     listener: Arc<str>,
 }
 
-impl<P, H> LocalSerialTcpServer<P, H, NoOneWayHandler<P>, NoopObserver>
-where
-    P: Protocol<OneWayRequest = Infallible>,
-    H: LocalSerialTcpHandler<P>,
-{
+#[doc(hidden)]
+pub type LocalAppStateSerialTcpServer<P, H, OH, Observer, AppState> = LocalSerialTcpServer<
+    P,
+    LocalAppStateHandler<P, H, AppState>,
+    LocalAppStateHandler<P, OH, AppState>,
+    Observer,
+>;
+
+impl<P, H> LocalSerialTcpServer<P, H, NoOneWayHandler<P>, NoopObserver> {
     /// Construct a worker-local serial server for a required-response-only protocol.
     pub fn new(protocol: P, handler: H) -> Self {
         Self {
@@ -281,12 +308,7 @@ where
     }
 }
 
-impl<P, H, OH> LocalSerialTcpServer<P, H, OH, NoopObserver>
-where
-    P: Protocol,
-    H: LocalSerialTcpHandler<P>,
-    OH: LocalSerialTcpOneWayHandler<P>,
-{
+impl<P, H, OH> LocalSerialTcpServer<P, H, OH, NoopObserver> {
     /// Construct a local serial server with required-response and one-way handlers.
     pub fn with_handlers(protocol: P, handler: H, one_way_handler: OH) -> Self {
         Self {
@@ -298,6 +320,32 @@ where
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: Arc::from("direct"),
+        }
+    }
+}
+
+impl<P, H, OH, Observer> LocalSerialTcpServer<P, H, OH, Observer> {
+    /// Bind application state before worker-local serial request dispatch.
+    #[doc(hidden)]
+    pub fn with_app_state<AppState>(
+        self,
+        app_state: Arc<AppState>,
+    ) -> LocalAppStateSerialTcpServer<P, H, OH, Observer, AppState>
+    where
+        P: Protocol,
+        H: LocalSerialTcpHandler<P, AppState>,
+        OH: LocalSerialTcpOneWayHandler<P, AppState>,
+        AppState: 'static,
+    {
+        LocalSerialTcpServer {
+            protocol: self.protocol,
+            handler: Rc::new(LocalAppStateHandler::new(self.handler, app_state.clone())),
+            one_way_handler: Rc::new(LocalAppStateHandler::new(self.one_way_handler, app_state)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
         }
     }
 }

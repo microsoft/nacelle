@@ -4,12 +4,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::framing::MessageReadFailure;
 use crate::limits::NacelleTcpLimits;
-use nacelle_core::error::NacelleError;
+use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 
-const TCP_READ_TIMEOUT: &str = "tcp_read";
-const REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read";
-const TCP_WRITE_TIMEOUT: &str = "tcp_write";
-const TCP_SHUTDOWN_TIMEOUT: &str = "tcp_shutdown";
+const TCP_READ_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::TcpRead;
+const REQUEST_BODY_READ_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::RequestBodyRead;
+const TCP_WRITE_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::TcpWrite;
+const TCP_SHUTDOWN_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::TcpShutdown;
 
 pub(super) async fn read_message_with_timeout<R, D>(
     reader: &mut MessageReader<R, D>,

@@ -1,0 +1,8 @@
+{
+    "rust-analyzer.cargo.cfgs": [
+        "debug_assertions",
+        "miri",
+        "rust_analyzer"
+    ],
+    "rust-analyzer.check.workspace": false
+}
