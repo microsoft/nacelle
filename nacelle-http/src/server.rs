@@ -2015,6 +2015,7 @@ mod tests {
         assert!(drain_started < drain_completed);
     }
 
+    #[cfg(panic = "unwind")]
     #[tokio::test]
     async fn post_start_connection_task_panic_reaches_supervisor() {
         let task = tokio::spawn(async {
