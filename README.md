@@ -136,34 +136,34 @@ Choose the smallest feature set that matches the transports you actually run:
 
 ```toml
 # TCP with a custom protocol (enabled by default)
-nacelle = { version = "0.3" }
+nacelle = { version = "0.3.0-rc.1" }
 
 # HTTP only
-nacelle = { version = "0.3", default-features = false, features = ["http"] }
+nacelle = { version = "0.3.0-rc.1", default-features = false, features = ["http"] }
 
 # TCP + HTTP; backend-neutral metrics are always available
-nacelle = { version = "0.3", features = ["http"] }
+nacelle = { version = "0.3.0-rc.1", features = ["http"] }
 
 # TCP diagnostic phase histograms; still requires runtime activation
-nacelle = { version = "0.3", features = ["phase-timing"] }
+nacelle = { version = "0.3.0-rc.1", features = ["phase-timing"] }
 
 # Experimental runtime memory accounting and admission
-nacelle = { version = "0.3", features = ["experimental-memory"] }
+nacelle = { version = "0.3.0-rc.1", features = ["experimental-memory"] }
 
 # Experimental Linux thread-per-core runtime with TCP
-nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
+nacelle = { version = "0.3.0-rc.1", features = ["tcp", "experimental-thread-per-core"] }
 
 # Experimental plaintext/OpenSSL detection; implies TCP and OpenSSL
-nacelle = { version = "0.3", default-features = false, features = ["experimental-openssl-detection"] }
+nacelle = { version = "0.3.0-rc.1", default-features = false, features = ["experimental-openssl-detection"] }
 
 # Expose structured setup hints through NacelleError::hint()
-nacelle = { version = "0.3", features = ["error-hints"] }
+nacelle = { version = "0.3.0-rc.1", features = ["error-hints"] }
 
 # Local self-signed TLS for tests
-nacelle = { version = "0.3", features = ["tls-self-signed"] }
+nacelle = { version = "0.3.0-rc.1", features = ["tls-self-signed"] }
 
 # TCP with OpenSSL, without Rustls
-nacelle = { version = "0.3", default-features = false, features = ["tcp", "openssl"] }
+nacelle = { version = "0.3.0-rc.1", default-features = false, features = ["tcp", "openssl"] }
 ```
 
 | Feature | Purpose |

@@ -5,16 +5,19 @@ APIs. Wire behavior and bounded defaults remain unchanged. Update feature
 selection, application state, error matching, and direct construction of
 extensible types before upgrading.
 
+To evaluate the exact freeze candidate, pin `=0.3.0-rc.1`. A broad `0.3`
+requirement does not opt into Cargo prereleases.
+
 ## Select one TLS backend
 
 TLS is now a graph-wide compile-time choice. Enable exactly one backend:
 
 ```toml
 # HTTP or TCP with Rustls
-nacelle = { version = "0.3", default-features = false, features = ["tcp", "http", "rustls"] }
+nacelle = { version = "=0.3.0-rc.1", default-features = false, features = ["tcp", "http", "rustls"] }
 
 # TCP with OpenSSL
-nacelle = { version = "0.3", default-features = false, features = ["tcp", "openssl"] }
+nacelle = { version = "=0.3.0-rc.1", default-features = false, features = ["tcp", "openssl"] }
 ```
 
 Remove the former `tls` umbrella feature, `NacelleTlsProvider`, and calls to
@@ -28,14 +31,14 @@ time. HTTP TLS requires Rustls; TCP TLS supports either backend.
 Linux thread-per-core APIs now require `experimental-thread-per-core`:
 
 ```toml
-nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
+nacelle = { version = "=0.3.0-rc.1", features = ["tcp", "experimental-thread-per-core"] }
 ```
 
 Plaintext/OpenSSL detection and optional-OpenSSL listener APIs now require
 `experimental-openssl-detection`, which enables TCP and OpenSSL:
 
 ```toml
-nacelle = { version = "0.3", default-features = false, features = ["experimental-openssl-detection"] }
+nacelle = { version = "=0.3.0-rc.1", default-features = false, features = ["experimental-openssl-detection"] }
 ```
 
 These gates make the experimental boundary explicit; the gated APIs remain
