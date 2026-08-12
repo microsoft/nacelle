@@ -25,6 +25,29 @@ mod listeners;
 pub struct Missing;
 pub struct Present;
 
+/// Shared-runtime framed TCP server.
+///
+/// The server owns its protocol and handlers through [`Arc`], plus framing,
+/// timeout, runtime-limit, telemetry, and listener-label configuration. Its
+/// `serve_*` methods borrow the server and own the supplied I/O values for the
+/// lifetime of their futures. Cancelling those futures drops owned I/O without
+/// guaranteeing graceful socket shutdown.
+///
+/// Each direct serving method acquires one connection permit, then enforces
+/// process-wide limits from [`NacelleRuntimeState`] and transport limits from
+/// [`NacelleTcpLimits`]. It returns [`NacelleError`] for admission, framing,
+/// protocol, handler, body, socket, timeout, or shutdown failure.
+///
+/// # Panics
+///
+/// Serving futures must be polled inside a Tokio runtime. Nacelle does not
+/// intentionally panic for peer or configuration input.
+///
+/// # Example
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin direct_tcp
+/// ```
 pub struct TcpServer<P, H = (), OH = NoOneWayHandler<P>, Observer = NoopObserver> {
     protocol: Arc<P>,
     handler: Arc<H>,
@@ -393,6 +416,7 @@ where
         }
     }
 
+    /// Serve one connection from independently owned read and write halves.
     pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
     where
         R: AsyncRead + Unpin + Send + 'static,

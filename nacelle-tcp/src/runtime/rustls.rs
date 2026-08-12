@@ -11,6 +11,7 @@ use nacelle_rustls::NacelleTlsConfig;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
 
+/// Listen on `addr` and serve framed TCP connections over Rustls.
 pub async fn serve_tcp_tls<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -26,6 +27,7 @@ where
     serve_tcp_tls_with_shutdown(server, addr, tls_config, token).await
 }
 
+/// Serve Rustls TCP connections until shutdown is requested.
 pub async fn serve_tcp_tls_with_shutdown<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -42,6 +44,7 @@ where
         .await
 }
 
+/// Serve Rustls TCP connections, then drain for at most `drain_timeout`.
 pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,

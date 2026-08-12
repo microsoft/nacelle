@@ -19,6 +19,30 @@ use crate::protocol::{
 };
 
 /// Shared-runtime TCP server with exclusive mutable connection state.
+///
+/// Protocol connection state is created once per connection and lent mutably
+/// to one awaited handler at a time. The server owns protocol and handlers
+/// through [`Arc`], and [`serve_io`](Self::serve_io) borrows the server while
+/// owning the supplied I/O value. Cancelling the future drops that I/O without
+/// guaranteeing graceful socket shutdown.
+///
+/// Direct serving acquires one connection permit and enforces
+/// [`NacelleRuntimeState`] plus [`NacelleTcpLimits`]. It returns
+/// [`NacelleError`] for admission, framing, protocol, handler, body, socket,
+/// timeout, or shutdown failures.
+///
+/// # Panics
+///
+/// Serving futures must be polled inside a Tokio runtime. Nacelle does not
+/// intentionally panic for peer or configuration input.
+///
+/// # Example
+///
+/// The shared-runtime direct-I/O shape is demonstrated by:
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin direct_tcp
+/// ```
 pub struct SerialTcpServer<P, H, OH = NoOneWayHandler<P>, Observer = NoopObserver> {
     protocol: Arc<P>,
     handler: Arc<H>,
