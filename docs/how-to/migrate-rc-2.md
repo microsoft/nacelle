@@ -13,8 +13,25 @@ RC.2 preserves the Rust API, limits, timeout defaults, and TLS feature
 relationships from RC.1. It adds compiler-pressure and correctness regressions,
 changes the emitted metrics schema, and rejects oversized declared HTTP request
 bodies with `413 Payload Too Large` before handler dispatch. Applications that
-do not consume Nacelle metrics and do not rely on handling those oversized
-requests need no source migration.
+do not instantiate affected serial connection futures, consume Nacelle metrics,
+or rely on handling those oversized requests need no source migration.
+
+## Raise the recursion limit for serial connection futures
+
+RC.2 increases the type and layout depth of serial connection futures. A crate
+that instantiates one of these futures can exceed rustc's default query-depth
+limit during monomorphization, including under strict Clippy builds. This is a
+compile-time limit and does not indicate runtime recursion or a runtime failure.
+
+Add the following inner attribute to the root of each affected binary or library
+crate (`main.rs` or `lib.rs`):
+
+```rust
+#![recursion_limit = "256"]
+```
+
+The attribute applies to the crate that compiles the concrete application
+future; setting it in a dependency does not propagate to consumers.
 
 ## Update metric names
 
