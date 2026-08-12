@@ -18,7 +18,7 @@
 
 # How-to guides
 
-- [Migrate from beta.5 to beta.6](how-to/migrate-beta-6.md)
+- [Migrate from 0.3.0-beta.5 to 0.3.0-rc.1](how-to/migrate-rc-1.md)
 - [Configure production limits](how-to/configure-production.md)
 - [Run stress tests](how-to/run-stress-tests.md)
 - [Compare performance profiles](how-to/compare-performance.md)
@@ -31,5 +31,6 @@
 - [Codec primitives](reference/nacelle-codec.md)
 - [HTTP hardening reference](reference/http-hardening.md)
 - [Production configuration reference](reference/production-configuration.md)
+- [Versioning and support](reference/versioning.md)
 - [API stability](reference/api-stability.md)
 - [Rust API reference](reference/rust-api.md)

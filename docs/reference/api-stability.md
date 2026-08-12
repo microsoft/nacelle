@@ -1,7 +1,8 @@
 # API stability
 
 Nacelle is pre-`1.0`, but the `0.3` line distinguishes supported opt-in APIs
-from explicitly experimental features.
+from explicitly experimental features. See [Versioning and support](versioning.md)
+for the release promotion process and supported minor-version window.
 
 Stable enough for prototype integrations:
 

@@ -1,9 +1,9 @@
-# Migrate from beta.5 to beta.6
+# Migrate from 0.3.0-beta.5 to 0.3.0-rc.1
 
-The beta.6 stabilization track deliberately changes several pre-release APIs.
-Wire behavior and bounded defaults remain unchanged. Update feature selection,
-application state, error matching, and direct construction of extensible types
-before upgrading.
+The `0.3.0-rc.1` stabilization track deliberately changes several pre-release
+APIs. Wire behavior and bounded defaults remain unchanged. Update feature
+selection, application state, error matching, and direct construction of
+extensible types before upgrading.
 
 ## Select one TLS backend
 
@@ -145,9 +145,9 @@ equivalent upstream or application deadline where appropriate.
 ## Compatibility review
 
 The stabilization review compared the public API of all seven published crates
-against the final beta.5 implementation checkpoint with `cargo-public-api`.
-Rustls and OpenSSL surfaces were reviewed separately, and the newly gated
-experimental surfaces were snapshotted with their features enabled.
+against `0.3.0-beta.5` with `cargo-public-api`. Rustls and OpenSSL surfaces were
+reviewed separately, and the newly gated experimental surfaces were snapshotted
+with their features enabled.
 
 - `nacelle-codec` has no public API changes.
 - `nacelle-rustls` and `nacelle-openssl` only remove runtime provider accessors.
