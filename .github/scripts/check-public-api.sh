@@ -40,7 +40,12 @@ compare() {
     if [[ -n "$features" ]]; then
         args+=(--features "$features")
     fi
-    args+=(diff "${baseline_commit}..${candidate_commit}" --color never)
+    args+=(
+        diff "${baseline_commit}..${candidate_commit}"
+        --color never
+        --deny changed
+        --deny removed
+    )
 
     echo "==> $artifact"
     cargo "${args[@]}" > "$output_directory/$artifact.diff"

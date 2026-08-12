@@ -47,9 +47,9 @@ they do not change request semantics.
 - **Errors:** serving futures return `NacelleError` for bind, accept, socket,
   protocol, TLS, timeout, resource-limit, listener-task, and shutdown-drain
   failures. Match stable categories and reason enums rather than parsing
-  `Display`. Connection-local failures are observed through telemetry and do
-  not normally stop the listener; listener setup/accept failure and supervised
-  task failure do.
+  `Display`. Connection-local failures, including HTTP connection-task panics,
+  are observed through telemetry and do not normally stop the listener;
+  listener setup/accept failure and top-level listener-task failure do.
 - **Panics:** shared-runtime serving methods do not intentionally panic for
   runtime or peer input. They must be called while a Tokio runtime is entered;
   Tokio may panic otherwise. Worker-local methods additionally require the
