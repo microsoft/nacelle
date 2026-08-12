@@ -8,6 +8,7 @@ cargo_args=("$@")
 cargo hack "${command}" --workspace --each-feature --optional-deps --exclude-all-features "${cargo_args[@]}"
 cargo hack "${command}" --workspace --all-features \
     --exclude nacelle-core \
+    --exclude nacelle-examples \
     --exclude nacelle-openssl \
     --exclude nacelle-tcp \
     --exclude nacelle \
@@ -34,4 +35,13 @@ cargo "${command}" -p nacelle \
 cargo "${command}" -p nacelle \
     --no-default-features \
     --features bench,buffer-rotation,error-hints,experimental-memory,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,tcp \
+    "${cargo_args[@]}"
+
+cargo "${command}" -p nacelle-examples \
+    --no-default-features \
+    --features bench,experimental-memory,http,tcp,tls-self-signed \
+    "${cargo_args[@]}"
+cargo "${command}" -p nacelle-examples \
+    --no-default-features \
+    --features bench,experimental-memory,http,openssl,tcp \
     "${cargo_args[@]}"
