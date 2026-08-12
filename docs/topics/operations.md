@@ -52,20 +52,21 @@ Expected shutdown telemetry:
 
 ## Metrics To Watch
 
-- `nacelle.connections.active`
-- `nacelle.requests.active`
-- `nacelle.streaming_tasks.active`
-- `nacelle.memory.used_bytes`
-- `nacelle.connections.accepted`
-- `nacelle.connections.closed`
-- `nacelle.connections.in_flight`
-- `nacelle.requests.started`
-- `nacelle.requests.completed`
-- `nacelle.rejections`
+- `nacelle.connection.active`
+- `nacelle.request.active`
+- `nacelle.streaming_task.active`
+- `nacelle.memory.usage`
+- `nacelle.connection.accepted`
+- `nacelle.connection.closed`
+- `nacelle.request.started`
+- `nacelle.request.completed`
+- `nacelle.connection.rejected`
+- `nacelle.request.rejected`
+- `nacelle.request.timed_out`
 - `nacelle.timeouts`
-- `nacelle.requests.failed`
-- `nacelle.request.bytes`
-- `nacelle.response.bytes`
+- `nacelle.request.failed`
+- `nacelle.request.body.size`
+- `nacelle.response.body.size`
 
 Alerts should focus on sustained saturation, rising rejections, timeout spikes,
 and memory approaching the configured budget.
@@ -123,7 +124,7 @@ These are operation histograms, not a per-request trace. Do not add their
 percentiles to infer round-trip latency: pipelining can decode several requests
 from one read, streaming overlaps body reads with the handler, and response
 coalescing can write several completed requests in one batch. Use
-`nacelle.request.duration_ms` for server request processing and client-side
+`nacelle.request.duration` for server request processing and client-side
 latency for actual round-trip time.
 
 The server cannot measure TCP handshake duration because the kernel completes
@@ -135,19 +136,21 @@ rather than embedded in the metric name:
 
 | Metric | Type | Notes |
 | --- | --- | --- |
-| `nacelle.connections.active` | Gauge | Current runtime active connections. |
-| `nacelle.requests.active` | Gauge | Current runtime active requests. |
-| `nacelle.streaming_tasks.active` | Gauge | Current runtime streaming body tasks. |
-| `nacelle.memory.used_bytes` | Gauge | Current bytes allocated by runtime memory accounting; emitted only with `experimental-memory`. |
-| `nacelle.connections.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
-| `nacelle.connections.closed` | Counter | Closed connections, labeled with close reason where available. |
-| `nacelle.connections.in_flight` | UpDownCounter | Per-listener connection delta for transport-level detail. |
-| `nacelle.requests.started` | Counter | Requests started. |
-| `nacelle.requests.completed` | Counter | Requests completed, labeled by status where available. |
-| `nacelle.requests.failed` | Counter | Requests failed before normal completion. |
-| `nacelle.request.bytes` | Counter | Request bytes accounted by the transport/protocol path. |
-| `nacelle.response.bytes` | Counter | Response bytes accounted by the transport/protocol path. |
-| `nacelle.request.duration_ms` | Histogram | Request duration, opt-in. |
+| `nacelle.connection.active` | Gauge | Current active connections. Listener-labeled series provide transport-level detail; unlabeled series represent runtime permit usage. |
+| `nacelle.request.active` | Gauge | Current active requests. Protocol-labeled series provide request-level detail; unlabeled series represent runtime permit usage. |
+| `nacelle.streaming_task.active` | Gauge | Current runtime streaming body tasks. |
+| `nacelle.memory.usage` | Gauge (`By`) | Current bytes allocated by runtime memory accounting; emitted only with `experimental-memory`. |
+| `nacelle.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
+| `nacelle.connection.closed` | Counter | Closed connections, labeled with close reason where available. |
+| `nacelle.connection.rejected` | Counter | Connections rejected before acceptance. |
+| `nacelle.request.started` | Counter | Requests started. |
+| `nacelle.request.completed` | Counter | Requests completed, labeled by status where available. |
+| `nacelle.request.rejected` | Counter | Requests rejected before handler execution. |
+| `nacelle.request.timed_out` | Counter | Request failures caused by a timeout, labeled by operation. |
+| `nacelle.request.failed` | Counter | Requests failed before normal completion. |
+| `nacelle.request.body.size` | Histogram (`By`) | Request body size per completed request. |
+| `nacelle.response.body.size` | Histogram (`By`) | Response body size per completed response. |
+| `nacelle.request.duration` | Histogram (`s`) | Request duration, opt-in. |
 | `nacelle.phase.duration_ms` | Histogram | TCP operation duration; requires compile-time and runtime opt-in. |
 
 Run microbenchmarks before and after hot-path changes:

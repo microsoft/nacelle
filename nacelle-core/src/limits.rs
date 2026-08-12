@@ -343,19 +343,19 @@ impl NacelleRuntimeState {
     fn active_connections_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_connections_metric
-            .get_or_init(|| metrics::gauge!("nacelle.connections.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.connection.active"))
     }
 
     fn active_requests_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_requests_metric
-            .get_or_init(|| metrics::gauge!("nacelle.requests.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.request.active"))
     }
 
     fn active_streaming_tasks_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_streaming_tasks_metric
-            .get_or_init(|| metrics::gauge!("nacelle.streaming_tasks.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.streaming_task.active"))
     }
 
     #[cfg(feature = "experimental-memory")]
@@ -363,7 +363,7 @@ impl NacelleRuntimeState {
         self.inner
             .memory
             .memory_used_metric
-            .get_or_init(|| metrics::gauge!("nacelle.memory.used_bytes"))
+            .get_or_init(|| metrics::gauge!("nacelle.memory.usage"))
     }
 
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
@@ -1055,10 +1055,10 @@ mod tests {
             let second_memory = states[1].allocate_memory(6).expect("second allocation");
 
             let gauges = gauge_snapshot(&snapshotter);
-            assert_eq!(gauges["nacelle.connections.active"], 1.0);
-            assert_eq!(gauges["nacelle.requests.active"], 1.0);
-            assert_eq!(gauges["nacelle.streaming_tasks.active"], 1.0);
-            assert_eq!(gauges["nacelle.memory.used_bytes"], 10.0);
+            assert_eq!(gauges["nacelle.connection.active"], 1.0);
+            assert_eq!(gauges["nacelle.request.active"], 1.0);
+            assert_eq!(gauges["nacelle.streaming_task.active"], 1.0);
+            assert_eq!(gauges["nacelle.memory.usage"], 10.0);
 
             drop(connection);
             drop(request);
@@ -1067,10 +1067,10 @@ mod tests {
             drop(second_memory);
 
             let gauges = gauge_snapshot(&snapshotter);
-            assert_eq!(gauges["nacelle.connections.active"], -1.0);
-            assert_eq!(gauges["nacelle.requests.active"], -1.0);
-            assert_eq!(gauges["nacelle.streaming_tasks.active"], -1.0);
-            assert_eq!(gauges["nacelle.memory.used_bytes"], -10.0);
+            assert_eq!(gauges["nacelle.connection.active"], -1.0);
+            assert_eq!(gauges["nacelle.request.active"], -1.0);
+            assert_eq!(gauges["nacelle.streaming_task.active"], -1.0);
+            assert_eq!(gauges["nacelle.memory.usage"], -10.0);
         });
     }
 
