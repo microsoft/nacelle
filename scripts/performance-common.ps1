@@ -169,7 +169,8 @@ function Copy-NacelleCriterionBaselines {
         Remove-Item $destination -Recurse -Force
     }
     [System.IO.Directory]::CreateDirectory($destination) | Out-Null
-    Copy-Item $source $destination -Recurse
+    Get-ChildItem $source -Force |
+    Copy-Item -Destination $destination -Recurse
 }
 
 function Invoke-NacellePerformanceBenchmarks {
