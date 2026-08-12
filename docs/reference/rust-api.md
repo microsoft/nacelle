@@ -75,6 +75,9 @@ cargo run -p nacelle-examples --bin echo
 cargo run -p nacelle-examples --bin http_echo --no-default-features --features http
 cargo run -p nacelle-examples --bin tls_echo --features tls-self-signed
 cargo run -p nacelle-examples --bin tls_http_echo --no-default-features --features http,tls-self-signed
+cargo run -p nacelle-examples --bin listener_tcp
+cargo run -p nacelle-examples --bin unix_echo
+cargo run -p nacelle-examples --bin openssl_echo --no-default-features --features openssl -- cert.pem key.pem
 ```
 
 See [Runtime limits](../topics/runtime-limits.md) for default values and

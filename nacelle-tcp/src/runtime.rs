@@ -32,10 +32,17 @@
 //!
 //! # Example
 //!
-//! `NacelleHost` delegates to these helpers. Run its manual TCP example with:
+//! Run the visible plain-TCP listener helper directly with:
 //!
 //! ```text
-//! cargo run -p nacelle-examples --bin manual_host
+//! cargo run -p nacelle-examples --bin listener_tcp
+//! ```
+//!
+//! Unix and OpenSSL variants have provider-specific runnable targets:
+//!
+//! ```text
+//! cargo run -p nacelle-examples --bin unix_echo
+//! cargo run -p nacelle-examples --bin openssl_echo --no-default-features --features openssl -- cert.pem key.pem
 //! ```
 
 mod common;

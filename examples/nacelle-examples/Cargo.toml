@@ -16,6 +16,7 @@ tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
 experimental-memory = ["nacelle/experimental-memory"]
 tls-self-signed = ["nacelle/tls-self-signed"]
+openssl = ["tcp", "nacelle/openssl"]
 bench = []
 
 [dependencies]
@@ -54,6 +55,21 @@ required-features = ["tcp"]
 name = "direct_tcp"
 path = "src/bin/direct_tcp.rs"
 required-features = ["tcp"]
+
+[[bin]]
+name = "listener_tcp"
+path = "src/bin/listener_tcp.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "unix_echo"
+path = "src/bin/unix_echo.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "openssl_echo"
+path = "src/bin/openssl_echo.rs"
+required-features = ["openssl"]
 
 [[bin]]
 name = "app_core"
