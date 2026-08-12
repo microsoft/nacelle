@@ -24,7 +24,15 @@ html {
   font-size: 0.94em;
 }
 
+.nacelle-logo {
+  margin: 0 0 1rem;
+  text-align: center;
+}
+
+.nacelle-logo img {
+  display: inline-block;
+}
+
 .nav-chapters {
   min-width: 36px;
 }
-

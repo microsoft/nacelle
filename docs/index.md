@@ -1,3 +1,7 @@
+<p class="nacelle-logo">
+	<img src="assets/nacelle-mark.svg" width="132" alt="Nacelle logo">
+</p>
+
 # nacelle documentation
 
 nacelle is an experimental Tokio-based Rust library for streaming application

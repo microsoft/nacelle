@@ -1,4 +1,8 @@
-# Nacelle
+<p align="center">
+    <img src="docs/assets/nacelle-mark.svg" width="144" alt="Nacelle logo">
+</p>
+
+<h1 align="center">Nacelle</h1>
 
 Nacelle is an experimental Tokio-based Rust library for building typed streaming
 services across TCP, Unix sockets, HTTP/1, and TLS-enabled listeners.
