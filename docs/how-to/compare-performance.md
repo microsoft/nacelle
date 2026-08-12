@@ -226,6 +226,19 @@ and the explicit local-test trust flag:
 	--tls-insecure
 ```
 
+For a return-to-idle profile, keep the default mimalloc build and enable its
+immediate page-purge configuration:
+
+```bash
+./scripts/profile-linux.sh \
+	--tool baseline \
+	--feature-set default \
+	--low-memory
+```
+
+The profile metadata records `low_memory=true`. This mode is rejected with
+`--feature-set minimal` because that diagnostic build uses the system allocator.
+
 The helper rejects Heaptrack with the default feature set because direct
 mimalloc calls are invisible to Heaptrack. It also rejects `--tls-insecure`
 with the minimal feature set because that client omits Rustls.

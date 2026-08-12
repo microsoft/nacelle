@@ -12,6 +12,7 @@ DISABLE_HANDLER_TIMEOUT="false"
 DISABLE_TCP_TIMEOUTS="false"
 RESPONSE_WRITE_MODE="immediate"
 BYTE_METRICS="false"
+LOW_MEMORY="false"
 TLS_INSECURE="false"
 CONNECTIONS="256"
 PIPELINE="8"
@@ -34,17 +35,18 @@ Options:
   --config PATH
   --bind ADDR
   --server-threads N
-    --feature-set minimal|default
-    --handler-mode shared|serial
-    --disable-timeouts
-    --disable-handler-timeout
-    --disable-tcp-timeouts
-    --response-write-mode immediate|coalesce-buffered
-    --byte-metrics
-    --tls-insecure
+  --feature-set minimal|default
+  --handler-mode shared|serial
+  --disable-timeouts
+  --disable-handler-timeout
+  --disable-tcp-timeouts
+  --response-write-mode immediate|coalesce-buffered
+  --byte-metrics
+  --low-memory
+  --tls-insecure
   --connections N
   --pipeline N
-    --requests-per-connection N
+  --requests-per-connection N
   --warmup-secs N
   --duration-secs N
   --payload-bytes N
@@ -70,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --disable-tcp-timeouts) DISABLE_TCP_TIMEOUTS="true"; shift ;;
         --response-write-mode) RESPONSE_WRITE_MODE="$2"; shift 2 ;;
         --byte-metrics) BYTE_METRICS="true"; shift ;;
+        --low-memory) LOW_MEMORY="true"; shift ;;
         --tls-insecure) TLS_INSECURE="true"; shift ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
         --pipeline) PIPELINE="$2"; shift 2 ;;
@@ -130,6 +133,10 @@ if [[ "$TLS_INSECURE" == "true" && "$FEATURE_SET" != "default" ]]; then
 fi
 if [[ -n "$REQUESTS_PER_CONNECTION" && "$TLS_INSECURE" == "true" ]]; then
     echo "--requests-per-connection does not support TLS" >&2
+    exit 2
+fi
+if [[ "$LOW_MEMORY" == "true" && "$FEATURE_SET" != "default" ]]; then
+    echo "--low-memory requires --feature-set default so the server includes mimalloc" >&2
     exit 2
 fi
 if [[ "$TOOL" == "heaptrack" && "$FEATURE_SET" == "default" ]]; then
@@ -200,6 +207,7 @@ fi
     echo "disable_tcp_timeouts=$EFFECTIVE_DISABLE_TCP_TIMEOUTS"
     echo "response_write_mode=$RESPONSE_WRITE_MODE"
     echo "byte_metrics=$BYTE_METRICS"
+    echo "low_memory=$LOW_MEMORY"
     echo "tls_insecure=$TLS_INSECURE"
     echo "connections=$CONNECTIONS"
     echo "pipeline=$PIPELINE"
@@ -232,6 +240,9 @@ if [[ "$BYTE_METRICS" == "true" ]]; then
     SERVER_ARGS+=(--byte-metrics)
 else
     SERVER_ARGS+=(--no-byte-metrics)
+fi
+if [[ "$LOW_MEMORY" == "true" ]]; then
+    SERVER_ARGS+=(--low-memory)
 fi
 if [[ "$DISABLE_TIMEOUTS" == "true" ]]; then
     SERVER_ARGS+=(--disable-timeouts)
