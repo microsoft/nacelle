@@ -41,6 +41,14 @@ state, telemetry, shutdown, and listener supervision. Concrete transport
 servers retain transport-specific limits and policy. `nacelle::runtime::NacelleHost`
 and lower-level server APIs remain available for advanced manual supervision.
 
+Public exports marked `#[doc(hidden)]` are internal composition plumbing. They
+exist so the facade can coordinate one process-wide drain deadline, runtime
+state, telemetry instance, and application-state binding across concrete
+transport crates. They are not part of the supported `0.3` API contract, even
+though Rust visibility permits direct use. Applications should use the visible
+app, host, server, or listener methods instead. Removing or changing a hidden
+export does not require a `0.3` compatibility shim.
+
 Use `NacelleApp::with_state(...)` when handlers need application dependencies.
 The app shares one typed root internally through `Arc`, while handlers borrow
 `&AppState` from `RequestContext::app_state()`. Mutable access, dynamic type

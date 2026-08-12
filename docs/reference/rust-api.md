@@ -23,6 +23,64 @@ The generated index is:
 target/doc/nacelle/index.html
 ```
 
+## Serving contract
+
+The following contract applies to every supported app, host, direct TCP,
+TCP/Unix/TLS listener, and HTTP serving entry point. Overloads only select
+ownership of the listener, socket options, shutdown source, or drain timeout;
+they do not change request semantics.
+
+- **Purpose and ownership:** `NacelleApp` is the primary composition root and
+  owns registered listener configurations until `run`. `NacelleHost` starts
+  manually registered listeners immediately and owns their tasks until `wait`
+  or `shutdown_and_wait`. Lower-level listener functions consume an `Arc`-backed
+  server and own accepted connection tasks. Direct TCP methods borrow the
+  server and own the supplied I/O value for the duration of the returned
+  future. Dropping a serving future cancels that future; it does not provide a
+  graceful drain guarantee.
+- **Cancellation and shutdown:** entry points without a shutdown argument run
+  until listener failure or external future cancellation. Token-aware entry
+  points stop accepting when the token changes, wait for active connections,
+  and abort tasks still active at the drain deadline. `NacelleApp::run` also
+  requests process-wide shutdown when one listener fails. Configure Ctrl-C
+  handling explicitly with `with_ctrl_c_shutdown()`.
+- **Errors:** serving futures return `NacelleError` for bind, accept, socket,
+  protocol, TLS, timeout, resource-limit, listener-task, and shutdown-drain
+  failures. Match stable categories and reason enums rather than parsing
+  `Display`. Connection-local failures are observed through telemetry and do
+  not normally stop the listener; listener setup/accept failure and supervised
+  task failure do.
+- **Panics:** shared-runtime serving methods do not intentionally panic for
+  runtime or peer input. They must be called while a Tokio runtime is entered;
+  Tokio may panic otherwise. Worker-local methods additionally require the
+  documented `LocalSet`/thread-per-core context. Panics from application
+  handlers are task failures and may trigger host/app supervision; panic-abort
+  builds terminate instead of unwinding.
+- **Limits:** `NacelleRuntimeState` supplies process-wide connection, per-peer,
+  request, streaming-task, body-size, and optional memory limits. TCP and HTTP
+  server configurations add transport timeouts, frame/header policy, and edge
+  limits. Listener overloads do not bypass these limits. Functions whose names
+  contain `without_connection_limit` are advanced direct-I/O building blocks
+  and require the caller to hold the connection permit.
+- **Features:** plain TCP and Unix serving require `tcp`; HTTP/1 requires
+  `http`; Rustls listeners require `rustls`; required OpenSSL listeners require
+  `openssl`. `experimental-openssl-detection`, `experimental-memory`, and
+  `experimental-thread-per-core` remain outside the supported `0.3` contract.
+  Unix-domain listeners are available only on Unix targets.
+
+Runnable examples exercise the same contracts:
+
+```bash
+cargo run -p nacelle-examples --bin echo
+cargo run -p nacelle-examples --bin http_echo --no-default-features --features http
+cargo run -p nacelle-examples --bin tls_echo --features tls-self-signed
+cargo run -p nacelle-examples --bin tls_http_echo --no-default-features --features http,tls-self-signed
+```
+
+See [Runtime limits](../topics/runtime-limits.md) for default values and
+[Operations model](../topics/operations.md#shutdown-and-draining) for the
+listener drain sequence.
+
 Start with these public entry points:
 
 - `nacelle::prelude::*` for common application imports.
