@@ -27,8 +27,11 @@ use crate::protocol::{
 /// guaranteeing graceful socket shutdown.
 ///
 /// Direct serving acquires one connection permit and enforces
-/// [`NacelleRuntimeState`] plus [`NacelleTcpLimits`]. It returns
-/// [`NacelleError`] for admission, framing, protocol, handler, body, socket,
+/// [`NacelleRuntimeState`] plus [`NacelleTcpLimits`].
+///
+/// # Errors
+///
+/// Serving returns [`NacelleError`] for admission, framing, protocol, handler, body, socket,
 /// timeout, or shutdown failures.
 ///
 /// # Panics

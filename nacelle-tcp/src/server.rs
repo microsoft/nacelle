@@ -35,7 +35,11 @@ pub struct Present;
 ///
 /// Each direct serving method acquires one connection permit, then enforces
 /// process-wide limits from [`NacelleRuntimeState`] and transport limits from
-/// [`NacelleTcpLimits`]. It returns [`NacelleError`] for admission, framing,
+/// [`NacelleTcpLimits`].
+///
+/// # Errors
+///
+/// Serving returns [`NacelleError`] for admission, framing,
 /// protocol, handler, body, socket, timeout, or shutdown failure.
 ///
 /// # Panics
