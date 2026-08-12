@@ -343,19 +343,19 @@ impl NacelleRuntimeState {
     fn active_connections_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_connections_metric
-            .get_or_init(|| metrics::gauge!("nacelle.connections.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.connection.active"))
     }
 
     fn active_requests_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_requests_metric
-            .get_or_init(|| metrics::gauge!("nacelle.requests.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.request.active"))
     }
 
     fn active_streaming_tasks_metric(&self) -> &metrics::Gauge {
         self.inner
             .active_streaming_tasks_metric
-            .get_or_init(|| metrics::gauge!("nacelle.streaming_tasks.active"))
+            .get_or_init(|| metrics::gauge!("nacelle.streaming_task.active"))
     }
 
     #[cfg(feature = "experimental-memory")]
@@ -363,7 +363,7 @@ impl NacelleRuntimeState {
         self.inner
             .memory
             .memory_used_metric
-            .get_or_init(|| metrics::gauge!("nacelle.memory.used_bytes"))
+            .get_or_init(|| metrics::gauge!("nacelle.memory.usage"))
     }
 
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
@@ -1055,10 +1055,10 @@ mod tests {
             let second_memory = states[1].allocate_memory(6).expect("second allocation");
 
             let gauges = gauge_snapshot(&snapshotter);
-            assert_eq!(gauges["nacelle.connections.active"], 1.0);
-            assert_eq!(gauges["nacelle.requests.active"], 1.0);
-            assert_eq!(gauges["nacelle.streaming_tasks.active"], 1.0);
-            assert_eq!(gauges["nacelle.memory.used_bytes"], 10.0);
+            assert_eq!(gauges["nacelle.connection.active"], 1.0);
+            assert_eq!(gauges["nacelle.request.active"], 1.0);
+            assert_eq!(gauges["nacelle.streaming_task.active"], 1.0);
+            assert_eq!(gauges["nacelle.memory.usage"], 10.0);
 
             drop(connection);
             drop(request);
@@ -1067,10 +1067,10 @@ mod tests {
             drop(second_memory);
 
             let gauges = gauge_snapshot(&snapshotter);
-            assert_eq!(gauges["nacelle.connections.active"], -1.0);
-            assert_eq!(gauges["nacelle.requests.active"], -1.0);
-            assert_eq!(gauges["nacelle.streaming_tasks.active"], -1.0);
-            assert_eq!(gauges["nacelle.memory.used_bytes"], -10.0);
+            assert_eq!(gauges["nacelle.connection.active"], -1.0);
+            assert_eq!(gauges["nacelle.request.active"], -1.0);
+            assert_eq!(gauges["nacelle.streaming_task.active"], -1.0);
+            assert_eq!(gauges["nacelle.memory.usage"], -10.0);
         });
     }
 
@@ -1596,6 +1596,62 @@ mod tests {
             .acquire_connection_for_peer(peer)
             .expect("peer connection should recover after drop");
         assert_eq!(state.active_connections(), 1);
+    }
+
+    #[test]
+    fn concurrent_per_peer_connection_admission_does_not_exceed_limit() {
+        const CONTENDERS: usize = 16;
+
+        let peer = "127.0.0.1".parse().expect("valid ip");
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_connections(CONTENDERS)
+                .with_max_connections_per_peer(1),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS + 1));
+        let (results_tx, results_rx) = std::sync::mpsc::channel();
+        let threads: Vec<_> = (0..CONTENDERS)
+            .map(|_| {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                let results_tx = results_tx.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    results_tx
+                        .send(state.acquire_connection_for_peer(peer))
+                        .expect("result receiver should remain open");
+                })
+            })
+            .collect();
+        drop(results_tx);
+
+        barrier.wait();
+        let results: Vec<_> = results_rx.into_iter().collect();
+        for thread in threads {
+            thread.join().expect("admission thread should not panic");
+        }
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert!(
+            results
+                .iter()
+                .filter(|result| result.is_err())
+                .all(|result| {
+                    matches!(
+                        result,
+                        Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::PeerConnections
+                        ))
+                    )
+                })
+        );
+        assert_eq!(state.active_connections(), 1);
+
+        drop(results);
+        assert_eq!(state.active_connections(), 0);
+        let _connection = state
+            .acquire_connection_for_peer(peer)
+            .expect("peer capacity should recover after permits drop");
     }
 
     #[test]

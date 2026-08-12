@@ -24,6 +24,7 @@ use super::common::{
     run_accept_loop,
 };
 
+/// Listen on `addr` and serve framed TCP connections over OpenSSL.
 pub async fn serve_tcp_openssl<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -39,6 +40,7 @@ where
     serve_tcp_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
+/// Serve OpenSSL TCP connections until shutdown is requested.
 pub async fn serve_tcp_openssl_with_shutdown<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -61,6 +63,7 @@ where
     .await
 }
 
+/// Serve OpenSSL TCP connections, then drain for at most `drain_timeout`.
 pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -84,6 +87,7 @@ where
     .await
 }
 
+/// Serve OpenSSL TCP connections with explicit socket options.
 pub async fn serve_tcp_openssl_with_options<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -100,6 +104,7 @@ where
     serve_tcp_openssl_with_options_and_shutdown(server, addr, tls_config, tcp_options, token).await
 }
 
+/// Serve OpenSSL TCP connections with socket options until shutdown.
 pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,
@@ -124,6 +129,7 @@ where
     .await
 }
 
+/// Serve OpenSSL TCP connections with socket options and a bounded drain.
 pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H, OH, Observer>(
     server: Arc<TcpServer<P, H, OH, Observer>>,
     addr: SocketAddr,

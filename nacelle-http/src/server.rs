@@ -21,9 +21,7 @@ use crate::limits::NacelleHttpLimits;
 pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
 use crate::rate_limit::forwarded_peer_ip;
-#[cfg(test)]
-use nacelle_core::error::NacelleResourceLimitReason;
-use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponder};
@@ -130,6 +128,40 @@ where
     }
 }
 
+/// Shared-runtime HTTP/1 server and listener owner.
+///
+/// The server owns its handler, connection-state factory, process-wide runtime
+/// state, HTTP limits and policy, telemetry, and listener label. Serving methods
+/// consume the server and either bind or consume one listener. Each accepted
+/// connection runs in a supervised task. Cancelling a serving future drops the
+/// listener without guaranteeing a graceful connection drain.
+///
+/// Shutdown-aware methods stop accepting when the token changes, drain active
+/// connections for the configured timeout, and then abort remaining tasks.
+/// Request admission and body limits come from [`NacelleRuntimeState`]; HTTP
+/// timeouts and edge policy come from [`NacelleHttpLimits`] and
+/// [`NacelleHttpPolicy`]. HTTP serving requires the facade's `http` feature;
+/// TLS methods additionally require `rustls`.
+///
+/// # Errors
+///
+/// Serving returns [`NacelleError`] for bind, accept, TLS configuration or
+/// handshake, timeout, resource-limit, and shutdown failures. Connection-local
+/// HTTP or handler failures are reported through telemetry and do not normally
+/// stop the listener.
+///
+/// # Panics
+///
+/// Serving futures must be polled inside a Tokio runtime. Nacelle does not
+/// intentionally panic for peer or configuration input. Application-handler
+/// panics are supervised task failures; panic-abort builds terminate instead
+/// of unwinding.
+///
+/// # Example
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin direct_http --no-default-features --features http
+/// ```
 pub struct HyperServer<H = (), F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Arc<H>,
     connection_state_factory: Arc<F>,
@@ -171,6 +203,14 @@ where
 }
 
 /// Worker-local HTTP/1 server for explicit thread-per-core execution.
+///
+/// This is the `Rc`-backed counterpart to [`HyperServer`]. It owns a supplied
+/// listener and spawns every accepted connection locally, so its serving
+/// methods must run inside a Tokio [`tokio::task::LocalSet`] on the owning
+/// worker. Shutdown, errors, limits, and cancellation otherwise follow the
+/// [`HyperServer`] contract. Worker-local execution requires the facade's
+/// `experimental-thread-per-core` feature and is outside the supported `0.3`
+/// contract.
 pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Rc<H>,
     connection_state_factory: Rc<F>,
@@ -622,11 +662,13 @@ where
         self
     }
 
+    /// Bind `addr` and serve HTTP/1 connections until failure or cancellation.
     pub async fn serve(self, addr: SocketAddr) -> Result<(), NacelleError> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         self.serve_listener(listener).await
     }
 
+    /// Bind `addr` and serve HTTP/1 connections until shutdown is requested.
     pub async fn serve_with_shutdown(
         self,
         addr: SocketAddr,
@@ -636,6 +678,7 @@ where
             .await
     }
 
+    /// Bind `addr`, serve until shutdown, and use a bounded connection drain.
     pub async fn serve_with_shutdown_timeout(
         self,
         addr: SocketAddr,
@@ -658,6 +701,7 @@ where
             .await
     }
 
+    /// Serve HTTP/1 connections from an owned, pre-bound listener.
     pub async fn serve_listener(
         self,
         listener: tokio::net::TcpListener,
@@ -666,6 +710,7 @@ where
         self.serve_listener_with_shutdown(listener, token).await
     }
 
+    /// Serve a pre-bound HTTP/1 listener until shutdown is requested.
     pub async fn serve_listener_with_shutdown(
         self,
         listener: tokio::net::TcpListener,
@@ -675,6 +720,7 @@ where
             .await
     }
 
+    /// Serve a pre-bound listener until shutdown with a bounded drain.
     pub async fn serve_listener_with_shutdown_timeout(
         self,
         listener: tokio::net::TcpListener,
@@ -751,6 +797,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Bind `addr` and serve HTTP/1 connections over Rustls.
     pub async fn serve_tls(
         self,
         addr: SocketAddr,
@@ -761,6 +808,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Bind `addr` and serve Rustls HTTP/1 until shutdown is requested.
     pub async fn serve_tls_with_shutdown(
         self,
         addr: SocketAddr,
@@ -772,6 +820,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls HTTP/1 until shutdown with a bounded connection drain.
     pub async fn serve_tls_with_shutdown_timeout(
         self,
         addr: SocketAddr,
@@ -790,6 +839,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls HTTP/1 from an owned, pre-bound listener.
     pub async fn serve_tls_listener(
         self,
         listener: tokio::net::TcpListener,
@@ -801,6 +851,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve a pre-bound Rustls HTTP/1 listener until shutdown.
     pub async fn serve_tls_listener_with_shutdown(
         self,
         listener: tokio::net::TcpListener,
@@ -978,6 +1029,36 @@ where
                 );
             }
         }
+        let (parts, body) = request.into_parts();
+        let body_len_hint = body
+            .size_hint()
+            .upper()
+            .and_then(|bytes| usize::try_from(bytes).ok());
+        if body_len_hint
+            .is_some_and(|bytes| bytes > self.runtime_state.limits().max_request_body_bytes)
+        {
+            let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
+            self.telemetry.request_failed(
+                NacelleTransport::new("http"),
+                elapsed_since(request_started),
+                &error,
+            );
+            self.access_log(HttpAccessLog {
+                method: &method,
+                uri: &uri,
+                peer_ip: effective_peer_ip,
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                request_bytes: 0,
+                elapsed: elapsed_since(request_started),
+                reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
+            });
+            return response_to_http(
+                HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
+                self.runtime_state.clone(),
+                self.telemetry.clone(),
+                &self.http_policy,
+            );
+        }
         let _request_permit = match self.runtime_state.acquire_request_tracked() {
             Ok(permit) => permit,
             Err(error) => {
@@ -1003,11 +1084,6 @@ where
                 );
             }
         };
-        let (parts, body) = request.into_parts();
-        let body_len_hint = body
-            .size_hint()
-            .upper()
-            .and_then(|bytes| usize::try_from(bytes).ok());
         let request_body_bytes = AtomicUsize::new(0);
         let (body, body_pump) = incoming_to_body(
             body,
@@ -1061,12 +1137,12 @@ where
                         reason: None,
                     });
                 }
-                self.telemetry.request_completed(
-                    NacelleTransport::new("http"),
-                    request_bytes,
-                    0,
-                    elapsed_since(request_started),
-                );
+                self.telemetry
+                    .request_completed_without_response_body_metrics(
+                        NacelleTransport::new("http"),
+                        request_bytes,
+                        elapsed_since(request_started),
+                    );
                 response
             }
             Err(error) => {
@@ -1093,12 +1169,12 @@ where
                         reason: Some("handler"),
                     });
                 }
-                self.telemetry.request_completed(
-                    NacelleTransport::new("http"),
-                    request_bytes,
-                    0,
-                    elapsed_since(request_started),
-                );
+                self.telemetry
+                    .request_completed_without_response_body_metrics(
+                        NacelleTransport::new("http"),
+                        request_bytes,
+                        elapsed_since(request_started),
+                    );
                 response
             }
         }
@@ -1397,16 +1473,25 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpConnectionTaskOutcome {
+    Completed,
+    ConnectionError,
+    TaskFailed,
+}
+
 fn log_http_connection_result(
     result: Option<Result<Result<(), NacelleError>, tokio::task::JoinError>>,
-) {
+) -> HttpConnectionTaskOutcome {
     match result {
-        Some(Ok(Ok(()))) | None => {}
+        Some(Ok(Ok(()))) | None => HttpConnectionTaskOutcome::Completed,
         Some(Ok(Err(error))) => {
             tracing::debug!(target: "nacelle", transport = "http", error = %error, "connection finished with error");
+            HttpConnectionTaskOutcome::ConnectionError
         }
         Some(Err(error)) => {
             tracing::warn!(target: "nacelle", transport = "http", error = %error, "connection task failed");
+            HttpConnectionTaskOutcome::TaskFailed
         }
     }
 }
@@ -1454,6 +1539,7 @@ async fn drain_http_connection_tasks<Observer>(
 mod tests {
     use bytes::Bytes;
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicBool;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use nacelle_core::pipeline::handler_fn;
@@ -1825,6 +1911,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_http_start_stop_cycles_release_listener_and_tasks() {
+        let initial_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("initial listener should bind");
+        let addr = initial_listener
+            .local_addr()
+            .expect("listener should have addr");
+        let runtime_state = NacelleRuntimeState::default();
+        let mut listener = Some(initial_listener);
+
+        for _ in 0..3 {
+            let cycle_listener = match listener.take() {
+                Some(listener) => listener,
+                None => tokio::net::TcpListener::bind(addr)
+                    .await
+                    .expect("stopped listener address should rebind"),
+            };
+            let server =
+                HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                        .await
+                }))
+                .with_runtime_state(runtime_state.clone());
+            let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+            let server_task = tokio::spawn(async move {
+                server
+                    .serve_listener_with_shutdown(cycle_listener, token)
+                    .await
+            });
+
+            let mut client = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("client should connect");
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("request should write");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("response should read");
+            assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+
+            shutdown.shutdown();
+            tokio::time::timeout(Duration::from_secs(1), server_task)
+                .await
+                .expect("server should stop before test timeout")
+                .expect("server task should join")
+                .expect("server should exit cleanly");
+            assert_eq!(runtime_state.active_connections(), 0);
+        }
+
+        let _listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .expect("final listener address should rebind");
+    }
+
+    #[tokio::test]
+    async fn http_shutdown_stops_admission_before_draining_active_work() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let runtime_state = NacelleRuntimeState::default();
+        let observer = nacelle_core::NacelleInMemoryObserver::new();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = HyperServer::new(handler_fn({
+            let started = started.clone();
+            let release = release.clone();
+            move |context: HttpRequestContext<()>| {
+                let started = started.clone();
+                let release = release.clone();
+                async move {
+                    started.notify_one();
+                    release.notified().await;
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                        .await
+                }
+            }
+        }))
+        .with_runtime_state(runtime_state.clone())
+        .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()));
+        let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+        let server_task = tokio::spawn(async move {
+            server
+                .serve_listener_with_shutdown_timeout(listener, token, Duration::from_secs(1))
+                .await
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request should write");
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("handler should start");
+
+        shutdown.shutdown();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if observer
+                    .events()
+                    .iter()
+                    .any(|event| event.kind == NacelleTelemetryEventKind::DrainStarted)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drain should start");
+
+        let events = observer.events();
+        let stopped = events
+            .iter()
+            .position(|event| event.kind == NacelleTelemetryEventKind::ListenerStoppedAccepting)
+            .expect("listener stop should be observable");
+        let drain_started = events
+            .iter()
+            .position(|event| event.kind == NacelleTelemetryEventKind::DrainStarted)
+            .expect("drain start should be observable");
+        assert!(stopped < drain_started);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != NacelleTelemetryEventKind::DrainCompleted)
+        );
+
+        release.notify_one();
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should drain");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        server_task
+            .await
+            .expect("server task should join")
+            .expect("server should exit cleanly");
+        assert_eq!(runtime_state.active_connections(), 0);
+
+        let events = observer.events();
+        let drain_completed = events
+            .iter()
+            .position(|event| event.kind == NacelleTelemetryEventKind::DrainCompleted)
+            .expect("drain completion should be observable");
+        assert!(drain_started < drain_completed);
+    }
+
+    #[cfg(panic = "unwind")]
+    #[tokio::test]
+    async fn post_start_connection_task_panic_reaches_supervisor() {
+        let task = tokio::spawn(async {
+            tokio::task::yield_now().await;
+            panic!("connection task panic");
+        });
+
+        assert_eq!(
+            log_http_connection_result(Some(task.await.map(|()| Ok(())))),
+            HttpConnectionTaskOutcome::TaskFailed
+        );
+    }
+
+    #[tokio::test]
     async fn http_shutdown_aborts_after_drain_deadline() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1896,6 +2154,128 @@ mod tests {
             .expect("connection should close before test timeout");
         assert!(read.is_err() || read.expect("read result should be available") == 0);
         wait_for_active_connections(&runtime_state, 0).await;
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_oversized_declared_body_is_rejected_before_handler_dispatch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
+            nacelle_core::limits::NacelleLimits::default().with_max_request_body_bytes(4),
+        );
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let server = HyperServer::new(handler_fn({
+            let handler_calls = handler_calls.clone();
+            move |context: HttpRequestContext<()>| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "unexpected"))
+                        .await
+                }
+            }
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\n\
+                  Host: localhost\r\n\
+                  Content-Length: 5\r\n\
+                  Connection: close\r\n\
+                  \r\n",
+            )
+            .await
+            .expect("headers should write");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        let response = String::from_utf8(response).expect("response should be utf8");
+
+        assert!(response.starts_with("HTTP/1.1 413 Payload Too Large"));
+        assert_eq!(handler_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime_state.active_requests(), 0);
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_chunked_body_growth_is_bounded_and_releases_resources() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
+            nacelle_core::limits::NacelleLimits::default().with_max_request_body_bytes(4),
+        );
+        let saw_limit = Arc::new(AtomicBool::new(false));
+        let server = HyperServer::new(handler_fn({
+            let saw_limit = saw_limit.clone();
+            move |mut context: HttpRequestContext<()>| {
+                let saw_limit = saw_limit.clone();
+                async move {
+                    while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                        match chunk {
+                            Ok(_) => {}
+                            Err(NacelleError::ResourceLimit(
+                                NacelleResourceLimitReason::RequestBodyBytes,
+                            )) => {
+                                saw_limit.store(true, Ordering::SeqCst);
+                                return context
+                                    .respond(HttpResponse::bytes(
+                                        StatusCode::PAYLOAD_TOO_LARGE,
+                                        "too large",
+                                    ))
+                                    .await;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "unexpected"))
+                        .await
+                }
+            }
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(
+                b"POST / HTTP/1.1\r\n\
+                  Host: localhost\r\n\
+                  Transfer-Encoding: chunked\r\n\
+                  Connection: close\r\n\
+                  \r\n\
+                  3\r\nabc\r\n\
+                  3\r\ndef\r\n\
+                  0\r\n\r\n",
+            )
+            .await
+            .expect("chunked request should write");
+
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        assert!(response.starts_with(b"HTTP/1.1 413 Payload Too Large"));
+        assert!(saw_limit.load(Ordering::SeqCst));
+        assert_eq!(runtime_state.active_requests(), 0);
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
         server_task.abort();
     }
 

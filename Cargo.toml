@@ -38,15 +38,15 @@ rust-version = "1.95"
 
 [workspace.dependencies]
 # Internal crates
-nacelle = { path = "nacelle", version = "0.3.0-rc.1" }
-nacelle-codec = { path = "nacelle-codec", version = "0.3.0-rc.1" }
-nacelle-core = { path = "nacelle-core", version = "0.3.0-rc.1" }
-nacelle-openssl = { path = "nacelle-openssl", version = "0.3.0-rc.1" }
-nacelle-rustls = { path = "nacelle-rustls", version = "0.3.0-rc.1" }
-nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-rc.1" }
-nacelle-http = { path = "nacelle-http", version = "0.3.0-rc.1" }
-nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-rc.1" }
-nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol" }
+nacelle = { path = "nacelle", version = "0.3.0-rc.2" }
+nacelle-codec = { path = "nacelle-codec", version = "0.3.0-rc.2" }
+nacelle-core = { path = "nacelle-core", version = "0.3.0-rc.2" }
+nacelle-openssl = { path = "nacelle-openssl", version = "0.3.0-rc.2" }
+nacelle-rustls = { path = "nacelle-rustls", version = "0.3.0-rc.2" }
+nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0-rc.2" }
+nacelle-http = { path = "nacelle-http", version = "0.3.0-rc.2" }
+nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0-rc.2" }
+nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol", version = "0.0.0" }
 
 # External dependencies
 actix-codec = "0.5.2"

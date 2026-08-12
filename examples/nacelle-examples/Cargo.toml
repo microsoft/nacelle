@@ -16,12 +16,13 @@ tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
 experimental-memory = ["nacelle/experimental-memory"]
 tls-self-signed = ["nacelle/tls-self-signed"]
+openssl = ["tcp", "nacelle/openssl"]
 bench = []
 
 [dependencies]
 bytes = { workspace = true }
 http = { workspace = true, optional = true }
-nacelle = { path = "../../nacelle", version = "0.3.0-rc.1", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.0-rc.2", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 
@@ -46,6 +47,31 @@ path = "src/bin/echo.rs"
 required-features = ["tcp"]
 
 [[bin]]
+name = "manual_host"
+path = "src/bin/manual_host.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "direct_tcp"
+path = "src/bin/direct_tcp.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "listener_tcp"
+path = "src/bin/listener_tcp.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "unix_echo"
+path = "src/bin/unix_echo.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "openssl_echo"
+path = "src/bin/openssl_echo.rs"
+required-features = ["openssl"]
+
+[[bin]]
 name = "app_core"
 path = "src/bin/app_core.rs"
 required-features = ["tcp"]
@@ -53,6 +79,11 @@ required-features = ["tcp"]
 [[bin]]
 name = "http_echo"
 path = "src/bin/http_echo.rs"
+required-features = ["http"]
+
+[[bin]]
+name = "direct_http"
+path = "src/bin/direct_http.rs"
 required-features = ["http"]
 
 [[bin]]
@@ -79,6 +110,11 @@ required-features = ["tcp", "tls-self-signed"]
 name = "dual_echo"
 path = "src/bin/dual_echo.rs"
 required-features = ["tcp", "http"]
+
+[[bin]]
+name = "compiler-pressure"
+path = "src/bin/compiler_pressure.rs"
+required-features = ["tcp", "http", "tls-self-signed"]
 
 [[bin]]
 name = "line_codec"

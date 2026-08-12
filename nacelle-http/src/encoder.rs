@@ -210,6 +210,7 @@ where
         runtime_state,
         telemetry,
         response_body_bytes: 0,
+        response_body_metric_pending: true,
     })
 }
 
@@ -218,6 +219,7 @@ pub(crate) struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
     response_body_bytes: usize,
+    response_body_metric_pending: bool,
 }
 
 impl<Observer> Stream for HttpBodyStream<Observer>
@@ -231,11 +233,13 @@ where
         match Pin::new(&mut this.body).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
                 let Some(next) = this.response_body_bytes.checked_add(chunk.len()) else {
+                    this.response_body_metric_pending = false;
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 };
                 if next > this.runtime_state.limits().max_response_body_bytes {
+                    this.response_body_metric_pending = false;
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
@@ -243,31 +247,129 @@ where
                 this.response_body_bytes = next;
                 Poll::Ready(Some(Ok(Frame::data(chunk))))
             }
-            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(Some(Err(error))) => {
+                this.response_body_metric_pending = false;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                if this.response_body_metric_pending {
+                    this.response_body_metric_pending = false;
+                    this.telemetry.response_body_bytes(
+                        NacelleTransport::new("http"),
+                        this.response_body_bytes,
+                    );
+                }
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
 }
 
-impl<Observer> Drop for HttpBodyStream<Observer>
-where
-    Observer: NacelleTelemetryObserver,
-{
-    fn drop(&mut self) {
-        self.telemetry
-            .response_body_bytes(NacelleTransport::new("http"), self.response_body_bytes);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::incoming_body_is_empty;
+    use http::StatusCode;
+    use http_body_util::BodyExt;
+
+    use super::{incoming_body_is_empty, response_to_http};
+    use crate::pipeline::HttpResponse;
+    use crate::policy::NacelleHttpPolicy;
+    use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
+    use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+    use nacelle_core::telemetry::{
+        NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind,
+    };
 
     #[test]
     fn only_exact_zero_body_hint_skips_body_pump() {
         assert!(incoming_body_is_empty(Some(0)));
         assert!(!incoming_body_is_empty(Some(1)));
         assert!(!incoming_body_is_empty(None));
+    }
+
+    #[tokio::test]
+    async fn oversized_response_chunk_fails_before_emitting_bytes() {
+        let runtime_state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_response_body_bytes(4));
+        let observer = NacelleInMemoryObserver::new();
+        let response = response_to_http(
+            HttpResponse::bytes(StatusCode::OK, "hello"),
+            runtime_state,
+            NacelleTelemetry::new().with_observer(observer.clone()),
+            &NacelleHttpPolicy::default(),
+        )
+        .expect("response should build");
+        let mut body = response.into_body();
+
+        let error = body
+            .frame()
+            .await
+            .expect("response should yield an error frame")
+            .expect_err("oversized response should fail before emitting bytes");
+        assert!(matches!(
+            error,
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::ResponseBodyBytes)
+        ));
+        assert!(body.frame().await.is_none());
+        assert!(
+            observer
+                .events()
+                .iter()
+                .all(|event| event.kind != NacelleTelemetryEventKind::ResponseBodyBytes)
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_empty_response_records_zero_bytes_once() {
+        let observer = NacelleInMemoryObserver::new();
+        let response = response_to_http(
+            HttpResponse::empty(StatusCode::NO_CONTENT),
+            NacelleRuntimeState::default(),
+            NacelleTelemetry::new().with_observer(observer.clone()),
+            &NacelleHttpPolicy::default(),
+        )
+        .expect("response should build");
+
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("empty response should complete");
+
+        let events = observer.events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == NacelleTelemetryEventKind::ResponseBodyBytes)
+                .map(|event| event.count)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_response_does_not_record_partial_bytes() {
+        let observer = NacelleInMemoryObserver::new();
+        let response = response_to_http(
+            HttpResponse::bytes(StatusCode::OK, "partial"),
+            NacelleRuntimeState::default(),
+            NacelleTelemetry::new().with_observer(observer.clone()),
+            &NacelleHttpPolicy::default(),
+        )
+        .expect("response should build");
+        let mut body = response.into_body();
+
+        body.frame()
+            .await
+            .expect("response should have one frame")
+            .expect("response frame should succeed");
+        drop(body);
+
+        assert!(
+            observer
+                .events()
+                .iter()
+                .all(|event| event.kind != NacelleTelemetryEventKind::ResponseBodyBytes)
+        );
     }
 }

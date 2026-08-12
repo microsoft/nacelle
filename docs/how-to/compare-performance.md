@@ -206,10 +206,13 @@ Use the Linux profiling helper for repeatable plain-TCP diagnostics:
 The helper builds the `profiling` Cargo profile with optimization, debug
 information, and frame pointers. Its default `--feature-set minimal` uses
 `--no-default-features`, which disables TLS and mimalloc. The stress server's
-downstream console metrics recorder remains active. The
-system allocator is required because Heaptrack cannot intercept calls made
-directly to mimalloc. Treat this as a diagnostic profile, not as a matched
-comparison with the default mimalloc build.
+downstream console metrics recorder remains active, but request and response
+body-size histograms default off so profiling isolates the runtime from the
+debug recorder's raw sample retention. Pass `--byte-metrics` when measuring
+that recorder overhead deliberately. The system allocator is required because
+Heaptrack cannot intercept calls made directly to mimalloc. Treat this as a
+diagnostic profile, not as a matched comparison with the default mimalloc
+build.
 
 Use `--feature-set default` to profile the default mimalloc and Rustls-capable
 binaries. Self-signed Rustls workloads also require a TLS config
@@ -222,6 +225,19 @@ and the explicit local-test trust flag:
 	--config examples/nacelle-stress-server/configs/tcp-tls.toml \
 	--tls-insecure
 ```
+
+For a return-to-idle profile, keep the default mimalloc build and enable its
+immediate page-purge configuration:
+
+```bash
+./scripts/profile-linux.sh \
+	--tool baseline \
+	--feature-set default \
+	--low-memory
+```
+
+The profile metadata records `low_memory=true`. This mode is rejected with
+`--feature-set minimal` because that diagnostic build uses the system allocator.
 
 The helper rejects Heaptrack with the default feature set because direct
 mimalloc calls are invisible to Heaptrack. It also rejects `--tls-insecure`

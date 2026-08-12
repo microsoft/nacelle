@@ -1,6 +1,5 @@
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, BytesMut};
@@ -21,11 +20,16 @@ const OPCODE_UPLOAD: u64 = 1;
 async fn main() -> Result<(), NacelleError> {
     let bind_addr: SocketAddr = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:0".to_string())
+        .unwrap_or_else(|| "127.0.0.1:18080".to_string())
         .parse()
         .map_err(NacelleError::protocol)?;
-    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
-    let addr = listener.local_addr()?;
+    if bind_addr.port() == 0 {
+        return Err(NacelleError::handler(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "tcp_memory_guard requires a nonzero port",
+        )));
+    }
+    let addr = bind_addr;
 
     let runtime_state = NacelleRuntimeState::new(
         NacelleLimits::default()
@@ -54,21 +58,14 @@ async fn main() -> Result<(), NacelleError> {
         .runtime_state(runtime_state.clone())
         .build()?;
     let (shutdown, token) = NacelleShutdown::pair();
-    let server_task = tokio::spawn(async move {
-        nacelle::advanced::runtime::serve_tcp_listener_with_shutdown_deadline(
-            Arc::new(server),
-            listener,
-            token,
-            nacelle::core::lifecycle::NacelleDrainDeadline::default(),
-        )
-        .await
-    });
+    let server_task =
+        tokio::spawn(async move { server.serve_tcp_with_shutdown(bind_addr, token).await });
 
     println!("tcp memory guard demo listening on {addr}");
     println!("configured memory budget: {MEMORY_LIMIT} bytes");
     println!("per-connection TCP buffers: {CONNECTION_BUFFER_BYTES} bytes");
 
-    let mut held = tokio::net::TcpStream::connect(addr).await?;
+    let mut held = connect_with_retry(addr).await?;
     held.write_all(&request_header(1, HELD_BODY_BYTES)).await?;
     let held_expected = CONNECTION_BUFFER_BYTES + HELD_BODY_BYTES;
     wait_for_memory(&runtime_state, held_expected).await?;
@@ -80,10 +77,12 @@ async fn main() -> Result<(), NacelleError> {
     let mut rejected = tokio::net::TcpStream::connect(addr).await?;
     wait_for_memory(&runtime_state, MEMORY_LIMIT).await?;
     rejected.write_all(&request_header(2, 1)).await?;
-    let rejected_response = read_until_close(rejected).await?;
+    let rejected_error = read_tcp_response(rejected)
+        .await
+        .expect_err("memory-exhausted request should return an error frame");
     expect(
-        rejected_response.is_empty(),
-        "memory-exhausted TCP request should close before a response body is accepted",
+        rejected_error.to_string().contains("memory"),
+        "memory-exhausted TCP request should return a memory-limit error frame",
     )?;
     expect(
         runtime_state.memory_used_bytes() <= MEMORY_LIMIT,
@@ -127,12 +126,26 @@ async fn one_shot_tcp(
     request_id: u64,
     body_len: usize,
 ) -> Result<String, NacelleError> {
-    let mut client = tokio::net::TcpStream::connect(addr).await?;
+    let mut client = connect_with_retry(addr).await?;
     client
         .write_all(&request_header(request_id, body_len))
         .await?;
     client.write_all(&vec![b'b'; body_len]).await?;
     read_tcp_response(client).await
+}
+
+async fn connect_with_retry(addr: SocketAddr) -> Result<tokio::net::TcpStream, NacelleError> {
+    let mut last_error = None;
+    for _ in 0..100 {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(last_error
+        .map(NacelleError::from)
+        .unwrap_or_else(|| NacelleError::UnexpectedEof))
 }
 
 fn request_header(request_id: u64, body_len: usize) -> [u8; 24] {
@@ -174,14 +187,6 @@ async fn read_tcp_response(mut client: tokio::net::TcpStream) -> Result<String, 
             return String::from_utf8(body.to_vec()).map_err(NacelleError::protocol);
         }
     }
-}
-
-async fn read_until_close(mut client: tokio::net::TcpStream) -> Result<Vec<u8>, NacelleError> {
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
-        .await
-        .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::TcpRejectionClose))??;
-    Ok(response)
 }
 
 async fn wait_for_memory(

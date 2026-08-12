@@ -1,3 +1,32 @@
+//! Direct framed-connection serving primitives.
+//!
+//! These functions own the supplied I/O values for the lifetime of their
+//! futures, except the explicitly borrowed serial helper. Cancellation drops
+//! owned I/O and does not guarantee a graceful socket shutdown. The functions
+//! enforce [`NacelleRuntimeState`] limits plus [`NacelleTcpConfig`] and
+//! [`NacelleTcpLimits`]; callers of `without_connection_limit` variants must
+//! already hold the corresponding connection permit.
+//!
+//! # Errors
+//!
+//! Serving returns [`NacelleError`] for connection admission, framing,
+//! protocol, handler, body, socket, timeout, and shutdown failures.
+//!
+//! # Panics
+//!
+//! These futures must be polled inside a Tokio runtime. Nacelle does not
+//! intentionally panic for peer or configuration input. Worker-local variants
+//! must also run in their documented local execution context.
+//!
+//! # Example
+//!
+//! Run a listener that accepts sockets and passes each one directly to
+//! [`crate::TcpServer::serve_io`]:
+//!
+//! ```text
+//! cargo run -p nacelle-examples --bin direct_tcp
+//! ```
+
 use std::convert::Infallible;
 use std::ops::Deref;
 use std::rc::Rc;

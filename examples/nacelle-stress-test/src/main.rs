@@ -27,6 +27,7 @@ struct StressConfig {
     server_addr: SocketAddr,
     connections: usize,
     pipeline: usize,
+    requests_per_connection: Option<usize>,
     duration: Duration,
     payload_bytes: usize,
     tls_insecure: bool,
@@ -38,6 +39,7 @@ impl Default for StressConfig {
             server_addr: SocketAddr::from(([127, 0, 0, 1], 7878)),
             connections: 256,
             pipeline: 8,
+            requests_per_connection: None,
             duration: Duration::from_secs(10),
             payload_bytes: 256,
             tls_insecure: false,
@@ -47,6 +49,7 @@ impl Default for StressConfig {
 
 #[derive(Debug, Default)]
 struct WorkerResult {
+    completed_connections: u64,
     completed_requests: u64,
     request_wire_bytes: u64,
     response_wire_bytes: u64,
@@ -60,10 +63,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = parse_args(std::env::args().skip(1))?;
 
     println!(
-        "stress target={} connections={} pipeline={} request_payload={}B duration={}s",
+        "stress target={} connections={} pipeline={} requests_per_connection={} request_payload={}B duration={}s",
         config.server_addr,
         config.connections,
         config.pipeline,
+        config
+            .requests_per_connection
+            .map_or_else(|| "unbounded".to_owned(), |value| value.to_string()),
         config.payload_bytes,
         config.duration.as_secs_f64(),
     );
@@ -110,7 +116,9 @@ async fn run_worker(
                 .map_err(|_| NacelleError::InvalidFrame("invalid TLS server name"))?;
             let stream = connector.connect(server_name, stream).await?;
             let (reader, writer) = tokio::io::split(stream);
-            return run_worker_io(worker_id, reader, writer, config, barrier).await;
+            barrier.wait().await;
+            let deadline = Instant::now() + config.duration;
+            return run_worker_io(worker_id, reader, writer, &config, deadline).await;
         }
         #[cfg(not(feature = "rustls"))]
         {
@@ -120,16 +128,35 @@ async fn run_worker(
         }
     }
 
-    let (reader, writer) = stream.into_split();
-    run_worker_io(worker_id, reader, writer, config, barrier).await
+    barrier.wait().await;
+    let deadline = Instant::now() + config.duration;
+    let mut aggregate = WorkerResult::default();
+    let mut stream = Some(stream);
+    loop {
+        let connected = match stream.take() {
+            Some(connected) => connected,
+            None => {
+                let connected = make_tcp_socket(&server_addr)?.connect(server_addr).await?;
+                connected.set_nodelay(true)?;
+                connected
+            }
+        };
+        let (reader, writer) = connected.into_split();
+        aggregate.merge(run_worker_io(worker_id, reader, writer, &config, deadline).await?);
+
+        if config.requests_per_connection.is_none() || Instant::now() >= deadline {
+            break;
+        }
+    }
+    Ok(aggregate)
 }
 
 async fn run_worker_io<R, W>(
     worker_id: usize,
     mut reader: R,
     mut writer: W,
-    config: StressConfig,
-    barrier: Arc<Barrier>,
+    config: &StressConfig,
+    deadline: Instant,
 ) -> Result<WorkerResult, NacelleError>
 where
     R: AsyncRead + Unpin,
@@ -142,11 +169,10 @@ where
     let mut inflight = VecDeque::with_capacity(config.pipeline);
     let mut result = WorkerResult::default();
     let mut next_request_id = (worker_id as u64) << 48;
+    let mut sent_requests = 0_usize;
+    let request_limit = config.requests_per_connection.unwrap_or(usize::MAX);
 
-    barrier.wait().await;
-    let deadline = Instant::now() + config.duration;
-
-    while inflight.len() < config.pipeline {
+    while inflight.len() < config.pipeline && sent_requests < request_limit {
         if Instant::now() >= deadline {
             break;
         }
@@ -156,6 +182,7 @@ where
             write_request_frame(&mut writer, request_id, STRESS_OPCODE, &mut request_frame).await?
                 as u64;
         inflight.push_back((request_id, Instant::now()));
+        sent_requests += 1;
     }
     if !inflight.is_empty() {
         writer.flush().await?;
@@ -175,18 +202,20 @@ where
         let latency_ns = started_at.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         result.record_completion(latency_ns, response.wire_bytes as u64);
 
-        if Instant::now() < deadline {
+        if Instant::now() < deadline && sent_requests < request_limit {
             let request_id = next_request_id;
             next_request_id += 1;
             result.request_wire_bytes +=
                 write_request_frame(&mut writer, request_id, STRESS_OPCODE, &mut request_frame)
                     .await? as u64;
             inflight.push_back((request_id, Instant::now()));
+            sent_requests += 1;
             writer.flush().await?;
         }
     }
 
     writer.shutdown().await?;
+    result.completed_connections = 1;
     Ok(result)
 }
 
@@ -265,6 +294,7 @@ impl WorkerResult {
     }
 
     fn merge(&mut self, other: WorkerResult) {
+        self.completed_connections += other.completed_connections;
         self.completed_requests += other.completed_requests;
         self.request_wire_bytes += other.request_wire_bytes;
         self.response_wire_bytes += other.response_wire_bytes;
@@ -295,6 +325,9 @@ fn parse_args(
             "--pipeline" => {
                 config.pipeline = parse_value(&arg, args.next())?;
             }
+            "--requests-per-connection" => {
+                config.requests_per_connection = Some(parse_value(&arg, args.next())?);
+            }
             "--duration-secs" => {
                 let secs: f64 = parse_value(&arg, args.next())?;
                 config.duration = Duration::from_secs_f64(secs.max(0.1));
@@ -324,6 +357,12 @@ fn parse_args(
     if config.pipeline == 0 {
         return Err("pipeline must be greater than zero".into());
     }
+    if config.requests_per_connection == Some(0) {
+        return Err("requests per connection must be greater than zero".into());
+    }
+    if config.requests_per_connection.is_some() && config.tls_insecure {
+        return Err("requests per connection is not supported with TLS".into());
+    }
 
     Ok(config)
 }
@@ -351,6 +390,8 @@ fn print_help() {
            --addr <addr>          Target server address (default 127.0.0.1:7878)\n\
            --connections <count>  Concurrent TCP connections (default 256)\n\
            --pipeline <count>     Requests kept in flight per connection (default 8)\n\
+           --requests-per-connection <count>\n\
+                                  Reconnect after this many requests (plain TCP only)\n\
            --duration-secs <s>    Active load duration (default 10)\n\
            --payload-bytes <n>    Request payload bytes (default 256)\n\
            --tls-insecure         Connect with TLS and accept the server certificate\n\
@@ -358,7 +399,7 @@ fn print_help() {
                                   self-signed stress server.\n\
          \n\
          Notes:\n\
-           - Connections are established once per worker and reused for the whole run.\n\
+           - Connections are reused for the whole run unless --requests-per-connection is set.\n\
            - High pipeline values measure saturation throughput and queueing under load, not just base RTT.\n\
            - For established-connection RTT, start with --pipeline 1.\n\
            - Run nacelle-stress-server separately and point --addr at it.\n\
@@ -369,6 +410,7 @@ fn print_help() {
 fn print_summary(config: &StressConfig, result: &WorkerResult, elapsed: Duration) {
     let elapsed_secs = elapsed.as_secs_f64().max(f64::EPSILON);
     let requests_per_sec = result.completed_requests as f64 / elapsed_secs;
+    let connections_per_sec = result.completed_connections as f64 / elapsed_secs;
     let total_wire_bytes = result.request_wire_bytes + result.response_wire_bytes;
     let configured_inflight = config.connections.saturating_mul(config.pipeline) as f64;
     let avg_latency_us = if result.completed_requests == 0 {
@@ -386,6 +428,8 @@ fn print_summary(config: &StressConfig, result: &WorkerResult, elapsed: Duration
     samples.sort_unstable();
 
     println!();
+    println!("completed_connections {}", result.completed_connections);
+    println!("connection_rate      {:.2}", connections_per_sec);
     println!("completed_requests   {}", result.completed_requests);
     println!("effective_rps        {:.2}", requests_per_sec);
     println!(
@@ -436,8 +480,14 @@ fn print_summary(config: &StressConfig, result: &WorkerResult, elapsed: Duration
     }
     println!();
     println!(
-        "profile              connections={} pipeline={} request_payload={}B elapsed={:.2}s",
-        config.connections, config.pipeline, config.payload_bytes, elapsed_secs,
+        "profile              connections={} pipeline={} requests_per_connection={} request_payload={}B elapsed={:.2}s",
+        config.connections,
+        config.pipeline,
+        config
+            .requests_per_connection
+            .map_or_else(|| "unbounded".to_owned(), |value| value.to_string()),
+        config.payload_bytes,
+        elapsed_secs,
     );
 }
 
@@ -466,4 +516,28 @@ fn format_bytes(bytes: u64) -> String {
 fn format_bytes_per_sec(bytes: u64, elapsed: Duration) -> String {
     let per_sec = bytes as f64 / elapsed.as_secs_f64().max(f64::EPSILON);
     format_bytes(per_sec.round() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_connection_churn_limit() {
+        let config = parse_args(["--requests-per-connection".into(), "1".into()])
+            .expect("churn limit should parse");
+
+        assert_eq!(config.requests_per_connection, Some(1));
+    }
+
+    #[test]
+    fn rejects_zero_connection_churn_limit() {
+        let error = parse_args(["--requests-per-connection".into(), "0".into()])
+            .expect_err("zero churn limit should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "requests per connection must be greater than zero"
+        );
+    }
 }

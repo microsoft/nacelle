@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
@@ -687,6 +688,66 @@ async fn authenticated_phase_uses_default_request_body_limit() {
         .expect("server should finish")
         .expect("server task should join");
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn fragmented_body_does_not_consume_following_frame() {
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let bodies = bodies.clone();
+            move |mut context: TcpRequestContext<PhaseProtocol>| {
+                let bodies = bodies.clone();
+                async move {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        body.extend_from_slice(&chunk?);
+                    }
+                    bodies.lock().expect("body recorder poisoned").push(body);
+                    context.respond(TcpResponse::bytes("ok")).await
+                }
+            }
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[3, b'h'])
+        .await
+        .expect("first body fragment should write");
+    tokio::task::yield_now().await;
+    client
+        .write_all(&[b'e', b'y', 0])
+        .await
+        .expect("final body fragment and following frame should write");
+
+    let mut responses = [0_u8; 4];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut responses))
+        .await
+        .expect("responses should arrive")
+        .expect("responses should read");
+    assert_eq!(&responses, b"okok");
+    assert_eq!(
+        *bodies.lock().expect("body recorder poisoned"),
+        vec![b"hey".to_vec(), Vec::new()]
+    );
+
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join")
+        .expect("connection should close cleanly");
 }
 
 #[tokio::test]
@@ -1591,6 +1652,113 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
         .shutdown()
         .await
         .expect("caller should recover and shut down borrowed I/O");
+}
+
+#[tokio::test]
+async fn by_value_connection_releases_io_and_permit_on_cancellation() {
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        ))
+        .runtime_state(runtime_state.clone())
+        .build()
+        .expect("server should build");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), server.serve_io(server_io))
+            .await
+            .is_err()
+    );
+    assert_eq!(runtime_state.active_connections(), 0);
+    let permit = runtime_state
+        .acquire_connection()
+        .expect("connection capacity should recover after cancellation");
+    drop(permit);
+
+    let mut byte = [0_u8; 1];
+    assert_eq!(
+        client
+            .read(&mut byte)
+            .await
+            .expect("owned I/O should close when serving future is dropped"),
+        0
+    );
+}
+
+#[test]
+fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
+    const MAX_FUTURE_BYTES: usize = 16 * 1024;
+
+    let (_shared_client, shared_io) = tokio::io::duplex(64);
+    let shared = serve_stream_with_connection_meta(
+        shared_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn(|context: TcpRequestContext<PhaseProtocol>| async move {
+            context.respond(TcpResponse::empty()).await
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let (_serial_client, mut serial_io) = tokio::io::duplex(64);
+    let serial = serve_serial_stream_without_connection_limit(
+        &mut serial_io,
+        Arc::new(SerialCounterProtocol),
+        Arc::new(SerialCounterHandler),
+        Arc::new(NoOneWayHandler::<SerialCounterProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let (_local_client, local_io) = tokio::io::duplex(64);
+    let local = serve_local_stream_without_connection_limit(
+        local_io,
+        Rc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        Rc::new(local_handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        )),
+        Rc::new(NoOneWayHandler::<PhaseProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let sizes = [
+        ("shared", std::mem::size_of_val(&shared)),
+        ("serial", std::mem::size_of_val(&serial)),
+        ("local", std::mem::size_of_val(&local)),
+    ];
+    println!("representative connection future sizes: {sizes:?}");
+    assert!(
+        sizes.iter().all(|(_, size)| *size < MAX_FUTURE_BYTES),
+        "representative serving future exceeded {MAX_FUTURE_BYTES} bytes: {sizes:?}"
+    );
 }
 
 struct DrainSerialHandler {
