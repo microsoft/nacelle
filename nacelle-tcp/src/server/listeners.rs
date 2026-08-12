@@ -25,6 +25,7 @@ where
     OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
+    /// Bind `addr` and serve typed TCP connections.
     pub async fn serve_tcp(&self, addr: SocketAddr) -> Result<(), NacelleError> {
         crate::runtime::serve_tcp(
             Arc::<TcpServer<P, H, OH, Observer>>::new(self.clone()),
@@ -33,6 +34,7 @@ where
         .await
     }
 
+    /// Bind `addr` and serve TCP until shutdown is requested.
     pub async fn serve_tcp_with_shutdown(
         &self,
         addr: SocketAddr,
@@ -46,6 +48,7 @@ where
         .await
     }
 
+    /// Serve TCP until shutdown with a bounded connection drain.
     pub async fn serve_tcp_with_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -61,6 +64,7 @@ where
         .await
     }
 
+    /// Bind `addr` and serve TCP with explicit stream options.
     pub async fn serve_tcp_with_options(
         &self,
         addr: SocketAddr,
@@ -74,6 +78,7 @@ where
         .await
     }
 
+    /// Serve TCP with stream options until shutdown is requested.
     pub async fn serve_tcp_with_options_and_shutdown(
         &self,
         addr: SocketAddr,
@@ -89,6 +94,7 @@ where
         .await
     }
 
+    /// Serve TCP with stream options and a bounded shutdown drain.
     pub async fn serve_tcp_with_options_and_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -125,6 +131,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Bind `path` and serve typed Unix-domain connections.
     pub async fn serve_unix(&self, path: impl AsRef<Path>) -> Result<(), NacelleError> {
         crate::runtime::serve_unix(
             Arc::<TcpServer<P, H, OH, Observer>>::new(self.clone()),
@@ -134,6 +141,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Serve a Unix-domain socket until shutdown is requested.
     pub async fn serve_unix_with_shutdown(
         &self,
         path: impl AsRef<Path>,
@@ -148,6 +156,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Serve a Unix-domain socket until shutdown with a bounded drain.
     pub async fn serve_unix_with_shutdown_timeout(
         &self,
         path: impl AsRef<Path>,
@@ -164,6 +173,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Serve a Unix-domain socket with explicit path options.
     pub async fn serve_unix_with_options(
         &self,
         path: impl AsRef<Path>,
@@ -178,6 +188,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Serve a Unix-domain socket with options until shutdown.
     pub async fn serve_unix_with_options_and_shutdown(
         &self,
         path: impl AsRef<Path>,
@@ -194,6 +205,7 @@ where
     }
 
     #[cfg(unix)]
+    /// Serve a Unix-domain socket with options and a bounded shutdown drain.
     pub async fn serve_unix_with_options_and_shutdown_timeout(
         &self,
         path: impl AsRef<Path>,
@@ -212,6 +224,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Bind `addr` and serve typed TCP connections over Rustls.
     pub async fn serve_tcp_tls(
         &self,
         addr: SocketAddr,
@@ -226,6 +239,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls TCP until shutdown is requested.
     pub async fn serve_tcp_tls_with_shutdown(
         &self,
         addr: SocketAddr,
@@ -242,6 +256,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls TCP until shutdown with a bounded connection drain.
     pub async fn serve_tcp_tls_with_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -260,6 +275,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Bind `addr` and serve typed TCP connections over OpenSSL.
     pub async fn serve_tcp_openssl(
         &self,
         addr: SocketAddr,
@@ -274,6 +290,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Serve OpenSSL TCP until shutdown is requested.
     pub async fn serve_tcp_openssl_with_shutdown(
         &self,
         addr: SocketAddr,
@@ -290,6 +307,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Serve OpenSSL TCP until shutdown with a bounded connection drain.
     pub async fn serve_tcp_openssl_with_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -308,6 +326,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Serve OpenSSL TCP with explicit stream options.
     pub async fn serve_tcp_openssl_with_options(
         &self,
         addr: SocketAddr,
@@ -324,6 +343,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Serve OpenSSL TCP with stream options until shutdown.
     pub async fn serve_tcp_openssl_with_options_and_shutdown(
         &self,
         addr: SocketAddr,
@@ -342,6 +362,7 @@ where
     }
 
     #[cfg(feature = "openssl")]
+    /// Serve OpenSSL TCP with options and a bounded shutdown drain.
     pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout(
         &self,
         addr: SocketAddr,
@@ -383,6 +404,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Bind an experimental plaintext-or-OpenSSL TCP listener.
     pub async fn serve_tcp_optional_openssl(
         &self,
         addr: SocketAddr,
@@ -397,6 +419,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Serve plaintext-or-OpenSSL TCP until shutdown.
     pub async fn serve_tcp_optional_openssl_with_shutdown(
         &self,
         addr: SocketAddr,
@@ -413,6 +436,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Serve plaintext-or-OpenSSL TCP with explicit edge options.
     pub async fn serve_tcp_optional_openssl_with_options(
         &self,
         addr: SocketAddr,
@@ -431,6 +455,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Serve optional OpenSSL detection with options and a bounded drain.
     pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         &self,
         addr: SocketAddr,

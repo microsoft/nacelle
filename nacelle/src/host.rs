@@ -200,6 +200,7 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    /// Start a typed TCP listener under this host's supervision.
     pub fn enable_tcp<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -243,6 +244,7 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    /// Start a serial TCP listener with exclusive mutable connection state.
     pub fn enable_serial_tcp<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -265,6 +267,7 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    /// Start a serial TCP listener with explicit bind options.
     pub fn enable_serial_tcp_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -312,6 +315,7 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    /// Start a typed TCP listener with explicit stream options.
     pub fn enable_tcp_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -357,6 +361,7 @@ where
     }
 
     #[cfg(feature = "tcp")]
+    /// Start a typed TCP listener with explicit bind and stream options.
     pub fn enable_tcp_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -402,6 +407,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", unix))]
+    /// Start a typed Unix-domain socket listener.
     pub fn enable_unix_socket<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -447,6 +453,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", unix))]
+    /// Start a Unix-domain socket listener with explicit path options.
     pub fn enable_unix_socket_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -494,6 +501,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", unix))]
+    /// Start a serial Unix-domain socket listener.
     pub fn enable_serial_unix_socket<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -516,6 +524,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", unix))]
+    /// Start a serial Unix-domain listener with explicit path options.
     pub fn enable_serial_unix_socket_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -565,6 +574,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "rustls"))]
+    /// Start a typed Rustls TCP listener.
     pub fn enable_tcp_tls<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -610,6 +620,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Start a typed OpenSSL TCP listener.
     pub fn enable_tcp_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -633,6 +644,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Start an OpenSSL TCP listener with explicit stream options.
     pub fn enable_tcp_openssl_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -657,6 +669,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Start an OpenSSL TCP listener with explicit bind and stream options.
     pub fn enable_tcp_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -705,6 +718,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Start a serial OpenSSL TCP listener.
     pub fn enable_serial_tcp_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -729,6 +743,7 @@ where
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
+    /// Start a serial OpenSSL TCP listener with explicit bind options.
     pub fn enable_serial_tcp_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -777,6 +792,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Start an experimental listener that accepts plaintext or OpenSSL TCP.
     pub fn enable_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -801,6 +817,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Start optional OpenSSL detection with explicit edge options.
     pub fn enable_tcp_optional_openssl_with_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -827,6 +844,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Start optional OpenSSL detection with explicit bind and detection options.
     pub fn enable_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -872,6 +890,7 @@ where
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
+    /// Start a serial listener that accepts plaintext or OpenSSL TCP.
     pub fn enable_serial_tcp_optional_openssl<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -898,6 +917,7 @@ where
 
     #[cfg(feature = "experimental-openssl-detection")]
     #[allow(clippy::too_many_arguments)]
+    /// Start serial optional OpenSSL detection with explicit edge options.
     pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, OH, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -948,6 +968,7 @@ where
     }
 
     #[cfg(feature = "http")]
+    /// Start a typed HTTP/1 listener.
     pub fn enable_http<H, F, ServerObserver>(
         &mut self,
         name: impl Into<String>,
@@ -986,6 +1007,7 @@ where
     }
 
     #[cfg(all(feature = "http", feature = "rustls"))]
+    /// Start a typed HTTP/1 listener over Rustls.
     pub fn enable_http_tls<H, F, ServerObserver>(
         &mut self,
         name: impl Into<String>,
