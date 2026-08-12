@@ -8,6 +8,7 @@ cargo_args=("$@")
 cargo hack "${command}" --workspace --each-feature --optional-deps --exclude-all-features "${cargo_args[@]}"
 cargo hack "${command}" --workspace --all-features \
     --exclude nacelle-core \
+    --exclude nacelle-openssl \
     --exclude nacelle-tcp \
     --exclude nacelle \
     "${cargo_args[@]}"
