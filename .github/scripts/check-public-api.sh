@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-baseline="${1:-62dd0c2249bda368318037058732cd3c4f1f8732}"
+baseline="${1:-428a364b9e7fd815143acd80473f60adb2ca2e38}"
 candidate="${2:-HEAD}"
 output_directory="${3:-target/public-api}"
 
@@ -15,8 +15,17 @@ if ! git diff --quiet || ! git diff --cached --quiet || [[ -n "$(git ls-files --
     exit 1
 fi
 
-baseline_commit="$(git rev-parse --verify "${baseline}^{commit}")"
-candidate_commit="$(git rev-parse --verify "${candidate}^{commit}")"
+resolve_commit() {
+    local revision="$1"
+    local description="$2"
+    git rev-parse --verify "${revision}^{commit}" 2>/dev/null || {
+        echo "public API ${description} revision is unavailable: ${revision}" >&2
+        exit 1
+    }
+}
+
+baseline_commit="$(resolve_commit "$baseline" "baseline")"
+candidate_commit="$(resolve_commit "$candidate" "candidate")"
 starting_commit="$(git rev-parse HEAD)"
 mkdir -p "$output_directory"
 
