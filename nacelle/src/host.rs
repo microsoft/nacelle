@@ -25,6 +25,53 @@ use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 
+/// Manual listener supervisor for advanced serving integrations.
+///
+/// `NacelleApp` is the primary composition API. A host is appropriate when an
+/// application must start listeners incrementally, hold the shutdown source,
+/// or choose explicitly between waiting and initiating shutdown.
+///
+/// # Serving contract
+///
+/// Every public `enable_*` method immediately configures the concrete server,
+/// spawns one listener task on the entered Tokio runtime, and returns a mutable
+/// borrow of the host. The host owns those listener tasks, one shared
+/// application-state `Arc`, runtime limits, telemetry, shutdown source, and
+/// drain deadline until [`wait`](Self::wait) or
+/// [`shutdown_and_wait`](Self::shutdown_and_wait) consumes it.
+///
+/// A listener failure requests shutdown from all other listeners. Token-aware
+/// listeners stop accepting, drain active connections until the shared
+/// deadline, and then abort remaining connection tasks. Dropping the host or a
+/// terminal future cancels supervision without guaranteeing a graceful drain.
+/// Process-wide limits come from [`NacelleRuntimeState`]; concrete servers
+/// retain their TCP or HTTP limits and policy.
+///
+/// Plain TCP and Unix listeners require `tcp`; HTTP/1 requires `http`; Rustls
+/// listeners require `rustls`; and OpenSSL listeners require `openssl`. Unix
+/// listeners are available only on Unix. Features prefixed with
+/// `experimental-` are outside the supported `0.3` contract.
+///
+/// # Errors
+///
+/// Terminal methods return listener bind, accept, transport, resource-limit,
+/// timeout, or supervised-task errors as [`NacelleError`]. Match variants and
+/// reason enums rather than parsing display text.
+///
+/// # Panics
+///
+/// Constructors are runtime-independent, but every `enable_*` method spawns a
+/// Tokio task and may panic unless called while a Tokio runtime is entered.
+/// Application-handler panics are supervised task failures; panic-abort builds
+/// terminate instead of unwinding.
+///
+/// # Example
+///
+/// Run the manual-host TCP echo application from the workspace root:
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin manual_host
+/// ```
 pub struct NacelleHost<Observer = NoopObserver, AppState = ()> {
     telemetry: NacelleTelemetry<Observer>,
     app_state: Arc<AppState>,
@@ -41,6 +88,7 @@ impl Default for NacelleHost<NoopObserver, ()> {
 }
 
 impl NacelleHost<NoopObserver, ()> {
+    /// Create a host with default telemetry, limits, and shutdown policy.
     pub fn new() -> Self {
         Self {
             telemetry: NacelleTelemetry::default(),
@@ -116,30 +164,36 @@ where
         self.app_state.as_ref()
     }
 
+    /// Replace the process-wide limits used by every enabled listener.
     pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
         self.runtime_state = NacelleRuntimeState::new(limits);
         self
     }
 
+    /// Replace the process-wide runtime state used by every enabled listener.
     pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
         self.runtime_state = runtime_state;
         self
     }
 
+    /// Return a token that observes this host's shutdown source.
     pub fn shutdown_token(&self) -> NacelleShutdownToken {
         self.shutdown.token()
     }
 
+    /// Replace the process-wide shutdown source.
     pub fn with_shutdown(mut self, shutdown: NacelleShutdown) -> Self {
         self.shutdown = shutdown;
         self
     }
 
+    /// Request shutdown without waiting for listener or connection tasks.
     pub fn shutdown(&self) {
         self.telemetry.shutdown_requested();
         self.shutdown.shutdown();
     }
 
+    /// Set the shared graceful-shutdown drain timeout.
     pub fn with_shutdown_drain_timeout(self, drain_timeout: std::time::Duration) -> Self {
         self.drain_deadline.set(drain_timeout);
         self
@@ -976,6 +1030,12 @@ where
         self
     }
 
+    /// Wait until every listener exits, requesting shutdown on the first failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first listener or supervised-task error after requesting
+    /// shutdown from the remaining listeners.
     pub async fn wait(mut self) -> Result<(), NacelleError> {
         let mut first_error = None;
         while let Some(result) = self.tasks.join_next().await {
@@ -993,11 +1053,23 @@ where
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Request shutdown and wait up to the configured default drain timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns a listener or task error, or `ShutdownDrain` when active
+    /// connections remain after the timeout.
     pub async fn shutdown_and_wait(self) -> Result<(), NacelleError> {
         self.shutdown_and_wait_timeout(std::time::Duration::from_secs(30))
             .await
     }
 
+    /// Request shutdown and wait up to `drain_timeout` for all work to finish.
+    ///
+    /// # Errors
+    ///
+    /// Returns a listener or task error, or `ShutdownDrain` when active
+    /// connections remain after `drain_timeout`.
     pub async fn shutdown_and_wait_timeout(
         mut self,
         drain_timeout: std::time::Duration,

@@ -46,6 +46,11 @@ path = "src/bin/echo.rs"
 required-features = ["tcp"]
 
 [[bin]]
+name = "manual_host"
+path = "src/bin/manual_host.rs"
+required-features = ["tcp"]
+
+[[bin]]
 name = "app_core"
 path = "src/bin/app_core.rs"
 required-features = ["tcp"]

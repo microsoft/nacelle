@@ -34,6 +34,50 @@ type ListenerInstaller<Observer, AppState> =
 /// Listener registrations may erase their concrete startup closure type, but
 /// each transport retains its concrete protocol, handler, and responder types
 /// after installation. No listener registry participates in request dispatch.
+///
+/// # Serving contract
+///
+/// Every public listener-registration method on this type follows this
+/// contract unless the method documents a narrower requirement:
+///
+/// - The app owns its application state, runtime state, telemetry, shutdown
+///   source, and registered server values. Registration does not bind sockets
+///   or spawn tasks; [`run`](Self::run) installs every listener into one
+///   [`NacelleHost`] and owns that host until completion.
+/// - A listener failure requests process-wide shutdown. Shutdown-aware
+///   listeners stop accepting, drain active connections for the configured
+///   timeout, and then abort remaining connection tasks. Dropping the `run`
+///   future cancels supervision without guaranteeing that drain sequence.
+/// - Process-wide connection, per-peer, request, streaming-task, body-size,
+///   and optional memory limits come from [`NacelleRuntimeState`]. Concrete TCP
+///   and HTTP servers retain their transport limits and policy.
+/// - Plain TCP and Unix listeners require `tcp`; HTTP/1 requires `http`;
+///   Rustls listeners require `rustls`; and OpenSSL listeners require
+///   `openssl`. Unix listeners are available only on Unix. Features prefixed
+///   with `experimental-` are outside the supported `0.3` contract.
+///
+/// # Errors
+///
+/// [`run`](Self::run) returns the first listener bind, accept, transport,
+/// resource-limit, timeout, or supervised-task error after requesting shutdown
+/// from the remaining listeners. Match [`NacelleError`] variants and reason
+/// enums rather than parsing their display text.
+///
+/// # Panics
+///
+/// `run` and Ctrl-C handling must execute inside an entered Tokio runtime.
+/// Tokio may panic if they are polled without one. Nacelle does not otherwise
+/// intentionally panic for peer or configuration input. Application-handler
+/// panics are supervised task failures; panic-abort builds terminate instead
+/// of unwinding.
+///
+/// # Example
+///
+/// Run the typed TCP echo application from the workspace root:
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin echo
+/// ```
 pub struct NacelleApp<Observer = NoopObserver, AppState = ()> {
     telemetry: NacelleTelemetry<Observer>,
     app_state: Arc<AppState>,
@@ -732,6 +776,17 @@ where
     }
 
     /// Install all listeners and run until shutdown or listener failure.
+    ///
+    /// This is the terminal operation for the [`NacelleApp`] serving contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first listener or supervised-task error after requesting
+    /// shutdown from the remaining listeners.
+    ///
+    /// # Panics
+    ///
+    /// Tokio may panic if this future is polled outside an entered runtime.
     pub async fn run(self) -> Result<(), NacelleError> {
         let ctrl_c_task = self
             .ctrl_c_shutdown
