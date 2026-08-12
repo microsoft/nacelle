@@ -257,11 +257,11 @@ impl NacelleError {
             Self::Timeout(NacelleTimeoutReason::HttpHeaders) => {
                 Some("raise NacelleHttpLimits::header_read_timeout or reject slow header clients")
             }
-            Self::Timeout(NacelleTimeoutReason::HttpBodyRead) => {
-                Some("raise NacelleHttpLimits::body_read_timeout or reject slow request bodies")
-            }
+            Self::Timeout(NacelleTimeoutReason::HttpBodyRead) => Some(
+                "raise NacelleHttpLimits::request_body_read_timeout or reject slow request bodies",
+            ),
             Self::Timeout(NacelleTimeoutReason::HttpBodyWrite) => {
-                Some("raise NacelleHttpLimits::body_write_timeout or fix slow response readers")
+                Some("raise NacelleHttpLimits::response_write_timeout or fix slow response readers")
             }
             Self::Timeout(_) => Some("adjust the matching Nacelle timeout limit"),
             Self::Io(_) | Self::Protocol(_) | Self::Handler(_) | Self::Join(_) => None,
@@ -377,6 +377,25 @@ mod tests {
             error.hint(),
             Some("raise NacelleTcpLimits::shutdown_timeout or fix slow connection shutdown")
         );
+    }
+
+    #[cfg(feature = "error-hints")]
+    #[test]
+    fn http_body_timeouts_use_http_limit_field_names() {
+        let cases = [
+            (
+                NacelleTimeoutReason::HttpBodyRead,
+                "raise NacelleHttpLimits::request_body_read_timeout or reject slow request bodies",
+            ),
+            (
+                NacelleTimeoutReason::HttpBodyWrite,
+                "raise NacelleHttpLimits::response_write_timeout or fix slow response readers",
+            ),
+        ];
+
+        for (reason, expected) in cases {
+            assert_eq!(NacelleError::Timeout(reason).hint(), Some(expected));
+        }
     }
 
     #[cfg(all(feature = "error-hints", feature = "experimental-memory"))]
