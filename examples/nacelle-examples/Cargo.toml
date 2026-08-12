@@ -66,6 +66,11 @@ path = "src/bin/http_echo.rs"
 required-features = ["http"]
 
 [[bin]]
+name = "direct_http"
+path = "src/bin/direct_http.rs"
+required-features = ["http"]
+
+[[bin]]
 name = "memory_guard"
 path = "src/bin/memory_guard.rs"
 required-features = ["http", "experimental-memory"]

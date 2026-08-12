@@ -128,6 +128,40 @@ where
     }
 }
 
+/// Shared-runtime HTTP/1 server and listener owner.
+///
+/// The server owns its handler, connection-state factory, process-wide runtime
+/// state, HTTP limits and policy, telemetry, and listener label. Serving methods
+/// consume the server and either bind or consume one listener. Each accepted
+/// connection runs in a supervised task. Cancelling a serving future drops the
+/// listener without guaranteeing a graceful connection drain.
+///
+/// Shutdown-aware methods stop accepting when the token changes, drain active
+/// connections for the configured timeout, and then abort remaining tasks.
+/// Request admission and body limits come from [`NacelleRuntimeState`]; HTTP
+/// timeouts and edge policy come from [`NacelleHttpLimits`] and
+/// [`NacelleHttpPolicy`]. HTTP serving requires the facade's `http` feature;
+/// TLS methods additionally require `rustls`.
+///
+/// # Errors
+///
+/// Serving returns [`NacelleError`] for bind, accept, TLS configuration or
+/// handshake, timeout, resource-limit, and shutdown failures. Connection-local
+/// HTTP or handler failures are reported through telemetry and do not normally
+/// stop the listener.
+///
+/// # Panics
+///
+/// Serving futures must be polled inside a Tokio runtime. Nacelle does not
+/// intentionally panic for peer or configuration input. Application-handler
+/// panics are supervised task failures; panic-abort builds terminate instead
+/// of unwinding.
+///
+/// # Example
+///
+/// ```text
+/// cargo run -p nacelle-examples --bin direct_http --no-default-features --features http
+/// ```
 pub struct HyperServer<H = (), F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Arc<H>,
     connection_state_factory: Arc<F>,
@@ -169,6 +203,14 @@ where
 }
 
 /// Worker-local HTTP/1 server for explicit thread-per-core execution.
+///
+/// This is the `Rc`-backed counterpart to [`HyperServer`]. It owns a supplied
+/// listener and spawns every accepted connection locally, so its serving
+/// methods must run inside a Tokio [`tokio::task::LocalSet`] on the owning
+/// worker. Shutdown, errors, limits, and cancellation otherwise follow the
+/// [`HyperServer`] contract. Worker-local execution requires the facade's
+/// `experimental-thread-per-core` feature and is outside the supported `0.3`
+/// contract.
 pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Rc<H>,
     connection_state_factory: Rc<F>,
@@ -620,11 +662,13 @@ where
         self
     }
 
+    /// Bind `addr` and serve HTTP/1 connections until failure or cancellation.
     pub async fn serve(self, addr: SocketAddr) -> Result<(), NacelleError> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         self.serve_listener(listener).await
     }
 
+    /// Bind `addr` and serve HTTP/1 connections until shutdown is requested.
     pub async fn serve_with_shutdown(
         self,
         addr: SocketAddr,
@@ -634,6 +678,7 @@ where
             .await
     }
 
+    /// Bind `addr`, serve until shutdown, and use a bounded connection drain.
     pub async fn serve_with_shutdown_timeout(
         self,
         addr: SocketAddr,
@@ -656,6 +701,7 @@ where
             .await
     }
 
+    /// Serve HTTP/1 connections from an owned, pre-bound listener.
     pub async fn serve_listener(
         self,
         listener: tokio::net::TcpListener,
@@ -664,6 +710,7 @@ where
         self.serve_listener_with_shutdown(listener, token).await
     }
 
+    /// Serve a pre-bound HTTP/1 listener until shutdown is requested.
     pub async fn serve_listener_with_shutdown(
         self,
         listener: tokio::net::TcpListener,
@@ -673,6 +720,7 @@ where
             .await
     }
 
+    /// Serve a pre-bound listener until shutdown with a bounded drain.
     pub async fn serve_listener_with_shutdown_timeout(
         self,
         listener: tokio::net::TcpListener,
@@ -749,6 +797,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Bind `addr` and serve HTTP/1 connections over Rustls.
     pub async fn serve_tls(
         self,
         addr: SocketAddr,
@@ -759,6 +808,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Bind `addr` and serve Rustls HTTP/1 until shutdown is requested.
     pub async fn serve_tls_with_shutdown(
         self,
         addr: SocketAddr,
@@ -770,6 +820,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls HTTP/1 until shutdown with a bounded connection drain.
     pub async fn serve_tls_with_shutdown_timeout(
         self,
         addr: SocketAddr,
@@ -788,6 +839,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve Rustls HTTP/1 from an owned, pre-bound listener.
     pub async fn serve_tls_listener(
         self,
         listener: tokio::net::TcpListener,
@@ -799,6 +851,7 @@ where
     }
 
     #[cfg(feature = "rustls")]
+    /// Serve a pre-bound Rustls HTTP/1 listener until shutdown.
     pub async fn serve_tls_listener_with_shutdown(
         self,
         listener: tokio::net::TcpListener,
