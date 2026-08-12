@@ -81,5 +81,10 @@ path = "src/bin/dual_echo.rs"
 required-features = ["tcp", "http"]
 
 [[bin]]
+name = "compiler-pressure"
+path = "src/bin/compiler_pressure.rs"
+required-features = ["tcp", "http", "tls-self-signed"]
+
+[[bin]]
 name = "line_codec"
 path = "src/bin/line_codec.rs"

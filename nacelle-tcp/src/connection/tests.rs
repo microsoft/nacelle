@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
@@ -1591,6 +1592,73 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
         .shutdown()
         .await
         .expect("caller should recover and shut down borrowed I/O");
+}
+
+#[test]
+fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
+    const MAX_FUTURE_BYTES: usize = 16 * 1024;
+
+    let (_shared_client, shared_io) = tokio::io::duplex(64);
+    let shared = serve_stream_with_connection_meta(
+        shared_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn(|context: TcpRequestContext<PhaseProtocol>| async move {
+            context.respond(TcpResponse::empty()).await
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let (_serial_client, mut serial_io) = tokio::io::duplex(64);
+    let serial = serve_serial_stream_without_connection_limit(
+        &mut serial_io,
+        Arc::new(SerialCounterProtocol),
+        Arc::new(SerialCounterHandler),
+        Arc::new(NoOneWayHandler::<SerialCounterProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let (_local_client, local_io) = tokio::io::duplex(64);
+    let local = serve_local_stream_without_connection_limit(
+        local_io,
+        Rc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        Rc::new(local_handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::empty()).await
+            },
+        )),
+        Rc::new(NoOneWayHandler::<PhaseProtocol>::new()),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        crate::limits::NacelleTcpLimits::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    let sizes = [
+        ("shared", std::mem::size_of_val(&shared)),
+        ("serial", std::mem::size_of_val(&serial)),
+        ("local", std::mem::size_of_val(&local)),
+    ];
+    println!("representative connection future sizes: {sizes:?}");
+    assert!(
+        sizes.iter().all(|(_, size)| *size < MAX_FUTURE_BYTES),
+        "representative serving future exceeded {MAX_FUTURE_BYTES} bytes: {sizes:?}"
+    );
 }
 
 struct DrainSerialHandler {
