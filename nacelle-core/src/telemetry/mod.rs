@@ -24,6 +24,12 @@ fn register_metric_descriptions() {
         metrics::Unit::Bytes,
         "Response body size"
     );
+    #[cfg(feature = "experimental-memory")]
+    metrics::describe_gauge!(
+        "nacelle.memory.usage",
+        metrics::Unit::Bytes,
+        "Runtime memory usage"
+    );
 }
 
 #[derive(Clone)]
@@ -597,10 +603,10 @@ where
                 .request_duration(status)
                 .record(elapsed.as_secs_f64());
         }
-        if request_metrics.byte_counts && request_bytes != 0 {
+        if request_metrics.byte_counts {
             context.request_bytes(status).record(request_bytes as f64);
         }
-        if request_metrics.byte_counts && response_bytes != 0 {
+        if request_metrics.byte_counts {
             context.response_bytes(status).record(response_bytes as f64);
         }
         if request_metrics.in_flight {
@@ -615,7 +621,13 @@ where
         response_bytes: usize,
         elapsed: Duration,
     ) {
-        self.request_completed_inner(transport, request_bytes, response_bytes, elapsed, true);
+        self.request_completed_inner(
+            transport,
+            request_bytes,
+            Some(response_bytes),
+            elapsed,
+            true,
+        );
     }
 
     #[doc(hidden)]
@@ -626,14 +638,30 @@ where
         response_bytes: usize,
         elapsed: Duration,
     ) {
-        self.request_completed_inner(transport, request_bytes, response_bytes, elapsed, false);
+        self.request_completed_inner(
+            transport,
+            request_bytes,
+            Some(response_bytes),
+            elapsed,
+            false,
+        );
+    }
+
+    #[doc(hidden)]
+    pub fn request_completed_without_response_body_metrics(
+        &self,
+        transport: NacelleTransport,
+        request_bytes: usize,
+        elapsed: Duration,
+    ) {
+        self.request_completed_inner(transport, request_bytes, None, elapsed, true);
     }
 
     fn request_completed_inner(
         &self,
         transport: NacelleTransport,
         request_bytes: usize,
-        response_bytes: usize,
+        response_bytes: Option<usize>,
         elapsed: Duration,
         emit_metrics: bool,
     ) {
@@ -641,7 +669,7 @@ where
             target: "nacelle",
             transport = transport.as_str(),
             request_bytes,
-            response_bytes,
+            response_bytes = response_bytes.unwrap_or_default(),
             elapsed_us = elapsed.as_micros() as u64,
             "request completed"
         );
@@ -670,15 +698,13 @@ where
             .record(elapsed.as_secs_f64());
         }
         if emit_metrics && request_metrics.byte_counts {
-            if request_bytes != 0 {
-                metrics::histogram!(
-                    "nacelle.request.body.size",
-                    "transport" => transport.as_str(),
-                    "status" => "ok"
-                )
-                .record(request_bytes as f64);
-            }
-            if response_bytes != 0 {
+            metrics::histogram!(
+                "nacelle.request.body.size",
+                "transport" => transport.as_str(),
+                "status" => "ok"
+            )
+            .record(request_bytes as f64);
+            if let Some(response_bytes) = response_bytes {
                 metrics::histogram!(
                     "nacelle.response.body.size",
                     "transport" => transport.as_str(),
@@ -858,9 +884,6 @@ where
     }
 
     pub fn response_body_bytes(&self, transport: NacelleTransport, bytes: usize) {
-        if bytes == 0 {
-            return;
-        }
         self.record(NacelleTelemetryEvent {
             kind: NacelleTelemetryEventKind::ResponseBodyBytes,
             transport: Some(transport),
@@ -1056,8 +1079,8 @@ mod tests {
             telemetry.request_finished_with_context(
                 &context,
                 "ok",
-                4,
-                8,
+                0,
+                0,
                 Duration::from_millis(250),
             );
             telemetry.request_failed(
@@ -1065,6 +1088,16 @@ mod tests {
                 Duration::from_millis(500),
                 &crate::error::NacelleError::Timeout(crate::error::NacelleTimeoutReason::Handler),
             );
+            #[cfg(feature = "experimental-memory")]
+            {
+                let runtime_state = crate::limits::NacelleRuntimeState::new(
+                    crate::limits::NacelleLimits::default().with_max_memory_bytes(16),
+                );
+                telemetry.register_runtime_state(runtime_state.clone());
+                let _allocation = runtime_state
+                    .allocate_memory(1)
+                    .expect("memory allocation should succeed");
+            }
         });
 
         let snapshot = snapshotter.snapshot().into_vec();
@@ -1100,6 +1133,40 @@ mod tests {
         assert_eq!(units["nacelle.request.duration"], Some(&Unit::Seconds));
         assert_eq!(units["nacelle.request.body.size"], Some(&Unit::Bytes));
         assert_eq!(units["nacelle.response.body.size"], Some(&Unit::Bytes));
+        #[cfg(feature = "experimental-memory")]
+        assert_eq!(
+            snapshot
+                .iter()
+                .find(|(key, _, _, value)| {
+                    key.key().name() == "nacelle.memory.usage"
+                        && matches!(value, DebugValue::Gauge(_))
+                })
+                .and_then(|(_, unit, _, _)| unit.as_ref()),
+            Some(&Unit::Bytes)
+        );
+    }
+
+    #[test]
+    fn request_completion_can_defer_response_body_metrics() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            NacelleTelemetry::default().request_completed_without_response_body_metrics(
+                NacelleTransport::new("http"),
+                0,
+                Duration::from_millis(1),
+            );
+        });
+
+        let names: HashSet<_> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .map(|(key, _, _, _)| key.key().name().to_owned())
+            .collect();
+        assert!(names.contains("nacelle.request.body.size"));
+        assert!(!names.contains("nacelle.response.body.size"));
     }
 
     #[test]

@@ -1075,7 +1075,7 @@ where
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Request shutdown and wait up to the configured default drain timeout.
+    /// Request shutdown and wait for up to 30 seconds.
     ///
     /// # Errors
     ///

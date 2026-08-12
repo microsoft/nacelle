@@ -17,8 +17,9 @@ an observable metrics-schema correction required another prerelease.
   response body sizes are histograms rather than cumulative counters.
 - Add an enforced dependency policy for advisories, licenses, sources,
   wildcard requirements, and duplicate versions.
-- Preserve RC.1 Rust APIs, wire behavior, resource-limit defaults, timeout
-  defaults, and graph-wide TLS backend exclusivity.
+- Preserve RC.1 Rust APIs, resource-limit defaults, timeout defaults, and
+  graph-wide TLS backend exclusivity. Oversized declared HTTP request bodies are
+  now rejected with `413 Payload Too Large` before handler dispatch.
 
 Metric consumers must follow
 [Migrate from 0.3.0-rc.1 to 0.3.0-rc.2](../how-to/migrate-rc-2.md).

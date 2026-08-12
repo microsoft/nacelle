@@ -1137,12 +1137,12 @@ where
                         reason: None,
                     });
                 }
-                self.telemetry.request_completed(
-                    NacelleTransport::new("http"),
-                    request_bytes,
-                    0,
-                    elapsed_since(request_started),
-                );
+                self.telemetry
+                    .request_completed_without_response_body_metrics(
+                        NacelleTransport::new("http"),
+                        request_bytes,
+                        elapsed_since(request_started),
+                    );
                 response
             }
             Err(error) => {
@@ -1169,12 +1169,12 @@ where
                         reason: Some("handler"),
                     });
                 }
-                self.telemetry.request_completed(
-                    NacelleTransport::new("http"),
-                    request_bytes,
-                    0,
-                    elapsed_since(request_started),
-                );
+                self.telemetry
+                    .request_completed_without_response_body_metrics(
+                        NacelleTransport::new("http"),
+                        request_bytes,
+                        elapsed_since(request_started),
+                    );
                 response
             }
         }

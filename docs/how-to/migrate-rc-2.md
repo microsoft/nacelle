@@ -9,10 +9,12 @@ nacelle = { version = "=0.3.0-rc.2" }
 A broad `0.3` requirement does not select Cargo prereleases. Keep the same
 feature set that was validated with RC.1.
 
-RC.2 preserves the Rust API, wire behavior, limits, timeout defaults, and TLS
-feature relationships from RC.1. It adds compiler-pressure and correctness
-regressions and changes the emitted metrics schema. Applications that do not
-consume Nacelle metrics need no source migration.
+RC.2 preserves the Rust API, limits, timeout defaults, and TLS feature
+relationships from RC.1. It adds compiler-pressure and correctness regressions,
+changes the emitted metrics schema, and rejects oversized declared HTTP request
+bodies with `413 Payload Too Large` before handler dispatch. Applications that
+do not consume Nacelle metrics and do not rely on handling those oversized
+requests need no source migration.
 
 ## Update metric names
 
