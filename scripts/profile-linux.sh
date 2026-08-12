@@ -15,6 +15,7 @@ BYTE_METRICS="false"
 TLS_INSECURE="false"
 CONNECTIONS="256"
 PIPELINE="8"
+REQUESTS_PER_CONNECTION=""
 WARMUP_SECS="5"
 DURATION_SECS="10"
 PAYLOAD_BYTES="256"
@@ -43,6 +44,7 @@ Options:
     --tls-insecure
   --connections N
   --pipeline N
+    --requests-per-connection N
   --warmup-secs N
   --duration-secs N
   --payload-bytes N
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --tls-insecure) TLS_INSECURE="true"; shift ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
         --pipeline) PIPELINE="$2"; shift 2 ;;
+        --requests-per-connection) REQUESTS_PER_CONNECTION="$2"; shift 2 ;;
         --warmup-secs) WARMUP_SECS="$2"; shift 2 ;;
         --duration-secs) DURATION_SECS="$2"; shift 2 ;;
         --payload-bytes) PAYLOAD_BYTES="$2"; shift 2 ;;
@@ -123,6 +126,10 @@ esac
 
 if [[ "$TLS_INSECURE" == "true" && "$FEATURE_SET" != "default" ]]; then
     echo "--tls-insecure requires --feature-set default so the client includes Rustls" >&2
+    exit 2
+fi
+if [[ -n "$REQUESTS_PER_CONNECTION" && "$TLS_INSECURE" == "true" ]]; then
+    echo "--requests-per-connection does not support TLS" >&2
     exit 2
 fi
 if [[ "$TOOL" == "heaptrack" && "$FEATURE_SET" == "default" ]]; then
@@ -196,6 +203,7 @@ fi
     echo "tls_insecure=$TLS_INSECURE"
     echo "connections=$CONNECTIONS"
     echo "pipeline=$PIPELINE"
+    echo "requests_per_connection=${REQUESTS_PER_CONNECTION:-unbounded}"
     echo "warmup_secs=$WARMUP_SECS"
     echo "duration_secs=$DURATION_SECS"
     echo "payload_bytes=$PAYLOAD_BYTES"
@@ -299,6 +307,9 @@ run_client() {
     )
     if [[ "$TLS_INSECURE" == "true" ]]; then
         command+=(--tls-insecure)
+    fi
+    if [[ -n "$REQUESTS_PER_CONNECTION" ]]; then
+        command+=(--requests-per-connection "$REQUESTS_PER_CONNECTION")
     fi
     if [[ -n "$CLIENT_CPUS" ]]; then
         command=(taskset -c "$CLIENT_CPUS" "${command[@]}")

@@ -86,6 +86,21 @@ CI-friendly scenarios should stay short and deterministic:
 - slow writer
 - graceful shutdown under load
 
+For plain-TCP connection churn, cap each connection at one request and use
+pipeline depth 1:
+
+```bash
+cargo run --release --package nacelle-stress-test -- \
+  --connections 64 \
+  --pipeline 1 \
+  --requests-per-connection 1 \
+  --duration-secs 30
+```
+
+The summary reports `completed_connections` and `connection_rate`. Churn mode
+does not currently support TLS; use the persistent TLS profile for transport
+throughput and latency evidence.
+
 Heavy RPS and soak tests should run manually or nightly on dedicated Linux hosts.
 
 For response-delivery comparisons, the stress server accepts
