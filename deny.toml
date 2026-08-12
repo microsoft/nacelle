@@ -1,0 +1,38 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+skip = [
+    { crate = "getrandom@0.2.17", reason = "ring still uses getrandom 0.2 while the rest of the graph has moved to 0.3" },
+    { crate = "getrandom@0.4.3", reason = "jobserver's build-time dependency has moved to getrandom 0.4 ahead of the rand ecosystem" },
+    { crate = "hashbrown@0.16.1", reason = "metrics-util currently resolves both its direct hashbrown dependency and indexmap's newer hashbrown" },
+    { crate = "r-efi@5.3.0", reason = "getrandom 0.3 and 0.4 use consecutive WASI support generations" },
+    { crate = "windows-sys@0.52.0", reason = "ring retains windows-sys 0.52 while the rest of the graph uses 0.61" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

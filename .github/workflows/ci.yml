@@ -44,6 +44,18 @@ jobs:
       - name: Audit
         run: cargo audit
 
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Check advisories, licenses, bans, and sources
+        run: cargo deny check
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest
