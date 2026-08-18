@@ -16,15 +16,16 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind,
+    NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::protocol::{
     DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
-    LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol, SerialTcpHandler,
-    SerialTcpOneWayContext, SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext,
-    TcpRequestContext, TcpResponse,
+    LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol, ResponseAbortReason,
+    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpOneWayContext,
+    SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext, TcpRequestContext,
+    TcpResponse,
 };
 use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::TcpServer;
@@ -2454,4 +2455,650 @@ async fn local_serial_listener_serves_non_send_state_and_drains() {
             assert_eq!(runtime_state.active_connections(), 0);
         })
         .await;
+}
+
+/// Owned copy of a delivery outcome captured by a test completion item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CapturedOutcome {
+    Delivered {
+        encoded_wire_bytes: usize,
+        written_wire_bytes: usize,
+    },
+    Failed {
+        phase: ResponseDeliveryPhase,
+        encoded_wire_bytes: usize,
+        written_wire_bytes: usize,
+    },
+    Aborted {
+        reason: ResponseAbortReason,
+        encoded_wire_bytes: usize,
+        written_wire_bytes: usize,
+    },
+}
+
+fn capture_outcome(outcome: ResponseDeliveryOutcome<'_>) -> CapturedOutcome {
+    match outcome {
+        ResponseDeliveryOutcome::Delivered {
+            encoded_wire_bytes,
+            written_wire_bytes,
+        } => CapturedOutcome::Delivered {
+            encoded_wire_bytes,
+            written_wire_bytes,
+        },
+        ResponseDeliveryOutcome::Failed {
+            phase,
+            encoded_wire_bytes,
+            written_wire_bytes,
+            ..
+        } => CapturedOutcome::Failed {
+            phase,
+            encoded_wire_bytes,
+            written_wire_bytes,
+        },
+        ResponseDeliveryOutcome::Aborted {
+            reason,
+            encoded_wire_bytes,
+            written_wire_bytes,
+        } => CapturedOutcome::Aborted {
+            reason,
+            encoded_wire_bytes,
+            written_wire_bytes,
+        },
+    }
+}
+
+/// Reads one valid request byte, then fails every write with a broken pipe.
+struct RequestThenWriteFailIo {
+    request_read: bool,
+}
+
+impl AsyncRead for RequestThenWriteFailIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.request_read {
+            buf.put_slice(&[0]);
+            self.request_read = true;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for RequestThenWriteFailIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test response write failure",
+        )))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Reads one valid request byte, then leaves every write pending forever.
+struct RequestThenPendingWriteIo {
+    request_read: bool,
+}
+
+impl AsyncRead for RequestThenPendingWriteIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.request_read {
+            buf.put_slice(&[0]);
+            self.request_read = true;
+            return Poll::Ready(Ok(()));
+        }
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for RequestThenPendingWriteIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Pending
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+/// Reads one valid request byte, accepts every write, then fails every flush.
+struct RequestThenFlushFailIo {
+    request_read: bool,
+}
+
+impl AsyncRead for RequestThenFlushFailIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.request_read {
+            buf.put_slice(&[0]);
+            self.request_read = true;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for RequestThenFlushFailIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test response flush failure",
+        )))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Drives one required-response request whose handler attaches a completion
+/// item, returning the connection result and the captured outcomes.
+async fn run_success_completion(
+    policy: ResponseWritePolicy,
+    metrics_enabled: bool,
+) -> (Result<(), NacelleError>, Vec<CapturedOutcome>, usize) {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let telemetry = if metrics_enabled {
+        NacelleTelemetry::default()
+    } else {
+        NacelleTelemetry::default().with_metrics(false)
+    };
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("ok"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_response_write_policy(policy),
+        telemetry,
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[0]).await.expect("request should write");
+    client.shutdown().await.expect("request side should close");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        .await
+        .expect("connection should close")
+        .expect("response should read");
+    assert_eq!(response, b"ok");
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    let captured = outcomes.lock().expect("outcome recorder poisoned").clone();
+    let count = calls.load(Ordering::SeqCst);
+    (result, captured, count)
+}
+
+#[tokio::test]
+async fn completion_item_runs_once_after_successful_delivery() {
+    let (result, outcomes, calls) =
+        run_success_completion(ResponseWritePolicy::Immediate, true).await;
+
+    assert!(result.is_ok());
+    assert_eq!(calls, 1);
+    assert_eq!(
+        outcomes,
+        vec![CapturedOutcome::Delivered {
+            encoded_wire_bytes: 2,
+            written_wire_bytes: 2,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn completion_item_completes_across_write_policies() {
+    for policy in [
+        ResponseWritePolicy::Immediate,
+        ResponseWritePolicy::CoalesceBuffered,
+        ResponseWritePolicy::FlushAtBytes(1),
+    ] {
+        let (result, outcomes, calls) = run_success_completion(policy, true).await;
+        assert!(result.is_ok(), "policy {policy:?} should deliver");
+        assert_eq!(calls, 1, "policy {policy:?} should complete once");
+        assert_eq!(
+            outcomes,
+            vec![CapturedOutcome::Delivered {
+                encoded_wire_bytes: 2,
+                written_wire_bytes: 2,
+            }],
+            "policy {policy:?} should report the same delivery facts"
+        );
+    }
+}
+
+#[tokio::test]
+async fn completion_item_runs_with_metrics_disabled() {
+    let (result, outcomes, calls) =
+        run_success_completion(ResponseWritePolicy::Immediate, false).await;
+
+    assert!(result.is_ok());
+    assert_eq!(calls, 1);
+    assert_eq!(
+        outcomes,
+        vec![CapturedOutcome::Delivered {
+            encoded_wire_bytes: 2,
+            written_wire_bytes: 2,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn completion_item_reports_encode_failure_phase() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (mut client, server_io) = tokio::io::duplex(8);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: true,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("partial"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[0]).await.expect("request should write");
+    client.shutdown().await.expect("request side should close");
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response)).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(matches!(
+        result,
+        Err(NacelleError::InvalidFrame("test response encoder"))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Failed {
+            phase: ResponseDeliveryPhase::Encode,
+            encoded_wire_bytes: 0,
+            written_wire_bytes: 0,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn completion_item_reports_socket_write_failure_phase() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        RequestThenWriteFailIo {
+            request_read: false,
+        },
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("ok"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_response_write_policy(ResponseWritePolicy::Immediate),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Failed {
+            phase: ResponseDeliveryPhase::SocketWrite,
+            encoded_wire_bytes: 2,
+            written_wire_bytes: 0,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn completion_item_reports_socket_flush_failure_phase() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        RequestThenFlushFailIo {
+            request_read: false,
+        },
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("ok"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_response_write_policy(ResponseWritePolicy::Immediate),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Failed {
+            phase: ResponseDeliveryPhase::SocketFlush,
+            encoded_wire_bytes: 2,
+            written_wire_bytes: 2,
+        }]
+    );
+}
+
+/// Records an ordered marker whenever a `RequestCompleted` event is observed.
+#[derive(Clone)]
+struct OrderingObserver {
+    log: Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+impl NacelleTelemetryObserver for OrderingObserver {
+    fn record(&self, event: nacelle_core::telemetry::NacelleTelemetryEvent) {
+        if event.kind == NacelleTelemetryEventKind::RequestCompleted {
+            self.log
+                .lock()
+                .expect("ordering log poisoned")
+                .push("request_completed");
+        }
+    }
+}
+
+#[tokio::test]
+async fn completion_item_runs_before_request_completed_event() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observer = OrderingObserver { log: log.clone() };
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let log = log.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let log = log.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("ok"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |_outcome| {
+                                    log.lock()
+                                        .expect("ordering log poisoned")
+                                        .push("completion_item");
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_response_write_policy(ResponseWritePolicy::Immediate),
+        NacelleTelemetry::default().with_observer(observer),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[0]).await.expect("request should write");
+    client.shutdown().await.expect("request side should close");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        .await
+        .expect("connection should close")
+        .expect("response should read");
+    assert_eq!(response, b"ok");
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_ok());
+    assert_eq!(
+        log.lock().expect("ordering log poisoned").clone(),
+        vec!["completion_item", "request_completed"],
+    );
+}
+
+#[tokio::test]
+async fn completion_item_runs_on_cancellation() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = serve_stream_with_connection_meta(
+        RequestThenPendingWriteIo {
+            request_read: false,
+        },
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                async move {
+                    context
+                        .respond(TcpResponse::bytes("ok"))
+                        .await
+                        .map(move |completion| {
+                            completion.map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            })
+                        })
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_response_write_policy(ResponseWritePolicy::Immediate),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    );
+
+    // The delivery write parks forever; cancel the connection mid-delivery.
+    let timed_out = tokio::time::timeout(Duration::from_millis(50), server).await;
+    assert!(timed_out.is_err(), "delivery should still be pending");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Aborted {
+            reason: ResponseAbortReason::Cancelled,
+            encoded_wire_bytes: 0,
+            written_wire_bytes: 0,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn handler_failure_does_not_run_a_completion_item() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let calls = calls.clone();
+            move |_context: TcpRequestContext<PhaseProtocol>| {
+                let _calls = calls.clone();
+                async move {
+                    Err::<crate::protocol::TcpHandlerCompletion<PhaseProtocol>, _>(
+                        NacelleError::handler("test handler failure"),
+                    )
+                }
+            }
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[0]).await.expect("request should write");
+    client.shutdown().await.expect("request side should close");
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response)).await;
+
+    let _ = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }

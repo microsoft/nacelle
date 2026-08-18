@@ -3,7 +3,7 @@ use tokio::io::AsyncWrite;
 
 use crate::config::{NacelleTcpConfig, ResponseWritePolicy};
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{FrameBuffer, Protocol, TcpCompletion};
+use crate::protocol::{FrameBuffer, Protocol, ResponseDeliveryPhase, TcpCompletion};
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 #[cfg(feature = "experimental-memory")]
 use nacelle_core::limits::NacelleMemoryAllocation;
@@ -18,14 +18,17 @@ use super::metrics::{finish_tcp_phase, record_tcp_error, start_tcp_phase};
 #[derive(Debug)]
 pub(super) struct ResponseDeliveryError {
     pub(super) error: NacelleError,
+    pub(super) encoded_bytes: usize,
     pub(super) delivered_bytes: usize,
     kind: ResponseDeliveryErrorKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponseDeliveryErrorKind {
+    ResponseBody,
     Encode,
-    Write,
+    SocketWrite,
+    SocketFlush,
 }
 
 #[derive(Debug)]
@@ -295,6 +298,7 @@ impl ResponseDelivery {
         W: AsyncWrite + Unpin,
         Observer: NacelleTelemetryObserver,
     {
+        let pending_bytes = self.pending.len();
         let delivered_bytes = if self.pending.is_empty() {
             self.reset();
             0
@@ -309,8 +313,9 @@ impl ResponseDelivery {
             .await
             .map_err(|(error, written)| ResponseDeliveryError {
                 error,
+                encoded_bytes: pending_bytes,
                 delivered_bytes: written,
-                kind: ResponseDeliveryErrorKind::Write,
+                kind: ResponseDeliveryErrorKind::SocketWrite,
             })?
         };
         let flush_started = start_tcp_phase(phase_duration_metrics);
@@ -320,8 +325,9 @@ impl ResponseDelivery {
             record_tcp_error(telemetry, metrics_context, "socket_write", &error);
             ResponseDeliveryError {
                 error,
+                encoded_bytes: delivered_bytes,
                 delivered_bytes,
-                kind: ResponseDeliveryErrorKind::Write,
+                kind: ResponseDeliveryErrorKind::SocketFlush,
             }
         })?;
         Ok(delivered_bytes)
@@ -353,8 +359,9 @@ impl ResponseDelivery {
         .map(|_| frame_len)
         .map_err(|(error, written)| ResponseDeliveryError {
             error,
+            encoded_bytes: frame_len,
             delivered_bytes: written.saturating_sub(previous_bytes).min(frame_len),
-            kind: ResponseDeliveryErrorKind::Write,
+            kind: ResponseDeliveryErrorKind::SocketWrite,
         })
     }
 
@@ -401,6 +408,7 @@ where
     let TcpCompletion {
         response,
         mut response_context,
+        completion: _,
     } = completion;
     protocol.apply_response(&mut response_context, &response);
 
@@ -454,12 +462,7 @@ where
             metrics_context,
             phase_duration_metrics,
         )
-        .await
-        .map_err(|error| ResponseDeliveryError {
-            error: error.error,
-            delivered_bytes: 0,
-            kind: ResponseDeliveryErrorKind::Write,
-        })?;
+        .await?;
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
@@ -475,11 +478,7 @@ where
         {
             Ok(written) => delivered_wire_bytes = delivered_wire_bytes.saturating_add(written),
             Err(error) => {
-                return Err(ResponseDeliveryError {
-                    error: error.error,
-                    delivered_bytes: delivered_wire_bytes.saturating_add(error.delivered_bytes),
-                    kind: ResponseDeliveryErrorKind::Write,
-                });
+                return Err(error.with_previous(response_wire_bytes, delivered_wire_bytes));
             }
         }
         let Some(chunk) = body.next_chunk().await else {
@@ -487,8 +486,9 @@ where
         };
         let chunk = chunk.map_err(|error| ResponseDeliveryError {
             error,
+            encoded_bytes: response_wire_bytes,
             delivered_bytes: delivered_wire_bytes,
-            kind: ResponseDeliveryErrorKind::Encode,
+            kind: ResponseDeliveryErrorKind::ResponseBody,
         })?;
         if chunk.is_empty() {
             continue;
@@ -496,6 +496,7 @@ where
         validate_response_bytes(&mut response_body_bytes, chunk.len(), runtime_state).map_err(
             |error| ResponseDeliveryError {
                 error,
+                encoded_bytes: response_wire_bytes,
                 delivered_bytes: delivered_wire_bytes,
                 kind: ResponseDeliveryErrorKind::Encode,
             },
@@ -503,6 +504,7 @@ where
         let frame_capacity = response_frame_capacity(protocol, chunk.len()).map_err(|error| {
             ResponseDeliveryError {
                 error,
+                encoded_bytes: response_wire_bytes,
                 delivered_bytes: delivered_wire_bytes,
                 kind: ResponseDeliveryErrorKind::Encode,
             }
@@ -519,7 +521,7 @@ where
                 |dst| protocol.encode_response_chunk(&mut response_context, chunk, dst),
             )
             .await
-            .map_err(|error| error.with_previous(delivered_wire_bytes))?;
+            .map_err(|error| error.with_previous(response_wire_bytes, delivered_wire_bytes))?;
         response_wire_bytes = response_wire_bytes.saturating_add(frame_delivery.encoded_bytes);
         delivered_wire_bytes = delivered_wire_bytes.saturating_add(frame_delivery.delivered_bytes);
     }
@@ -536,7 +538,7 @@ where
             |dst| protocol.encode_response_end(&mut response_context, dst),
         )
         .await
-        .map_err(|error| error.with_previous(delivered_wire_bytes))?;
+        .map_err(|error| error.with_previous(response_wire_bytes, delivered_wire_bytes))?;
 
     Ok(response_wire_bytes.saturating_add(frame_delivery.encoded_bytes))
 }
@@ -589,28 +591,46 @@ impl ResponseDeliveryError {
     fn before_delivery(error: NacelleError) -> Self {
         Self {
             error,
+            encoded_bytes: 0,
             delivered_bytes: 0,
             kind: ResponseDeliveryErrorKind::Encode,
         }
     }
 
-    fn with_previous(self, previous: usize) -> Self {
+    fn with_previous(self, encoded_previous: usize, delivered_previous: usize) -> Self {
         Self {
             error: self.error,
-            delivered_bytes: previous.saturating_add(self.delivered_bytes),
+            encoded_bytes: encoded_previous.saturating_add(self.encoded_bytes),
+            delivered_bytes: delivered_previous.saturating_add(self.delivered_bytes),
             kind: self.kind,
         }
     }
 
     pub(super) fn phase(&self) -> &'static str {
         match self.kind {
-            ResponseDeliveryErrorKind::Encode => "response_encode",
-            ResponseDeliveryErrorKind::Write => "socket_write",
+            ResponseDeliveryErrorKind::ResponseBody | ResponseDeliveryErrorKind::Encode => {
+                "response_encode"
+            }
+            ResponseDeliveryErrorKind::SocketWrite | ResponseDeliveryErrorKind::SocketFlush => {
+                "socket_write"
+            }
+        }
+    }
+
+    pub(super) fn phase_enum(&self) -> ResponseDeliveryPhase {
+        match self.kind {
+            ResponseDeliveryErrorKind::ResponseBody => ResponseDeliveryPhase::ResponseBody,
+            ResponseDeliveryErrorKind::Encode => ResponseDeliveryPhase::Encode,
+            ResponseDeliveryErrorKind::SocketWrite => ResponseDeliveryPhase::SocketWrite,
+            ResponseDeliveryErrorKind::SocketFlush => ResponseDeliveryPhase::SocketFlush,
         }
     }
 
     pub(super) fn is_encode_failure(&self) -> bool {
-        self.kind == ResponseDeliveryErrorKind::Encode
+        matches!(
+            self.kind,
+            ResponseDeliveryErrorKind::ResponseBody | ResponseDeliveryErrorKind::Encode
+        )
     }
 }
 
