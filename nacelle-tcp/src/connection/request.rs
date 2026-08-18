@@ -78,8 +78,6 @@ impl Drop for ResponseCompletionGuard {
         if let Some(item) = self.item.take() {
             item(ResponseDeliveryOutcome::Aborted {
                 reason: ResponseAbortReason::Cancelled,
-                encoded_wire_bytes: 0,
-                written_wire_bytes: 0,
             });
         }
     }
@@ -631,6 +629,32 @@ where
                 .completion
                 .take()
                 .map(ResponseCompletionGuard::new);
+            // Isolate an item-bearing response from any bytes a prior response
+            // coalesced into the shared buffer, so the reported encoded and
+            // written counts (and the error metric below) reflect only this
+            // response. In the common case where the previous response also
+            // carried an item, its forced flush already drained the buffer, so
+            // this pre-flush is skipped and costs nothing.
+            if completion_guard.is_some()
+                && delivery.has_pending()
+                && let Err(delivery_error) = delivery
+                    .flush(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+            {
+                // The prior coalesced bytes failed to reach the transport;
+                // this response was never encoded or written.
+                if let Some(guard) = completion_guard {
+                    guard.fail(delivery_error.phase_enum(), 0, 0, &delivery_error.error);
+                }
+                request_metrics.complete("error", delivery_error.delivered_bytes);
+                return Err(delivery_error.error);
+            }
             let encode_result = encode_response_body::<P, W, Observer>(
                 protocol,
                 completion,

@@ -111,6 +111,11 @@ impl ResponseDelivery {
             || self.pending.len() >= self.threshold()
     }
 
+    /// Whether bytes from prior responses remain buffered (coalesced).
+    pub(super) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     fn reset(&mut self) {
         if self.pending.capacity() > self.base_capacity {
             drop(std::mem::take(&mut self.pending));

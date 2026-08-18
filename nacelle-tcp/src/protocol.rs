@@ -166,16 +166,18 @@ pub enum ResponseDeliveryPhase {
 ///
 /// An abort is distinct from a delivery failure: no transport error was
 /// produced for this response. Nacelle settles the completion item with an
-/// abort when it accepted ownership but the connection was torn down before the
-/// final write and flush could be attempted or observed.
+/// abort when it accepted ownership but the connection task was torn down before
+/// the final write and flush could be attempted or observed.
+///
+/// This enum is `#[non_exhaustive]`: today the runtime can only observe that the
+/// connection task was dropped, so [`ResponseAbortReason::Cancelled`] is the
+/// only reason produced. Finer reasons (for example a distinct shutdown signal)
+/// may be added later without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ResponseAbortReason {
     /// The connection task was cancelled or dropped before delivery completed.
     Cancelled,
-    /// The connection closed before delivery completed.
-    ConnectionClosed,
-    /// The runtime began shutting down before delivery completed.
-    Shutdown,
 }
 
 /// Transport-only outcome reported to a request-scoped completion item after a
@@ -188,7 +190,9 @@ pub enum ResponseAbortReason {
 /// for this response, including framing. `written_wire_bytes` is the subset
 /// accepted by the transport's `AsyncWrite` before the outcome was known. Both
 /// exclude TLS record, TCP, IP, and link-layer overhead, and neither replaces
-/// an application-owned response payload length.
+/// an application-owned response payload length. An item-bearing response is
+/// isolated from any previously coalesced bytes, so these counts reflect only
+/// this response.
 #[derive(Debug)]
 pub enum ResponseDeliveryOutcome<'error> {
     /// The response was fully encoded, written, and flushed to the transport.
@@ -210,13 +214,14 @@ pub enum ResponseDeliveryOutcome<'error> {
         error: &'error NacelleError,
     },
     /// Delivery was aborted before a transport outcome was known.
+    ///
+    /// No transport error was produced and no byte counts are reported: the
+    /// connection task was torn down before the write-and-flush boundary could
+    /// be observed, so the guard cannot attribute encoded or written bytes to
+    /// this response.
     Aborted {
         /// Why the response was aborted.
         reason: ResponseAbortReason,
-        /// Protocol wire bytes encoded before the abort.
-        encoded_wire_bytes: usize,
-        /// Wire bytes accepted by the transport before the abort.
-        written_wire_bytes: usize,
     },
 }
 

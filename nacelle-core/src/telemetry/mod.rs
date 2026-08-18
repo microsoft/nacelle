@@ -511,8 +511,27 @@ where
         }
     }
 
-    pub fn connection_closed(&self, context: &NacelleMetricsContext, close_reason: &'static str) {
-        if self.connection_metrics_enabled() {
+    pub fn connection_closed(
+        &self,
+        transport: NacelleTransport,
+        context: Option<&NacelleMetricsContext>,
+        close_reason: &'static str,
+    ) {
+        tracing::debug!(
+            target: "nacelle",
+            transport = transport.as_str(),
+            reason = close_reason,
+            "connection closed"
+        );
+        self.record(NacelleTelemetryEvent {
+            kind: NacelleTelemetryEventKind::ConnectionClosed,
+            transport: Some(transport),
+            reason: Some(close_reason),
+            count: 1,
+        });
+        if let Some(context) = context
+            && self.connection_metrics_enabled()
+        {
             metrics::counter!(
                 "server.connection.closed",
                 attributes_with_label(
@@ -1072,7 +1091,7 @@ mod tests {
             );
             telemetry.connection_opened(NacelleTransport::new("tcp"));
             telemetry.connection_accepted(&context);
-            telemetry.connection_closed(&context, "eof");
+            telemetry.connection_closed(NacelleTransport::new("tcp"), Some(&context), "eof");
             telemetry.connection_rejected(NacelleTransport::new("tcp"), "connections");
             telemetry.request_rejected(NacelleTransport::new("tcp"), "requests");
             telemetry.request_started_with_context(&context);
@@ -1213,7 +1232,7 @@ mod tests {
             );
             telemetry.connection_opened(NacelleTransport::new("tcp"));
             telemetry.connection_accepted(&context);
-            telemetry.connection_closed(&context, "eof");
+            telemetry.connection_closed(NacelleTransport::new("tcp"), Some(&context), "eof");
             telemetry.connection_rejected(NacelleTransport::new("tcp"), "connections");
             telemetry.request_started_with_context(&context);
             telemetry.request_finished_with_context(&context, "ok", 4, 8, Duration::from_millis(1));
@@ -1233,6 +1252,6 @@ mod tests {
         });
 
         assert!(snapshotter.snapshot().into_vec().is_empty());
-        assert_eq!(observer.events().len(), 5);
+        assert_eq!(observer.events().len(), 6);
     }
 }

@@ -34,6 +34,7 @@ pub enum NacelleTelemetryEventKind {
     ListenerConfigured,
     ListenerFailed,
     ConnectionOpened,
+    ConnectionClosed,
     ConnectionRejected,
     RequestRejected,
     RequestCompleted,

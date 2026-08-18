@@ -1510,6 +1510,58 @@ async fn tcp_server_with_arc_in_memory_observer_serves_and_records_request_event
     assert!(events.iter().any(|event| {
         event.kind == nacelle_core::telemetry::NacelleTelemetryEventKind::RequestCompleted
     }));
+    assert!(events.iter().any(|event| {
+        event.kind == nacelle_core::telemetry::NacelleTelemetryEventKind::ConnectionClosed
+    }));
+}
+
+#[tokio::test]
+async fn connection_closed_event_reaches_observer_with_metrics_disabled() {
+    let sink = Arc::new(NacelleInMemoryObserver::new());
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn(|context: TcpRequestContext<PhaseProtocol>| async move {
+            context.respond(TcpResponse::bytes("ok")).await
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default()
+            .with_metrics(false)
+            .with_observer(sink.clone()),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[0]).await.expect("request should write");
+    client.shutdown().await.expect("request side should close");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        .await
+        .expect("connection should close")
+        .expect("response should read");
+    assert_eq!(response, b"ok");
+
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join")
+        .expect("connection should drain cleanly");
+
+    let events = sink.events();
+    let closed = events
+        .iter()
+        .find(|event| event.kind == NacelleTelemetryEventKind::ConnectionClosed)
+        .expect("close event should reach the observer even with metrics disabled");
+    assert_eq!(closed.reason, Some("eof"));
+    assert_eq!(
+        closed.transport.map(|transport| transport.as_str()),
+        Some("tcp")
+    );
 }
 
 struct SerialCounterProtocol;
@@ -2471,8 +2523,6 @@ enum CapturedOutcome {
     },
     Aborted {
         reason: ResponseAbortReason,
-        encoded_wire_bytes: usize,
-        written_wire_bytes: usize,
     },
 }
 
@@ -2495,15 +2545,7 @@ fn capture_outcome(outcome: ResponseDeliveryOutcome<'_>) -> CapturedOutcome {
             encoded_wire_bytes,
             written_wire_bytes,
         },
-        ResponseDeliveryOutcome::Aborted {
-            reason,
-            encoded_wire_bytes,
-            written_wire_bytes,
-        } => CapturedOutcome::Aborted {
-            reason,
-            encoded_wire_bytes,
-            written_wire_bytes,
-        },
+        ResponseDeliveryOutcome::Aborted { reason } => CapturedOutcome::Aborted { reason },
     }
 }
 
@@ -2618,6 +2660,53 @@ impl AsyncWrite for RequestThenFlushFailIo {
             std::io::ErrorKind::BrokenPipe,
             "test response flush failure",
         )))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Delivers two zero-body requests in one read, then accepts a single response
+/// byte before failing every subsequent write. Used to prove that an
+/// item-bearing response is isolated from bytes a prior response coalesced.
+struct CoalescedPriorThenWriteFailIo {
+    request_read: bool,
+    first_write: bool,
+}
+
+impl AsyncRead for CoalescedPriorThenWriteFailIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.request_read {
+            buf.put_slice(&[0, 0]);
+            self.request_read = true;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for CoalescedPriorThenWriteFailIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if !self.first_write {
+            self.first_write = true;
+            return Poll::Ready(Ok(1));
+        }
+        Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "test response write failure",
+        )))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -3058,8 +3147,6 @@ async fn completion_item_runs_on_cancellation() {
         outcomes.lock().expect("outcome recorder poisoned").clone(),
         vec![CapturedOutcome::Aborted {
             reason: ResponseAbortReason::Cancelled,
-            encoded_wire_bytes: 0,
-            written_wire_bytes: 0,
         }]
     );
 }
@@ -3101,4 +3188,75 @@ async fn handler_failure_does_not_run_a_completion_item() {
         .await
         .expect("server should finish");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn completion_item_is_isolated_from_coalesced_prior_response() {
+    // Request 1 has no item and coalesces its two response bytes into the
+    // shared buffer under `CoalesceBuffered`. Request 2 attaches an item; the
+    // writer accepts one of the *prior* response's bytes and then fails. The
+    // item must report that none of request 2 reached the transport (0 written,
+    // 0 encoded), not one byte carried over from request 1.
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        CoalescedPriorThenWriteFailIo {
+            request_read: false,
+            first_write: false,
+        },
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            let requests = requests.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                let requests = requests.clone();
+                async move {
+                    let nth = requests.fetch_add(1, Ordering::SeqCst);
+                    let completion = context.respond(TcpResponse::bytes("ok")).await?;
+                    if nth == 0 {
+                        // First response carries no completion item and coalesces.
+                        Ok(completion)
+                    } else {
+                        Ok(completion.map(move |tc| {
+                            tc.with_completion_item(move |outcome| {
+                                calls.fetch_add(1, Ordering::SeqCst);
+                                outcomes
+                                    .lock()
+                                    .expect("outcome recorder poisoned")
+                                    .push(capture_outcome(outcome));
+                            })
+                        }))
+                    }
+                }
+            }
+        }),
+        NacelleTcpConfig::default()
+            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    let result = tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("server should finish")
+        .expect("server task should join");
+    assert!(result.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Failed {
+            phase: ResponseDeliveryPhase::SocketWrite,
+            encoded_wire_bytes: 0,
+            written_wire_bytes: 0,
+        }]
+    );
 }
