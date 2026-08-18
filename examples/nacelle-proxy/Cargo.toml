@@ -23,7 +23,7 @@ tls-self-signed = [
 
 [dependencies]
 bytes = { workspace = true }
-nacelle = { path = "../../nacelle", version = "0.3.0", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.1", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 pem = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }

@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -148,12 +149,141 @@ impl<Response, ResponseContext> TcpResponder<Response, ResponseContext> {
     }
 }
 
+/// Delivery stage reported when a required response fails to reach the peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResponseDeliveryPhase {
+    /// The response failed while its streaming body produced the next chunk.
+    ResponseBody,
+    /// The response failed while being encoded into a wire frame.
+    Encode,
+    /// The response failed while its encoded bytes were written to the socket.
+    SocketWrite,
+    /// The response failed while the transport write was being flushed.
+    SocketFlush,
+}
+
+/// Reason a required response was aborted before a delivery outcome was known.
+///
+/// An abort is distinct from a delivery failure: no transport error was
+/// produced for this response. Nacelle settles the completion item with an
+/// abort when it accepted ownership but the connection task was torn down before
+/// the final write and flush could be attempted or observed.
+///
+/// This enum is `#[non_exhaustive]`: today the runtime can only observe that the
+/// connection task was dropped, so [`ResponseAbortReason::Cancelled`] is the
+/// only reason produced. Finer reasons (for example a distinct shutdown signal)
+/// may be added later without a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ResponseAbortReason {
+    /// The connection task was cancelled or dropped before delivery completed.
+    Cancelled,
+}
+
+/// Transport-only outcome reported to a request-scoped completion item after a
+/// required response is delivered, its delivery fails, or it is aborted.
+///
+/// Nacelle reports transport facts exclusively. The application owns any
+/// higher-level interpretation such as logs, metrics, or product events.
+///
+/// `encoded_wire_bytes` is the number of protocol wire bytes Nacelle encoded
+/// for this response, including framing. `written_wire_bytes` is the subset
+/// accepted by the transport's `AsyncWrite` before the outcome was known. Both
+/// exclude TLS record, TCP, IP, and link-layer overhead, and neither replaces
+/// an application-owned response payload length. An item-bearing response is
+/// isolated from any previously coalesced bytes, so these counts reflect only
+/// this response.
+#[derive(Debug)]
+pub enum ResponseDeliveryOutcome<'error> {
+    /// The response was fully encoded, written, and flushed to the transport.
+    Delivered {
+        /// Protocol wire bytes encoded for this response, including framing.
+        encoded_wire_bytes: usize,
+        /// Wire bytes accepted by the transport before delivery completed.
+        written_wire_bytes: usize,
+    },
+    /// The response could not be delivered.
+    Failed {
+        /// Stage at which delivery failed.
+        phase: ResponseDeliveryPhase,
+        /// Protocol wire bytes encoded before the failure.
+        encoded_wire_bytes: usize,
+        /// Wire bytes accepted by the transport before the failure.
+        written_wire_bytes: usize,
+        /// The transport error returned by the connection loop.
+        error: &'error NacelleError,
+    },
+    /// Delivery was aborted before a transport outcome was known.
+    ///
+    /// No transport error was produced and no byte counts are reported: the
+    /// connection task was torn down before the write-and-flush boundary could
+    /// be observed, so the guard cannot attribute encoded or written bytes to
+    /// this response.
+    Aborted {
+        /// Why the response was aborted.
+        reason: ResponseAbortReason,
+    },
+}
+
+/// Boxed one-shot completion item invoked exactly once after response delivery.
+///
+/// Only handlers that attach an item allocate this box; the default response
+/// path stores `None` and pays no allocation or callback cost.
+pub type ResponseCompletionCallback =
+    Box<dyn for<'outcome> FnOnce(ResponseDeliveryOutcome<'outcome>) + Send>;
+
 /// Typed response and protocol context returned to the connection loop.
 #[must_use = "TCP completion must be encoded by the connection loop"]
-#[derive(Debug)]
 pub struct TcpCompletion<Response, ResponseContext> {
     pub(crate) response: Response,
     pub(crate) response_context: ResponseContext,
+    pub(crate) completion: Option<ResponseCompletionCallback>,
+}
+
+impl<Response, ResponseContext> TcpCompletion<Response, ResponseContext> {
+    /// Attach an application-owned completion item invoked exactly once after
+    /// this response is delivered, its delivery fails, or it is aborted.
+    ///
+    /// The item runs synchronously in the connection loop immediately after the
+    /// final transport outcome is known and before Nacelle publishes its generic
+    /// request-completion telemetry. It receives transport facts only via
+    /// [`ResponseDeliveryOutcome`]. The application owns any offloading required
+    /// by its telemetry sink.
+    ///
+    /// Attaching an item requests a per-response write-and-flush boundary: the
+    /// encoded bytes for this response are written and flushed before the item
+    /// settles as [`ResponseDeliveryOutcome::Delivered`], regardless of the
+    /// configured response write policy. Responses without an item keep the
+    /// configured policy and its cost.
+    ///
+    /// If the connection is torn down after the handler returns but before the
+    /// outcome is known, the item settles as
+    /// [`ResponseDeliveryOutcome::Aborted`] rather than being dropped silently.
+    ///
+    /// Attaching an item is independent of Nacelle's metrics and generic
+    /// telemetry configuration; it runs even when both are disabled.
+    #[must_use = "the completion item is only attached to the returned value"]
+    pub fn with_completion_item<F>(mut self, item: F) -> Self
+    where
+        F: for<'outcome> FnOnce(ResponseDeliveryOutcome<'outcome>) + Send + 'static,
+    {
+        self.completion = Some(Box::new(item));
+        self
+    }
+}
+
+impl<Response, ResponseContext> fmt::Debug for TcpCompletion<Response, ResponseContext>
+where
+    Response: fmt::Debug,
+    ResponseContext: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpCompletion")
+            .field("response", &self.response)
+            .field("response_context", &self.response_context)
+            .field("completion", &self.completion.as_ref().map(|_| "..."))
+            .finish()
+    }
 }
 
 /// Concrete application context for one required-response TCP request.
@@ -586,6 +716,7 @@ impl<Response, ResponseContext> Respond for TcpResponder<Response, ResponseConte
         Ok(TcpCompletion {
             response,
             response_context: self.response_context,
+            completion: None,
         })
     }
 }

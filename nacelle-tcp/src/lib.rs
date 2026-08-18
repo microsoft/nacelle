@@ -22,9 +22,10 @@ pub use options::{NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions}
 pub use protocol::{
     DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
     LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler, NoOneWayHandler, Protocol,
-    SerialTcpHandler, SerialTcpOneWayContext, SerialTcpOneWayHandler, SerialTcpRequestContext,
-    SharedProtocol, TcpCompletion, TcpHandler, TcpHandlerCompletion, TcpOneWayContext,
-    TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder, TcpResponse,
+    ResponseAbortReason, ResponseCompletionCallback, ResponseDeliveryOutcome,
+    ResponseDeliveryPhase, SerialTcpHandler, SerialTcpOneWayContext, SerialTcpOneWayHandler,
+    SerialTcpRequestContext, SharedProtocol, TcpCompletion, TcpHandler, TcpHandlerCompletion,
+    TcpOneWayContext, TcpOneWayHandler, TcpRequest, TcpRequestContext, TcpResponder, TcpResponse,
 };
 pub use serial_server::{LocalSerialTcpServer, SerialTcpServer};
 pub use server::{LocalTcpServer, TcpServer, TcpServerBuilder};

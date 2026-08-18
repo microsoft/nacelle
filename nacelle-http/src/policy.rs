@@ -5,7 +5,7 @@ use http::header::{HeaderName, HeaderValue};
 use hyper::body::Incoming;
 use hyper::{Method, Request, StatusCode};
 use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 #[derive(Debug, Clone)]
 pub struct NacelleHttpPolicy {
@@ -205,14 +205,74 @@ fn host_allowed(allowed_hosts: &[String], request: &Request<Incoming>) -> bool {
     else {
         return false;
     };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let host_without_port = host
-        .split_once(':')
-        .map(|(host, _port)| host)
-        .unwrap_or(host.as_str());
-    allowed_hosts
-        .iter()
-        .any(|allowed| allowed == &host || allowed == host_without_port)
+    host_header_allowed(allowed_hosts, host)
+}
+
+/// Match a raw `Host` header value against the (already normalized) allowlist.
+///
+/// The header is parsed as an HTTP authority so IPv6 literals such as
+/// `[::1]` and `[::1]:8080` are handled correctly instead of being truncated at
+/// the first colon. A malformed authority never matches.
+fn host_header_allowed(allowed_hosts: &[String], host: &str) -> bool {
+    let Some(normalized) = normalize_host(host) else {
+        return false;
+    };
+    let host_with_port = normalized
+        .port
+        .map(|port| format!("{}:{}", normalized.host, port));
+    allowed_hosts.iter().any(|allowed| {
+        allowed == &normalized.host || host_with_port.as_deref() == Some(allowed.as_str())
+    })
+}
+
+/// A `Host` authority split into a normalized host and optional port.
+struct NormalizedHost {
+    /// Host without a port. IPv6 literals keep their surrounding brackets and
+    /// are canonicalized; registered names are lowercased with any trailing dot
+    /// removed.
+    host: String,
+    /// Numeric port when the authority carried one.
+    port: Option<u16>,
+}
+
+/// Parse a `Host` header value into a normalized host and optional port.
+///
+/// Returns `None` for a malformed authority (unbalanced brackets, an invalid
+/// IPv6 literal, a bare IPv6 address without brackets, or a bad port).
+fn normalize_host(value: &str) -> Option<NormalizedHost> {
+    // IPv6 literal: `[<addr>]` optionally followed by `:<port>`.
+    if let Some(rest) = value.strip_prefix('[') {
+        let close = rest.find(']')?;
+        let addr: Ipv6Addr = rest[..close].parse().ok()?;
+        let port = match &rest[close + 1..] {
+            "" => None,
+            suffix => Some(parse_port(suffix.strip_prefix(':')?)?),
+        };
+        return Some(NormalizedHost {
+            host: format!("[{addr}]"),
+            port,
+        });
+    }
+
+    // Registered name or IPv4 literal, with an optional trailing `:<port>`. A
+    // bare IPv6 literal (multiple colons without brackets) is malformed.
+    let (name, port) = match value.rsplit_once(':') {
+        Some((name, _)) if name.contains(':') => return None,
+        Some((name, port)) => (name, Some(parse_port(port)?)),
+        None => (value, None),
+    };
+    let host = name.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some(NormalizedHost { host, port })
+}
+
+fn parse_port(port: &str) -> Option<u16> {
+    if port.is_empty() {
+        return None;
+    }
+    port.parse().ok()
 }
 
 pub(crate) fn apply_security_headers(headers: &mut http::HeaderMap, policy: &NacelleHttpPolicy) {
@@ -220,5 +280,115 @@ pub(crate) fn apply_security_headers(headers: &mut http::HeaderMap, policy: &Nac
         if !headers.contains_key(name) {
             headers.insert(name.clone(), value.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an allowlist the same way [`NacelleHttpPolicy::with_allowed_hosts`]
+    /// normalizes configured entries.
+    fn allowlist(entries: &[&str]) -> Vec<String> {
+        entries
+            .iter()
+            .map(|entry| entry.trim_end_matches('.').to_ascii_lowercase())
+            .collect()
+    }
+
+    #[test]
+    fn ipv6_literal_without_port_is_allowed() {
+        let hosts = allowlist(&["[::1]"]);
+        assert!(host_header_allowed(&hosts, "[::1]"));
+    }
+
+    #[test]
+    fn ipv6_literal_with_port_matches_host_only_entry() {
+        let hosts = allowlist(&["[::1]"]);
+        assert!(host_header_allowed(&hosts, "[::1]:8080"));
+    }
+
+    #[test]
+    fn ipv6_literal_matches_port_qualified_entry() {
+        let hosts = allowlist(&["[::1]:8080"]);
+        assert!(host_header_allowed(&hosts, "[::1]:8080"));
+        // A port-qualified entry must not match the bare host.
+        assert!(!host_header_allowed(&hosts, "[::1]"));
+        // Nor a different port.
+        assert!(!host_header_allowed(&hosts, "[::1]:9090"));
+    }
+
+    #[test]
+    fn ipv6_literal_is_canonicalized_before_matching() {
+        let hosts = allowlist(&["[::1]"]);
+        assert!(host_header_allowed(&hosts, "[0:0:0:0:0:0:0:1]"));
+        assert!(host_header_allowed(&hosts, "[::0001]:8080"));
+    }
+
+    #[test]
+    fn dns_name_matches_with_and_without_port() {
+        let hosts = allowlist(&["example.com"]);
+        assert!(host_header_allowed(&hosts, "example.com"));
+        assert!(host_header_allowed(&hosts, "example.com:8080"));
+        assert!(host_header_allowed(&hosts, "EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn dns_name_port_qualified_entry() {
+        let hosts = allowlist(&["example.com:8080"]);
+        assert!(host_header_allowed(&hosts, "example.com:8080"));
+        assert!(!host_header_allowed(&hosts, "example.com"));
+        assert!(!host_header_allowed(&hosts, "example.com:9090"));
+    }
+
+    #[test]
+    fn trailing_dot_dns_name_is_normalized() {
+        let hosts = allowlist(&["example.com"]);
+        assert!(host_header_allowed(&hosts, "example.com."));
+        assert!(host_header_allowed(&hosts, "example.com.:8080"));
+    }
+
+    #[test]
+    fn ipv4_literal_matches_with_and_without_port() {
+        let hosts = allowlist(&["127.0.0.1"]);
+        assert!(host_header_allowed(&hosts, "127.0.0.1"));
+        assert!(host_header_allowed(&hosts, "127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn malformed_authorities_are_rejected() {
+        let hosts = allowlist(&["[::1]", "example.com"]);
+        assert!(!host_header_allowed(&hosts, "[::1"), "unclosed bracket");
+        assert!(
+            !host_header_allowed(&hosts, "[::1]junk"),
+            "junk after bracket"
+        );
+        assert!(!host_header_allowed(&hosts, "[not-ipv6]"), "invalid ipv6");
+        assert!(!host_header_allowed(&hosts, "[]"), "empty ipv6");
+        assert!(
+            !host_header_allowed(&hosts, "::1"),
+            "bare ipv6 without brackets"
+        );
+        assert!(
+            !host_header_allowed(&hosts, "fe80::1"),
+            "bare ipv6 with port-like tail"
+        );
+        assert!(!host_header_allowed(&hosts, "example.com:"), "empty port");
+        assert!(
+            !host_header_allowed(&hosts, "example.com:99999"),
+            "port out of range"
+        );
+        assert!(
+            !host_header_allowed(&hosts, "example.com:abc"),
+            "non-numeric port"
+        );
+    }
+
+    #[test]
+    fn disallowed_hosts_are_rejected() {
+        let hosts = allowlist(&["example.com"]);
+        assert!(!host_header_allowed(&hosts, "evil.example"));
+        assert!(!host_header_allowed(&hosts, "[::1]"));
+        assert!(!host_header_allowed(&hosts, "sub.example.com"));
     }
 }

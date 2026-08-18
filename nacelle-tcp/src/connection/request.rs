@@ -11,8 +11,9 @@ use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
     DecodedRequest, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler,
-    LocalTcpOneWayHandler, Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol,
-    TcpHandler, TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpResponder,
+    LocalTcpOneWayHandler, Protocol, ResponseAbortReason, ResponseCompletionCallback,
+    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpOneWayHandler,
+    SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpResponder,
 };
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
@@ -28,6 +29,59 @@ use super::metrics::{
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
 use super::response::{ResponseDelivery, encode_response_body, write_error};
+
+/// Holds an application-owned response completion item across delivery so it
+/// runs exactly once: on successful delivery, on delivery failure, or on abort
+/// (cancellation, shutdown, or connection close) before delivery settles.
+///
+/// The item is stored in an `Option` and taken on the first settlement. If the
+/// connection task is dropped before an explicit settlement, `Drop` reports an
+/// [`ResponseDeliveryOutcome::Aborted`] rather than silently dropping the item.
+struct ResponseCompletionGuard {
+    item: Option<ResponseCompletionCallback>,
+}
+
+impl ResponseCompletionGuard {
+    fn new(item: ResponseCompletionCallback) -> Self {
+        Self { item: Some(item) }
+    }
+
+    fn deliver(mut self, encoded_wire_bytes: usize, written_wire_bytes: usize) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Delivered {
+                encoded_wire_bytes,
+                written_wire_bytes,
+            });
+        }
+    }
+
+    fn fail(
+        mut self,
+        phase: ResponseDeliveryPhase,
+        encoded_wire_bytes: usize,
+        written_wire_bytes: usize,
+        error: &NacelleError,
+    ) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Failed {
+                phase,
+                encoded_wire_bytes,
+                written_wire_bytes,
+                error,
+            });
+        }
+    }
+}
+
+impl Drop for ResponseCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Aborted {
+                reason: ResponseAbortReason::Cancelled,
+            });
+        }
+    }
+}
 
 pub(super) trait ConnectionAccess<P>
 where
@@ -366,6 +420,9 @@ where
     let request = decoded.request;
     let detailed_request_metrics = telemetry_plan.request_metrics;
     let core_request_events = telemetry_plan.observer;
+    // Read the monotonic clock once. Generic telemetry only observes it when
+    // request-duration timing is enabled, but an attached response completion
+    // item needs a request-start instant even when telemetry is disabled.
     let request_started = telemetry_plan
         .request_duration
         .then(std::time::Instant::now);
@@ -567,9 +624,40 @@ where
 
     match outcome {
         Ok(completion) => {
+            let mut completion = completion.into_inner();
+            let completion_guard = completion
+                .completion
+                .take()
+                .map(ResponseCompletionGuard::new);
+            // Isolate an item-bearing response from any bytes a prior response
+            // coalesced into the shared buffer, so the reported encoded and
+            // written counts (and the error metric below) reflect only this
+            // response. In the common case where the previous response also
+            // carried an item, its forced flush already drained the buffer, so
+            // this pre-flush is skipped and costs nothing.
+            if completion_guard.is_some()
+                && delivery.has_pending()
+                && let Err(delivery_error) = delivery
+                    .flush(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+            {
+                // The prior coalesced bytes failed to reach the transport;
+                // this response was never encoded or written.
+                if let Some(guard) = completion_guard {
+                    guard.fail(delivery_error.phase_enum(), 0, 0, &delivery_error.error);
+                }
+                request_metrics.complete("error", delivery_error.delivered_bytes);
+                return Err(delivery_error.error);
+            }
             let encode_result = encode_response_body::<P, W, Observer>(
                 protocol,
-                completion.into_inner(),
+                completion,
                 writer,
                 tcp_limits,
                 delivery,
@@ -582,6 +670,14 @@ where
             let response_bytes = match encode_result {
                 Ok(response_bytes) => response_bytes,
                 Err(delivery_error) => {
+                    if let Some(guard) = completion_guard {
+                        guard.fail(
+                            delivery_error.phase_enum(),
+                            delivery_error.encoded_bytes,
+                            delivery_error.delivered_bytes,
+                            &delivery_error.error,
+                        );
+                    }
                     if delivery_error.is_encode_failure() {
                         record_tcp_error(
                             telemetry,
@@ -594,6 +690,41 @@ where
                     return Err(delivery_error.error);
                 }
             };
+            // An attached completion item requests a per-response write-and-flush
+            // boundary: force a flush so `Delivered` only settles once the encoded
+            // bytes have been accepted by the transport and flushed. The path
+            // without an item keeps the configured write policy and its cost.
+            if let Some(guard) = completion_guard {
+                match delivery
+                    .flush(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+                {
+                    Ok(_) => guard.deliver(response_bytes, response_bytes),
+                    Err(delivery_error) => {
+                        let phase = delivery_error.phase_enum();
+                        let written_wire_bytes =
+                            if matches!(phase, ResponseDeliveryPhase::SocketFlush) {
+                                response_bytes
+                            } else {
+                                response_bytes.min(delivery_error.delivered_bytes)
+                            };
+                        guard.fail(
+                            phase,
+                            response_bytes,
+                            written_wire_bytes,
+                            &delivery_error.error,
+                        );
+                        request_metrics.complete("error", delivery_error.delivered_bytes);
+                        return Err(delivery_error.error);
+                    }
+                }
+            }
             record_core_request_completed(
                 telemetry,
                 core_request_events,

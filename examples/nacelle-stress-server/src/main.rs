@@ -283,12 +283,12 @@ impl StressMetricsConsole {
             let metric_name = key.key().name();
             match value {
                 DebugValue::Counter(value) => match metric_name {
-                    "nacelle.connection.accepted" => {
+                    "server.connection.accepted" => {
                         snapshot.accepted_connections += value;
                     }
-                    "nacelle.connection.closed" => snapshot.closed_connections += value,
-                    "nacelle.request.started" => snapshot.started_requests += value,
-                    "nacelle.request.completed" => {
+                    "server.connection.closed" => snapshot.closed_connections += value,
+                    "server.request.started" => snapshot.started_requests += value,
+                    "server.request.completed" => {
                         snapshot.completed_requests += value;
                         if metric_has_label(key.key(), "status", "ok") {
                             snapshot.ok_requests += value;
@@ -296,9 +296,9 @@ impl StressMetricsConsole {
                             snapshot.failed_requests += value;
                         }
                     }
-                    "nacelle.request.failed" => snapshot.failed_requests += value,
-                    "nacelle.errors" => snapshot.operation_errors += value,
-                    "nacelle.resource_limit.rejections" => {
+                    "server.request.failed" => snapshot.failed_requests += value,
+                    "server.errors" => snapshot.operation_errors += value,
+                    "server.resource_limit.rejections" => {
                         snapshot.resource_limit_rejections += value;
                     }
                     _ => {}
@@ -306,42 +306,42 @@ impl StressMetricsConsole {
                 DebugValue::Gauge(value) => {
                     let delta = value.into_inner() as i64;
                     match metric_name {
-                        "nacelle.connection.active" if metric_has_key(key.key(), "listener") => {
+                        "server.connection.active" if metric_has_key(key.key(), "listener") => {
                             self.active_connection_delta =
                                 self.active_connection_delta.saturating_add(delta);
                         }
-                        "nacelle.connection.active" => {
+                        "server.connection.active" => {
                             self.active_connections = self.active_connections.saturating_add(delta);
                         }
-                        "nacelle.request.active" if !metric_has_key(key.key(), "protocol") => {
+                        "server.request.active" if !metric_has_key(key.key(), "protocol") => {
                             self.active_requests = self.active_requests.saturating_add(delta);
                         }
-                        "nacelle.streaming_task.active" => {
+                        "server.streaming_task.active" => {
                             self.active_streaming_tasks =
                                 self.active_streaming_tasks.saturating_add(delta);
                         }
                         #[cfg(feature = "experimental-memory")]
-                        "nacelle.memory.usage" => {
+                        "server.memory.usage" => {
                             self.memory_used_bytes = self.memory_used_bytes.saturating_add(delta);
                         }
                         _ => {}
                     }
                 }
-                DebugValue::Histogram(values) if metric_name == "nacelle.request.body.size" => {
+                DebugValue::Histogram(values) if metric_name == "server.request.body.size" => {
                     for value in values {
                         snapshot.request_bytes = snapshot
                             .request_bytes
                             .saturating_add(value.into_inner() as u64);
                     }
                 }
-                DebugValue::Histogram(values) if metric_name == "nacelle.response.body.size" => {
+                DebugValue::Histogram(values) if metric_name == "server.response.body.size" => {
                     for value in values {
                         snapshot.response_bytes = snapshot
                             .response_bytes
                             .saturating_add(value.into_inner() as u64);
                     }
                 }
-                DebugValue::Histogram(values) if metric_name == "nacelle.phase.duration_ms" => {
+                DebugValue::Histogram(values) if metric_name == "server.phase.duration_ms" => {
                     let Some(phase) = key
                         .key()
                         .labels()

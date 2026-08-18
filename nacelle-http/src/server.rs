@@ -1287,7 +1287,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1302,7 +1302,13 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
-    }
+    };
+    server.runtime.telemetry.connection_closed(
+        NacelleTransport::new("http"),
+        None,
+        http_close_reason(&result),
+    );
+    result
 }
 
 async fn run_local_http_connection<H, F, Observer, I>(
@@ -1343,7 +1349,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1358,6 +1364,32 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
+    };
+    server.runtime.telemetry.connection_closed(
+        NacelleTransport::new("http"),
+        None,
+        http_close_reason(&result),
+    );
+    result
+}
+
+/// Low-cardinality close reason for an HTTP connection, mirroring the TCP
+/// transport's close-reason labels.
+fn http_close_reason(result: &Result<(), NacelleError>) -> &'static str {
+    match result {
+        Ok(()) => "eof",
+        Err(NacelleError::Timeout(_)) => "timeout",
+        Err(NacelleError::UnexpectedEof) => "unexpected_eof",
+        Err(NacelleError::ConnectionClosed) => "connection_closed",
+        Err(NacelleError::ResourceLimit(_)) => "resource_limit",
+        Err(NacelleError::Io(_)) => "io",
+        Err(NacelleError::Protocol(_)) => "protocol",
+        Err(NacelleError::Handler(_)) => "handler",
+        Err(NacelleError::Join(_)) => "join",
+        Err(NacelleError::InvalidFrame(_)) | Err(NacelleError::FrameTooLarge { .. }) => {
+            "invalid_frame"
+        }
+        Err(NacelleError::MissingProtocol) => "missing_protocol",
     }
 }
 
@@ -1884,6 +1916,55 @@ mod tests {
                 && event.transport == Some(NacelleTransport::new("http"))
                 && event.count == "hello bytes".len() as u64
         }));
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_connection_closed_event_is_recorded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            context
+                .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                .await
+        }))
+        .with_telemetry(telemetry);
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request should write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        drop(client);
+
+        // The close event is emitted once the connection future resolves, which
+        // races with the client's read; poll briefly for it.
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(event) = sink.events().into_iter().find(|event| {
+                    event.kind == nacelle_core::NacelleTelemetryEventKind::ConnectionClosed
+                }) {
+                    return event;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("connection closed event should be recorded");
+        assert_eq!(closed.transport, Some(NacelleTransport::new("http")));
+        assert_eq!(closed.reason, Some("eof"));
         server_task.abort();
     }
 
