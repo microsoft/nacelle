@@ -24,7 +24,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update stable
       - name: Check formatting
@@ -34,7 +34,7 @@ jobs:
     name: serving docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Audit serving documentation
         run: .github/scripts/check-serving-docs.sh
 
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout full history
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Install Rust
@@ -55,7 +55,7 @@ jobs:
       - name: Install OpenSSL build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
       - name: Install cargo-public-api
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-public-api@0.52.0
       - name: Check public API compatibility
@@ -65,11 +65,11 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update stable
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-audit
       - name: Audit
@@ -79,9 +79,9 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-deny
       - name: Check advisories, licenses, bans, and sources
@@ -91,7 +91,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust with Clippy
         run: rustup update stable && rustup component add clippy
       - name: Install cargo-hack
@@ -106,7 +106,7 @@ jobs:
     name: minrust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install OpenSSL build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
       - name: Install cargo-hack
@@ -135,7 +135,7 @@ jobs:
           # - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
         run: rustup update stable --no-self-update
@@ -169,7 +169,7 @@ jobs:
       RUST_VERSION: nightly
       RUSTUP_TOOLCHAIN: nightly-2026-04-16
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Install cargo-hack
@@ -182,7 +182,7 @@ jobs:
     name: tsan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Install rust-src
@@ -194,7 +194,7 @@ jobs:
     name: miri
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Miri
@@ -213,7 +213,7 @@ jobs:
           - nightly-2026-04-16
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update ${{ matrix.rust }} --no-self-update
       - name: Loom tests
@@ -223,7 +223,7 @@ jobs:
     name: panic=abort tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Install cargo-hack
