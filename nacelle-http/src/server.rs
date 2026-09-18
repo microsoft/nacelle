@@ -18,8 +18,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
-pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
+pub use crate::policy::{NacelleForwardedHeader, NacelleHttpPolicy};
 use crate::rate_limit::forwarded_peer_ip;
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -1173,7 +1173,7 @@ where
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
                 let response = response_to_http(
-                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
@@ -1227,7 +1227,14 @@ where
         if !trusted_proxy_ips.contains(&socket_peer_ip) {
             return Some(socket_peer_ip);
         }
-        Some(forwarded_peer_ip(request).unwrap_or(socket_peer_ip))
+        Some(
+            forwarded_peer_ip(
+                request.headers(),
+                self.http_policy.forwarded_header,
+                trusted_proxy_ips,
+            )
+            .unwrap_or(socket_peer_ip),
+        )
     }
 
     fn access_log(&self, log: HttpAccessLog<'_>) {
@@ -2404,6 +2411,127 @@ mod tests {
 
     #[cfg(feature = "experimental-memory")]
     #[tokio::test]
+    async fn http_body_memory_limit_applies_to_chunked_and_declared_bodies() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default().with_max_memory_bytes(1),
+        );
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    match chunk {
+                        Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::MemoryBytes,
+                        )) => {
+                            return context
+                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
+                                .await;
+                        }
+                        other => {
+                            let _ = other?;
+                        }
+                    }
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            },
+        ))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        for wire in [
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabcdefgh"[..],
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n8\r\nabcdefgh\r\n0\r\n\r\n"[..],
+        ] {
+            let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr, wire)).await.expect("response deadline");
+            assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+            assert_eq!(runtime_state.memory_used_bytes(), 0);
+            assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        }
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
+    async fn http_chunked_body_clones_retain_memory_after_request_completion() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default().with_max_memory_bytes(4),
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let server = HyperServer::new(handler_fn(move |mut context: HttpRequestContext<()>| {
+            let sender = sender.clone();
+            async move {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    sender.send(chunk?).await.expect("retain chunk");
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            }
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        let response = one_shot_http(addr, b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n0\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let retained = receiver.recv().await.expect("retained chunk");
+        let cloned = retained.clone();
+        assert_eq!(runtime_state.memory_used_bytes(), 4);
+        assert!(runtime_state.allocate_memory(1).is_err());
+        drop(retained);
+        assert_eq!(runtime_state.memory_used_bytes(), 4);
+        drop(cloned);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+        assert!(runtime_state.allocate_memory(4).is_ok());
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
+    async fn http_chunked_body_memory_wait_times_out_without_leaking() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default()
+                .with_max_memory_bytes(4)
+                .with_memory_allocation_timeout(Duration::from_millis(10)),
+        );
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                let mut retained = Vec::new();
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    match chunk {
+                        Ok(chunk) => retained.push(chunk),
+                        Err(NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)) => {
+                            assert_eq!(retained.iter().map(Bytes::len).sum::<usize>(), 4);
+                            return context
+                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            },
+        ))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr,
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n",
+        )).await.expect("response deadline");
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        assert!(runtime_state.allocate_memory(4).is_ok());
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
     async fn http_content_length_body_reserves_memory_until_consumed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2429,13 +2557,7 @@ mod tests {
             .await
             .expect("client should connect");
         client
-            .write_all(
-                b"POST / HTTP/1.1\r\n\
-                  Host: localhost\r\n\
-                  Content-Length: 11\r\n\
-                  Connection: close\r\n\
-                  \r\n",
-            )
+            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
             .await
             .expect("headers should write");
         wait_for_memory(&runtime_state, 11).await;
@@ -2520,6 +2642,10 @@ mod tests {
     #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
+        for wire in [
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n"[..],
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nb\r\nhello world\r\n0\r\n\r\n"[..],
+        ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
@@ -2543,13 +2669,7 @@ mod tests {
             .await
             .expect("client should connect");
         client
-            .write_all(
-                b"POST / HTTP/1.1\r\n\
-                  Host: localhost\r\n\
-                  Content-Length: 11\r\n\
-                  Connection: close\r\n\
-                  \r\n",
-            )
+            .write_all(wire)
             .await
             .expect("headers should write");
         let mut response = Vec::new();
@@ -2570,6 +2690,7 @@ mod tests {
         drop(recovered);
         assert_eq!(runtime_state.memory_used_bytes(), 0);
         server_task.abort();
+        }
     }
 
     #[tokio::test]
@@ -2617,7 +2738,8 @@ mod tests {
         .expect("response should read");
         let response = String::from_utf8(response).expect("response should be utf8");
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
-        assert!(response.contains("http_body_read"));
+        assert!(response.contains("internal server error"));
+        assert!(!response.contains("http_body_read"));
         server_task.abort();
     }
 
@@ -2702,7 +2824,8 @@ mod tests {
         let response = String::from_utf8(response).expect("response should be utf8");
 
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
-        assert!(response.contains("handler error: boom"));
+        assert!(response.contains("internal server error"));
+        assert!(!response.contains("boom"));
         server_task.abort();
     }
 
@@ -3033,7 +3156,7 @@ mod tests {
 
         let first = one_shot_http(
             addr,
-            b"GET / HTTP/1.1\r\nHost: localhost\r\nForwarded: for=203.0.113.1\r\nConnection: close\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nForwarded: for=203.0.113.99\r\nX-Forwarded-For: 192.0.2.1, 203.0.113.1\r\nConnection: close\r\n\r\n",
         )
         .await;
         let second = one_shot_http(
@@ -3043,7 +3166,7 @@ mod tests {
         .await;
         let third = one_shot_http(
             addr,
-            b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 203.0.113.1\r\nConnection: close\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 192.0.2.2, 203.0.113.1\r\nConnection: close\r\n\r\n",
         )
         .await;
 

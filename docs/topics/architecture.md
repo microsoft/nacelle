@@ -146,6 +146,8 @@ length by default. Set
 detached from read-ahead or allocated for a socket read. The charge then follows
 the chunk through the body channel and any application-owned `Bytes` clones.
 HTTP request bodies reserve `Content-Length` when Hyper exposes a bounded size hint.
+Unknown-length HTTP bodies instead charge each data chunk before handler delivery,
+with ownership-bound guards retaining the charge through application clones.
 TCP protocols can override `Protocol::max_request_body_bytes(...)` to choose a
 phase-aware body limit from the decoded head, immutable connection metadata,
 and concrete connection state immediately after head decoding and before

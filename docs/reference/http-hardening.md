@@ -55,11 +55,47 @@ backend features cannot be enabled together and cannot be swapped at runtime.
 
 Enable `HyperServer::with_access_log(true)` when direct edge deployments need structured request logs. Access events are emitted with target `nacelle::access` and include transport, method, URI, status, request bytes, elapsed microseconds, and rejection reason.
 
-Forwarded peer identity is disabled by default. `Forwarded` and
-`X-Forwarded-For` are considered only when the immediate socket peer is listed
-in `NacelleHttpPolicy::with_trusted_proxy_ips(...)`; otherwise rate limits,
-request metadata, and access logs use the socket peer address.
+Forwarded peer identity is disabled by default. The immediate socket peer must
+be listed in `NacelleHttpPolicy::with_trusted_proxy_ips(...)`. When trusted,
+Nacelle reads only `X-Forwarded-For` by default. Proxies using the standardized
+header must explicitly select
+`with_forwarded_header(NacelleForwardedHeader::Forwarded)`. There is no fallback
+between header families. This replaces the previous automatic preference for
+`Forwarded`; update proxy-aware applications when upgrading.
+
+Across all instances of the selected header, Nacelle selects the rightmost
+untrusted IP, skipping trusted proxy hops to its right. If every address is
+trusted, the leftmost address is used. Missing, malformed, or ambiguous selected
+headers fall back to the socket peer; numeric IP addresses are required, and
+duplicate `for` parameters are invalid. Configure every trusted proxy to
+sanitize or append to the selected header on every request. Never trust a proxy
+that passes that header through unchanged. Request rate limits, request metadata,
+and access logs all use this effective identity.
+
+Handler failures produce a generic `500` body (`internal server error`), not
+the wrapped error's diagnostic text. Return an explicit sanitized `HttpResponse`
+for application errors intended for clients. Failure telemetry still receives
+the original error; protect diagnostic logs and observers accordingly.
+
+With `experimental-memory` and a finite memory budget, known-length bodies
+reserve their declared length. Unknown-length/chunked bodies reserve each data
+chunk before enqueueing it for the handler. Charges follow queued and retained
+`Bytes` clones until the last clone drops. Admission waits honor
+`memory_allocation_timeout` and are cancelled when the request is dropped.
+Leave headroom for Hyper's read-ahead, shared backing allocations, and TLS/socket
+buffers: the body budget is not a process-RSS ceiling. Handlers aggregating a
+whole chunked body need enough budget to retain that body without blocking their
+own subsequent chunks.
+
+Rustls certificate-only reloads preserve the configured SNI allowlist, including
+concurrent reloads. Invalid replacement material leaves the previous snapshot
+active. Explicit `replace_server_config*` calls instead install the supplied
+configuration's policy and clear the stored allowlist for subsequent reloads.
 
 For internet-facing deployments, a reverse proxy or load balancer can still own coarse traffic filtering and certificate automation. Nacelle now also enforces application-level body, request, connection, per-peer connection/request/connection-open-rate, timeout, TLS handshake, security header, and optional Host/header/method/URI limits in-process.
 
-Slowloris-style clients are closed by `NacelleHttpLimits::header_read_timeout`. Trickle request bodies are closed by `NacelleHttpLimits::request_body_read_timeout`. Slow response readers are closed by `NacelleHttpLimits::response_write_timeout` when socket writes stop making progress.
+Slowloris-style clients are closed by `NacelleHttpLimits::header_read_timeout`.
+The request-body timeout bounds each frame wait, not total upload duration;
+keep the default handler deadline or enforce a total deadline upstream to bound
+continuous trickle uploads. Slow response readers are closed by
+`NacelleHttpLimits::response_write_timeout` when socket writes stop making progress.

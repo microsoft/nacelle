@@ -7,6 +7,16 @@ use hyper::{Method, Request, StatusCode};
 use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
 use std::net::{IpAddr, Ipv6Addr};
 
+/// The authoritative client-address header written by a trusted proxy.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum NacelleForwardedHeader {
+    /// Use only `X-Forwarded-For` (the default).
+    #[default]
+    XForwardedFor,
+    /// Use only the standardized `Forwarded` header.
+    Forwarded,
+}
+
 #[derive(Debug, Clone)]
 pub struct NacelleHttpPolicy {
     pub(crate) allowed_hosts: Option<Vec<String>>,
@@ -17,6 +27,7 @@ pub struct NacelleHttpPolicy {
     pub(crate) max_requests_per_peer_per_second: Option<usize>,
     pub(crate) peer_rate_limit_table_capacity: usize,
     pub(crate) trusted_proxy_ips: Option<Vec<IpAddr>>,
+    pub(crate) forwarded_header: NacelleForwardedHeader,
     pub(crate) security_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
@@ -74,8 +85,22 @@ impl NacelleHttpPolicy {
         self
     }
 
+    /// Trust these proxy hops when resolving the selected forwarding header.
+    ///
+    /// The immediate socket peer must be trusted. Resolution selects the
+    /// rightmost untrusted address, or the leftmost address if all are trusted.
+    /// Proxies must sanitize or append to the selected header on every request.
     pub fn with_trusted_proxy_ips(mut self, ips: impl IntoIterator<Item = IpAddr>) -> Self {
         self.trusted_proxy_ips = Some(ips.into_iter().collect());
+        self
+    }
+
+    /// Select one authoritative forwarding header, with no fallback to another.
+    ///
+    /// Defaults to `X-Forwarded-For`. Missing or malformed selected headers use
+    /// the socket peer identity. Only numeric IP addresses are accepted.
+    pub fn with_forwarded_header(mut self, header: NacelleForwardedHeader) -> Self {
+        self.forwarded_header = header;
         self
     }
 
@@ -121,6 +146,7 @@ impl Default for NacelleHttpPolicy {
             max_requests_per_peer_per_second: None,
             peer_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
             trusted_proxy_ips: None,
+            forwarded_header: NacelleForwardedHeader::default(),
             security_headers: Vec::new(),
         }
     }
