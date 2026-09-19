@@ -157,5 +157,6 @@ intact. Explicit `replace_server_config*` APIs install the supplied policy and
 clear the stored allowlist for future certificate-only reloads.
 
 `NacelleOpenSslConfig::from_pem_files` uses Mozilla's v5 intermediate profile
-and requires TLS 1.2 or newer, including TLS 1.3 support. Legacy protocol policy
-requires an explicitly configured acceptor through `from_acceptor`.
+and requires TLS 1.2 or newer. TLS 1.3 is enabled when supported by the linked
+OpenSSL-compatible library. Legacy protocol policy requires an explicitly
+configured acceptor through `from_acceptor`.

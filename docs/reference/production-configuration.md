@@ -25,7 +25,8 @@ Recommended presets:
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
 
 The OpenSSL PEM helper uses Mozilla's v5 intermediate profile with a TLS 1.2
-minimum and TLS 1.3 support. Custom acceptors own their own protocol policy.
+minimum. TLS 1.3 is enabled when supported by the linked OpenSSL-compatible
+library. Custom acceptors own their own protocol policy.
 
 Experimental memory budget:
 
