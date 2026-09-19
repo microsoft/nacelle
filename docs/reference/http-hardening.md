@@ -65,9 +65,12 @@ between header families. This replaces the previous automatic preference for
 
 Across all instances of the selected header, Nacelle selects the rightmost
 untrusted IP, skipping trusted proxy hops to its right. If every address is
-trusted, the leftmost address is used. Missing, malformed, or ambiguous selected
-headers fall back to the socket peer; numeric IP addresses are required, and
-duplicate `for` parameters are invalid. Configure every trusted proxy to
+trusted, the leftmost address is used. Malformed or ambiguous elements are
+ignored without discarding valid addresses elsewhere in the selected header.
+If no valid address remains, resolution falls back to the socket peer. Numeric
+IP addresses are required, and duplicate `for` parameters are invalid. Access
+logs set `peer_resolution_reason` to `forwarded_malformed` whenever malformed
+elements are skipped. Configure every trusted proxy to
 sanitize or append to the selected header on every request. Never trust a proxy
 that passes that header through unchanged. Request rate limits, request metadata,
 and access logs all use this effective identity.

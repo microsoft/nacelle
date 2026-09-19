@@ -97,8 +97,9 @@ impl NacelleHttpPolicy {
 
     /// Select one authoritative forwarding header, with no fallback to another.
     ///
-    /// Defaults to `X-Forwarded-For`. Missing or malformed selected headers use
-    /// the socket peer identity. Only numeric IP addresses are accepted.
+    /// Defaults to `X-Forwarded-For`. Malformed elements are skipped; missing
+    /// headers or headers without a valid address use the socket peer identity.
+    /// Only numeric IP addresses are accepted.
     pub fn with_forwarded_header(mut self, header: NacelleForwardedHeader) -> Self {
         self.forwarded_header = header;
         self

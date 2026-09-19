@@ -1005,7 +1005,7 @@ where
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
         let uri = request.uri().clone();
-        let effective_peer_ip =
+        let (effective_peer_ip, peer_resolution_reason) =
             self.effective_peer_ip(dispatch.connection_info().peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
             self.telemetry
@@ -1018,6 +1018,7 @@ where
                 request_bytes: 0,
                 elapsed: elapsed_since(request_started),
                 reason: Some(rejection.reason),
+                peer_resolution_reason,
             });
             return response_to_http(
                 HttpResponse::bytes(rejection.status, rejection.reason),
@@ -1040,6 +1041,7 @@ where
                     request_bytes: 0,
                     elapsed: elapsed_since(request_started),
                     reason: Some(reason),
+                    peer_resolution_reason,
                 });
                 return response_to_http(
                     HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
@@ -1071,6 +1073,7 @@ where
                 request_bytes: 0,
                 elapsed: elapsed_since(request_started),
                 reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
+                peer_resolution_reason,
             });
             return response_to_http(
                 HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
@@ -1095,6 +1098,7 @@ where
                     request_bytes: 0,
                     elapsed: elapsed_since(request_started),
                     reason: Some("in_flight_requests"),
+                    peer_resolution_reason,
                 });
                 return response_to_http(
                     HttpResponse::bytes(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
@@ -1155,6 +1159,7 @@ where
                         request_bytes,
                         elapsed: elapsed_since(request_started),
                         reason: None,
+                        peer_resolution_reason,
                     });
                 }
                 self.telemetry
@@ -1187,6 +1192,7 @@ where
                         request_bytes,
                         elapsed: elapsed_since(request_started),
                         reason: Some("handler"),
+                        peer_resolution_reason,
                     });
                 }
                 self.telemetry
@@ -1219,21 +1225,24 @@ where
         &self,
         socket_peer_ip: Option<IpAddr>,
         request: &Request<Incoming>,
-    ) -> Option<IpAddr> {
-        let socket_peer_ip = socket_peer_ip?;
+    ) -> (Option<IpAddr>, Option<&'static str>) {
+        let Some(socket_peer_ip) = socket_peer_ip else {
+            return (None, None);
+        };
         let Some(trusted_proxy_ips) = &self.http_policy.trusted_proxy_ips else {
-            return Some(socket_peer_ip);
+            return (Some(socket_peer_ip), None);
         };
         if !trusted_proxy_ips.contains(&socket_peer_ip) {
-            return Some(socket_peer_ip);
+            return (Some(socket_peer_ip), None);
         }
-        Some(
-            forwarded_peer_ip(
-                request.headers(),
-                self.http_policy.forwarded_header,
-                trusted_proxy_ips,
-            )
-            .unwrap_or(socket_peer_ip),
+        let resolution = forwarded_peer_ip(
+            request.headers(),
+            self.http_policy.forwarded_header,
+            trusted_proxy_ips,
+        );
+        (
+            Some(resolution.peer_ip.unwrap_or(socket_peer_ip)),
+            resolution.malformed.then_some("forwarded_malformed"),
         )
     }
 
@@ -1251,6 +1260,7 @@ where
             request_bytes = log.request_bytes,
             elapsed_us = log.elapsed.as_micros() as u64,
             reason = log.reason,
+            peer_resolution_reason = log.peer_resolution_reason,
             "http access"
         );
     }
@@ -1272,6 +1282,7 @@ struct HttpAccessLog<'a> {
     request_bytes: usize,
     elapsed: Duration,
     reason: Option<&'static str>,
+    peer_resolution_reason: Option<&'static str>,
 }
 
 fn elapsed_since(started: Option<Instant>) -> Duration {
