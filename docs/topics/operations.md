@@ -52,6 +52,7 @@ Expected shutdown telemetry:
 
 ## Metrics To Watch
 
+- `server.runtime.workers`
 - `server.connection.active`
 - `server.request.active`
 - `server.streaming_task.active`
@@ -70,6 +71,34 @@ Expected shutdown telemetry:
 
 Alerts should focus on sustained saturation, rising rejections, timeout spikes,
 and memory approaching the configured budget.
+
+## Runtime Topology
+
+Nacelle parallelizes connection handling by spawning onto the ambient Tokio
+runtime, so a listener started on a current-thread runtime is confined to a
+single core regardless of how many cores the host has. The first listener to
+start — on any transport — reports the topology it observed:
+
+```text
+INFO nacelle: listener started transport="http" runtime="multi_thread" workers=12
+```
+
+A single-worker topology additionally emits a warning, and the worker count is
+published as the `server.runtime.workers` gauge. The gauge belongs to the
+runtime metric domain, so `with_metrics(false)` or `with_runtime_metrics(false)`
+suppresses it; the log lines are not metrics and are always emitted.
+
+Thread-per-core hosts give each worker its own current-thread runtime, so the
+ambient handle reports one worker per runtime. `run_thread_per_core` declares
+the process-wide worker count before starting workers, so these deployments
+report `runtime="thread_per_core"` with the real worker count rather than a
+false single-core warning. Hosts that build their own per-worker runtimes
+should call `nacelle_core::runtime::declare_worker_topology` to get the same
+behavior.
+
+Alert on `server.runtime.workers == 1` where the process is expected to span
+several cores; it is the clearest signal that the process is leaving throughput
+on the table.
 
 ## Benchmarking
 
@@ -136,6 +165,7 @@ rather than embedded in the metric name:
 
 | Metric | Type | Notes |
 | --- | --- | --- |
+| `server.runtime.workers` | Gauge | Worker threads serving the process, reported once by the first listener to start. A value of `1` means throughput is capped to one core. Thread-per-core hosts report their declared process-wide worker count. |
 | `server.connection.active` | Gauge | Current active connections. Listener-labeled series provide transport-level detail; unlabeled series represent runtime permit usage. |
 | `server.request.active` | Gauge | Current active requests. Protocol-labeled series provide request-level detail; unlabeled series represent runtime permit usage. |
 | `server.streaming_task.active` | Gauge | Current runtime streaming body tasks. |

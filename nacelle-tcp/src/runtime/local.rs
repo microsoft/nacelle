@@ -28,6 +28,8 @@ use crate::protocol::{
 use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
 
+use super::common::CONNECTION_REAP_BATCH;
+
 #[cfg(feature = "experimental-openssl-detection")]
 use super::openssl_optional::detect_tls_handshake;
 
@@ -53,13 +55,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -93,6 +93,9 @@ where
                     )
                     .await
                 });
+            }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
             }
         }
     }
@@ -130,13 +133,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -170,6 +171,9 @@ where
                     )
                     .await
                 });
+            }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
             }
         }
     }
@@ -210,13 +214,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -269,6 +271,9 @@ where
                     .await
                 });
             }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+            }
         }
     }
 
@@ -308,13 +313,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -371,6 +374,9 @@ where
                     .await
                 });
             }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+            }
         }
     }
 
@@ -410,13 +416,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -472,6 +476,9 @@ where
                     .await
                 });
             }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+            }
         }
     }
 
@@ -513,13 +520,11 @@ where
     let mut connections = tokio::task::JoinSet::new();
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_local_connections(&mut connections);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -601,6 +606,9 @@ where
                     .await
                 });
             }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_local_connection_result(joined);
+            }
         }
     }
 
@@ -636,6 +644,21 @@ fn log_local_connection_result(
         Some(Err(error)) => {
             tracing::warn!(target: "nacelle", transport = "tcp", error = %error, "local connection task failed");
         }
+    }
+}
+
+/// Reap up to [`CONNECTION_REAP_BATCH`] finished worker-local connection tasks.
+///
+/// Non-blocking: returns as soon as no completion is ready, so an idle loop
+/// falls through to `accept()` immediately.
+fn reap_finished_local_connections(
+    connections: &mut tokio::task::JoinSet<Result<(), NacelleError>>,
+) {
+    for _ in 0..CONNECTION_REAP_BATCH {
+        let Some(joined) = connections.try_join_next() else {
+            return;
+        };
+        log_local_connection_result(Some(joined));
     }
 }
 

@@ -255,14 +255,16 @@ where
     let handshake_timeout = tls_config.handshake_timeout();
     let mut connections = tokio::task::JoinSet::new();
     let local_addr = listener.local_addr().ok();
+    nacelle_core::runtime::report_runtime_topology(
+        "tcp",
+        server.telemetry().runtime_metrics_enabled(),
+    );
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_connections(&mut connections, NacelleTransport::new("tcp"));
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::new("tcp"));
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -320,6 +322,9 @@ where
                         connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                     server.serve_io_without_connection_limit(stream, connection).await
                 });
+            }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_connection_result(joined, NacelleTransport::new("tcp"));
             }
         }
     }
@@ -594,15 +599,17 @@ where
     let handshake_timeout = tls_config.handshake_timeout();
     let local_addr = listener.local_addr().ok();
     let mut connections = tokio::task::JoinSet::new();
+    nacelle_core::runtime::report_runtime_topology(
+        "tcp",
+        server.telemetry().runtime_metrics_enabled(),
+    );
 
     loop {
+        // Reap finished connection tasks without competing with `accept()`.
+        reap_finished_connections(&mut connections, transport);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, transport);
-                continue;
-            }
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
@@ -671,6 +678,9 @@ where
                         .serve_io_without_connection_limit(stream, connection)
                         .await
                 });
+            }
+            joined = connections.join_next(), if !connections.is_empty() => {
+                log_connection_result(joined, transport);
             }
         }
     }

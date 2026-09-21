@@ -132,17 +132,137 @@ pub struct NacelleRuntimeState {
     inner: Arc<NacelleRuntimeStateInner>,
 }
 
+/// A counter that owns its cache line.
+///
+/// The connection, request, and streaming-task counters are updated on every
+/// accept and every request. Packed adjacently they share a single cache line,
+/// so an accept on one core invalidates the request counter on every other
+/// core (false sharing) even though the two counters are unrelated.
+///
+/// The alignment matches the coherence granularity of the target rather than a
+/// universal 64 bytes: x86-64's L2 spatial prefetcher pulls lines in aligned
+/// pairs, and arm64 (notably Apple silicon) and powerpc64 use 128-byte lines,
+/// so 64 bytes would still leave neighbouring counters sharing a unit there.
+/// These are the same thresholds `crossbeam-utils` uses for `CachePadded`.
+#[cfg_attr(
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64"
+    ),
+    repr(align(128))
+)]
+#[cfg_attr(
+    any(target_arch = "arm", target_arch = "mips", target_arch = "riscv64"),
+    repr(align(32))
+)]
+#[cfg_attr(
+    not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "arm",
+        target_arch = "mips",
+        target_arch = "riscv64",
+    )),
+    repr(align(64))
+)]
+#[derive(Debug)]
+struct PaddedCounter(AtomicUsize);
+
+impl PaddedCounter {
+    /// The coherence unit this counter is padded to, in bytes.
+    #[cfg(test)]
+    const ALIGN: usize = align_of::<Self>();
+
+    const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+}
+
+impl std::ops::Deref for PaddedCounter {
+    type Target = AtomicUsize;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Per-peer connection counts, sharded to keep accepts from serializing.
+///
+/// A single `Mutex<HashMap>` here puts a process-wide lock on the connection
+/// path for every deployment that enables `max_connections_per_peer` — that is,
+/// precisely the internet-facing deployments that need the limit most. Sharding
+/// by peer address keeps the per-peer count exact while letting unrelated peers
+/// be admitted concurrently.
+#[derive(Debug)]
+struct PeerConnectionMap {
+    shards: Box<[Mutex<HashMap<IpAddr, usize>>]>,
+}
+
+impl PeerConnectionMap {
+    /// Shard count. A power of two so the index is a mask, and small enough
+    /// that the idle footprint stays negligible.
+    const SHARDS: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            shards: (0..Self::SHARDS)
+                .map(|_| Mutex::new(HashMap::new()))
+                .collect(),
+        }
+    }
+
+    fn shard(&self, peer: IpAddr) -> &Mutex<HashMap<IpAddr, usize>> {
+        use std::hash::{BuildHasher, RandomState};
+        use std::sync::LazyLock;
+
+        // One process-wide hasher keeps a peer pinned to a single shard for the
+        // lifetime of the process, which is what makes the per-peer count exact.
+        static HASHER: LazyLock<RandomState> = LazyLock::new(RandomState::new);
+        let index = HASHER.hash_one(peer) as usize % Self::SHARDS;
+        &self.shards[index]
+    }
+
+    fn try_acquire(&self, peer: IpAddr, limit: usize) -> bool {
+        let mut peers = self
+            .shard(peer)
+            .lock()
+            .expect("peer connection map poisoned");
+        let current = peers.get(&peer).copied().unwrap_or(0);
+        if current >= limit {
+            return false;
+        }
+        peers.insert(peer, current + 1);
+        true
+    }
+
+    fn release(&self, peer: IpAddr) {
+        let mut peers = self
+            .shard(peer)
+            .lock()
+            .expect("peer connection map poisoned");
+        match peers.get_mut(&peer) {
+            Some(count) if *count > 1 => *count -= 1,
+            Some(_) => {
+                peers.remove(&peer);
+            }
+            None => {}
+        }
+    }
+}
+
 #[derive(Debug)]
 struct NacelleRuntimeStateInner {
     limits: NacelleLimits,
     metrics_enabled: AtomicBool,
-    active_connections: AtomicUsize,
-    active_requests: AtomicUsize,
-    active_streaming_tasks: AtomicUsize,
+    active_connections: PaddedCounter,
+    active_requests: PaddedCounter,
+    active_streaming_tasks: PaddedCounter,
     active_connections_metric: OnceLock<metrics::Gauge>,
     active_requests_metric: OnceLock<metrics::Gauge>,
     active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
-    peer_connections: Mutex<HashMap<IpAddr, usize>>,
+    peer_connections: PeerConnectionMap,
     peer_connection_rates: Option<NacellePeerRateLimiter>,
     #[cfg(feature = "experimental-memory")]
     memory: Arc<SharedMemoryBudget>,
@@ -272,13 +392,13 @@ impl NacelleRuntimeState {
             inner: Arc::new(NacelleRuntimeStateInner {
                 limits,
                 metrics_enabled: AtomicBool::new(true),
-                active_connections: AtomicUsize::new(0),
-                active_requests: AtomicUsize::new(0),
-                active_streaming_tasks: AtomicUsize::new(0),
+                active_connections: PaddedCounter::new(),
+                active_requests: PaddedCounter::new(),
+                active_streaming_tasks: PaddedCounter::new(),
                 active_connections_metric: OnceLock::new(),
                 active_requests_metric: OnceLock::new(),
                 active_streaming_tasks_metric: OnceLock::new(),
-                peer_connections: Mutex::new(HashMap::new()),
+                peer_connections: PeerConnectionMap::new(),
                 peer_connection_rates,
                 #[cfg(feature = "experimental-memory")]
                 memory,
@@ -795,18 +915,11 @@ impl NacelleRuntimeState {
         let Some(limit) = self.inner.limits.max_connections_per_peer else {
             return Ok(());
         };
-        let mut peers = self
-            .inner
-            .peer_connections
-            .lock()
-            .expect("peer connection map poisoned");
-        let current = peers.get(&peer).copied().unwrap_or(0);
-        if current >= limit {
+        if !self.inner.peer_connections.try_acquire(peer, limit) {
             return Err(NacelleError::ResourceLimit(
                 NacelleResourceLimitReason::PeerConnections,
             ));
         }
-        peers.insert(peer, current + 1);
         Ok(())
     }
 
@@ -814,18 +927,7 @@ impl NacelleRuntimeState {
         if self.inner.limits.max_connections_per_peer.is_none() {
             return;
         }
-        let mut peers = self
-            .inner
-            .peer_connections
-            .lock()
-            .expect("peer connection map poisoned");
-        match peers.get_mut(&peer) {
-            Some(count) if *count > 1 => *count -= 1,
-            Some(_) => {
-                peers.remove(&peer);
-            }
-            None => {}
-        }
+        self.inner.peer_connections.release(peer);
     }
 
     fn acquire_peer_connection_rate(&self, peer: IpAddr) -> Result<(), NacelleError> {
@@ -896,6 +998,13 @@ impl NacelleMemoryBudget {
 }
 
 fn try_acquire_counter(counter: &AtomicUsize, limit: usize) -> bool {
+    if limit == usize::MAX {
+        // Unbounded: the compare-exchange below can only ever succeed, so a
+        // single relaxed increment carries the same meaning for a fraction of
+        // the cost under contention.
+        counter.fetch_add(1, Ordering::Relaxed);
+        return true;
+    }
     let mut current = counter.load(Ordering::Relaxed);
     loop {
         if current >= limit {
@@ -1020,6 +1129,76 @@ mod tests {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
 
     use super::*;
+
+    #[test]
+    fn unbounded_limits_still_track_active_counts() {
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_connections(usize::MAX)
+                .with_max_in_flight_requests(usize::MAX)
+                .with_max_streaming_tasks(usize::MAX),
+        );
+
+        let connection = state.acquire_connection().expect("connection");
+        let request = state.acquire_request().expect("request");
+        let streaming = state.acquire_streaming_task().expect("streaming task");
+        assert_eq!(state.active_connections(), 1);
+        assert_eq!(state.active_requests(), 1);
+        assert_eq!(state.active_streaming_tasks(), 1);
+
+        drop((connection, request, streaming));
+        assert_eq!(state.active_connections(), 0);
+        assert_eq!(state.active_requests(), 0);
+        assert_eq!(state.active_streaming_tasks(), 0);
+    }
+
+    #[test]
+    fn hot_counters_do_not_share_a_cache_line() {
+        let state = NacelleRuntimeState::default();
+        let connections = std::ptr::from_ref(&state.inner.active_connections).addr();
+        let requests = std::ptr::from_ref(&state.inner.active_requests).addr();
+        let streaming = std::ptr::from_ref(&state.inner.active_streaming_tasks).addr();
+        let unit = PaddedCounter::ALIGN;
+        assert!(unit >= 32, "coherence unit should be a plausible line size");
+        assert!(connections.abs_diff(requests) >= unit);
+        assert!(requests.abs_diff(streaming) >= unit);
+    }
+
+    #[test]
+    fn sharded_peer_limits_stay_exact_under_concurrency() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        const LIMIT: usize = 4;
+        const THREADS: usize = 8;
+
+        let state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_connections_per_peer(LIMIT));
+        let peer: IpAddr = "203.0.113.7".parse().expect("peer address");
+        let barrier = Arc::new(Barrier::new(THREADS));
+
+        let permits: Vec<_> = thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let state = state.clone();
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        state.acquire_connection_for_peer(peer).ok()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().expect("thread"))
+                .collect()
+        });
+
+        assert_eq!(permits.len(), LIMIT);
+        drop(permits);
+        // Released peers must be admissible again.
+        assert!(state.acquire_connection_for_peer(peer).is_ok());
+    }
 
     #[cfg(feature = "experimental-memory")]
     fn gauge_snapshot(snapshotter: &metrics_util::debugging::Snapshotter) -> HashMap<String, f64> {

@@ -391,14 +391,16 @@ where
         let server = Rc::new(self);
         let local_addr = listener.local_addr().ok();
         let mut connections = tokio::task::JoinSet::new();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let connection_permit = match server
@@ -422,6 +424,9 @@ where
                     connections.spawn_local(async move {
                         run_local_http_connection(server, stream, connection, connection_permit).await
                     });
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -451,14 +456,16 @@ where
         let local_addr = listener.local_addr().ok();
         let handshake_timeout = tls_config.handshake_timeout();
         let mut connections = tokio::task::JoinSet::new();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let connection_permit = match server
@@ -504,6 +511,9 @@ where
                         run_local_http_connection(server, stream, connection, connection_permit)
                             .await
                     });
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -745,14 +755,16 @@ where
         let server = Arc::new(self);
         let mut connections = tokio::task::JoinSet::new();
         let local_addr = listener.local_addr().ok();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
@@ -780,6 +792,9 @@ where
                         connection,
                         connection_permit,
                     ));
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -880,14 +895,16 @@ where
         let handshake_timeout = tls_config.handshake_timeout();
         let mut connections = tokio::task::JoinSet::new();
         let local_addr = listener.local_addr().ok();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
@@ -937,6 +954,9 @@ where
                         )
                         .await
                     });
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -1525,6 +1545,28 @@ fn log_http_connection_result(
             tracing::warn!(target: "nacelle", transport = "http", error = %error, "connection task failed");
             HttpConnectionTaskOutcome::TaskFailed
         }
+    }
+}
+
+/// Maximum completions reaped before an accept loop polls `accept()` again.
+///
+/// Reaping a batch amortises the per-poll cost, but an unbounded drain would
+/// let one large burst of completions delay admission. This bounds that
+/// latency while keeping the batching benefit.
+const CONNECTION_REAP_BATCH: usize = 32;
+
+/// Reap up to [`CONNECTION_REAP_BATCH`] finished connection tasks.
+///
+/// Non-blocking: returns as soon as no completion is ready, so an idle loop
+/// falls through to `accept()` immediately.
+fn reap_finished_http_connections(
+    connections: &mut tokio::task::JoinSet<Result<(), NacelleError>>,
+) {
+    for _ in 0..CONNECTION_REAP_BATCH {
+        let Some(joined) = connections.try_join_next() else {
+            return;
+        };
+        log_http_connection_result(Some(joined));
     }
 }
 
