@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn default_profile_requires_tls12_and_supports_tls13() {
+    fn default_profile_requires_tls12_and_tests_tls13_when_available() {
         use openssl::asn1::Asn1Time;
         use openssl::hash::MessageDigest;
         use openssl::pkey::PKey;
@@ -152,6 +152,7 @@ mod tests {
                 .options()
                 .contains(SslOptions::NO_TLSV1 | SslOptions::NO_TLSV1_1)
         );
+        #[cfg(nacelle_openssl_tls13)]
         assert!(!builder.options().contains(SslOptions::NO_TLSV1_3));
         let key = PKey::from_rsa(Rsa::generate(2048).expect("RSA key")).expect("private key");
         let mut name = X509NameBuilder::new().expect("name builder");
@@ -178,12 +179,21 @@ mod tests {
         builder.set_private_key(&key).expect("key");
         let acceptor = Arc::new(builder.build());
 
-        for (version, accepted) in [
+        #[cfg(nacelle_openssl_tls13)]
+        let versions = [
             (SslVersion::TLS1, false),
             (SslVersion::TLS1_1, false),
             (SslVersion::TLS1_2, true),
             (SslVersion::TLS1_3, true),
-        ] {
+        ];
+        #[cfg(not(nacelle_openssl_tls13))]
+        let versions = [
+            (SslVersion::TLS1, false),
+            (SslVersion::TLS1_1, false),
+            (SslVersion::TLS1_2, true),
+        ];
+
+        for (version, accepted) in versions {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             let address = listener.local_addr().expect("address");
             let acceptor = acceptor.clone();
