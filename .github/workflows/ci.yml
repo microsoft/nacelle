@@ -216,7 +216,7 @@ jobs:
         # Keep Loom aligned with the Rust versions exercised by the normal
         # build: the MSRV, current stable, and our pinned nightly.
         rust:
-          - "1.95"
+          - "1.97"
           - stable
           - nightly-2026-04-16
     runs-on: ubuntu-latest
