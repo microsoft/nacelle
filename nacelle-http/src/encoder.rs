@@ -156,7 +156,26 @@ async fn pump_incoming_body<Observer>(
                     }
                     body_bytes = next;
                     request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
-                    if tx.send(Ok(data.clone())).await.is_err() {
+                    let data = data.clone();
+                    #[cfg(feature = "experimental-memory")]
+                    let data = if body_len_hint.is_none() {
+                        match runtime_state
+                            .allocate_memory_with_timeout(
+                                data.len(),
+                                runtime_state.limits().memory_allocation_timeout,
+                            )
+                            .await
+                        {
+                            Ok(allocation) => NacelleBody::accounted_chunk(data, allocation),
+                            Err(error) => {
+                                let _ = tx.send(Err(error)).await;
+                                break;
+                            }
+                        }
+                    } else {
+                        data
+                    };
+                    if tx.send(Ok(data)).await.is_err() {
                         break;
                     }
                 }

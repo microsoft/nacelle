@@ -6,7 +6,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use openssl::ssl::{NameType, SslAcceptor, SslFiletype, SslMethod, SslRef};
+use openssl::ssl::{
+    NameType, SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod, SslRef, SslVersion,
+};
 
 /// Reloadable OpenSSL server configuration.
 #[derive(Clone)]
@@ -36,6 +38,9 @@ impl NacelleOpenSslConfig {
 
     /// Load a certificate chain and private key from PEM files.
     ///
+    /// Uses Mozilla's v5 intermediate profile with a TLS 1.2 minimum. Supply a
+    /// custom acceptor through [`Self::from_acceptor`] for other TLS policies.
+    ///
     /// # Errors
     ///
     /// Returns an I/O error when files cannot be read or OpenSSL rejects the
@@ -44,8 +49,7 @@ impl NacelleOpenSslConfig {
         certificate_path: impl AsRef<Path>,
         private_key_path: impl AsRef<Path>,
     ) -> io::Result<Self> {
-        let mut builder =
-            SslAcceptor::mozilla_intermediate(SslMethod::tls_server()).map_err(io::Error::other)?;
+        let mut builder = default_acceptor_builder()?;
         builder
             .set_private_key_file(private_key_path, SslFiletype::PEM)
             .map_err(io::Error::other)?;
@@ -93,6 +97,15 @@ impl NacelleOpenSslConfig {
     }
 }
 
+fn default_acceptor_builder() -> io::Result<SslAcceptorBuilder> {
+    let mut builder =
+        SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server()).map_err(io::Error::other)?;
+    builder
+        .set_min_proto_version(Some(SslVersion::TLS1_2))
+        .map_err(io::Error::other)?;
+    Ok(builder)
+}
+
 /// Extract negotiated TLS metadata from an established OpenSSL connection.
 #[must_use]
 pub fn connection_tls_meta(ssl: &SslRef) -> NacelleConnectionTlsMeta {
@@ -121,5 +134,100 @@ mod tests {
     fn config_from_missing_files_fails() {
         let result = NacelleOpenSslConfig::from_pem_files("missing-cert.pem", "missing-key.pem");
         result.expect_err("missing files should fail");
+    }
+
+    #[test]
+    fn default_profile_requires_tls12_and_tests_tls13_when_available() {
+        use openssl::asn1::Asn1Time;
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::rsa::Rsa;
+        use openssl::ssl::{SslConnector, SslOptions, SslVerifyMode};
+        use openssl::x509::{X509, X509NameBuilder};
+
+        let mut builder = default_acceptor_builder().expect("acceptor builder");
+        assert_eq!(builder.min_proto_version(), Some(SslVersion::TLS1_2));
+        assert!(
+            builder
+                .options()
+                .contains(SslOptions::NO_TLSV1 | SslOptions::NO_TLSV1_1)
+        );
+        #[cfg(nacelle_openssl_tls13)]
+        assert!(!builder.options().contains(SslOptions::NO_TLSV1_3));
+        let key = PKey::from_rsa(Rsa::generate(2048).expect("RSA key")).expect("private key");
+        let mut name = X509NameBuilder::new().expect("name builder");
+        name.append_entry_by_text("CN", "localhost")
+            .expect("common name");
+        let name = name.build();
+        let mut certificate = X509::builder().expect("certificate builder");
+        certificate.set_version(2).expect("version");
+        certificate.set_subject_name(&name).expect("subject");
+        certificate.set_issuer_name(&name).expect("issuer");
+        certificate.set_pubkey(&key).expect("public key");
+        certificate
+            .set_not_before(&Asn1Time::days_from_now(0).expect("not before"))
+            .expect("validity start");
+        certificate
+            .set_not_after(&Asn1Time::days_from_now(1).expect("not after"))
+            .expect("validity end");
+        certificate
+            .sign(&key, MessageDigest::sha256())
+            .expect("sign");
+        builder
+            .set_certificate(&certificate.build())
+            .expect("certificate");
+        builder.set_private_key(&key).expect("key");
+        let acceptor = Arc::new(builder.build());
+
+        #[cfg(nacelle_openssl_tls13)]
+        let versions = [
+            (SslVersion::TLS1, false),
+            (SslVersion::TLS1_1, false),
+            (SslVersion::TLS1_2, true),
+            (SslVersion::TLS1_3, true),
+        ];
+        #[cfg(not(nacelle_openssl_tls13))]
+        let versions = [
+            (SslVersion::TLS1, false),
+            (SslVersion::TLS1_1, false),
+            (SslVersion::TLS1_2, true),
+        ];
+
+        for (version, accepted) in versions {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let address = listener.local_addr().expect("address");
+            let acceptor = acceptor.clone();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().expect("accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .expect("write timeout");
+                acceptor.accept(stream).is_ok()
+            });
+            let mut client =
+                SslConnector::builder(SslMethod::tls_client()).expect("client builder");
+            client.set_verify(SslVerifyMode::NONE);
+            client.set_security_level(0);
+            client
+                .set_min_proto_version(Some(version))
+                .expect("client minimum");
+            client
+                .set_max_proto_version(Some(version))
+                .expect("client maximum");
+            let stream = std::net::TcpStream::connect(address).expect("connect");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("read timeout");
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .expect("write timeout");
+            let connected = client.build().connect("localhost", stream).is_ok();
+            let server_connected = server.join().expect("server thread");
+            assert_eq!(connected, accepted, "client {version:?}");
+            assert_eq!(server_connected, accepted, "server {version:?}");
+        }
     }
 }
