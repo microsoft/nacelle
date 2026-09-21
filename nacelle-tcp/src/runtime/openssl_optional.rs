@@ -21,7 +21,7 @@ use nacelle_openssl::NacelleOpenSslConfig;
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
-    record_connection_rejection,
+    reap_finished_connections, record_connection_rejection,
 };
 
 pub async fn serve_tcp_optional_openssl<P, H, OH, Observer>(

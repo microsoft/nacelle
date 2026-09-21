@@ -21,7 +21,7 @@ use nacelle_openssl::NacelleOpenSslConfig;
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
-    run_accept_loop,
+    reap_finished_connections, run_accept_loop,
 };
 
 /// Listen on `addr` and serve framed TCP connections over OpenSSL.

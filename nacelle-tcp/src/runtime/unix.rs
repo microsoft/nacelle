@@ -9,6 +9,7 @@ use crate::protocol::{
     Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol, TcpHandler,
     TcpOneWayHandler,
 };
+use crate::runtime::common::reap_finished_connections;
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
