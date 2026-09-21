@@ -33,8 +33,8 @@ resolver = "2"
 [workspace.package]
 license = "MIT"
 repository = "https://github.com/microsoft/nacelle"
-homepage = "https://github.com/microsoft/nacelle"
-rust-version = "1.95"
+homepage = "https://microsoft.github.io/nacelle"
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Internal crates
