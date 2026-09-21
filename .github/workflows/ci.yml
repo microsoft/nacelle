@@ -95,7 +95,9 @@ jobs:
       - name: Install Rust with Clippy
         run: rustup update stable && rustup component add clippy
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
       - name: Check workspace lints
         run: .github/scripts/check-feature-matrix.sh clippy --all-targets -- -D warnings
       - name: Reject multiple TLS backends
@@ -110,7 +112,9 @@ jobs:
       - name: Install OpenSSL build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
       - name: Check
         run: >-
           cargo hack check --feature-powerset --depth 2 --optional-deps --rust-version
@@ -157,7 +161,9 @@ jobs:
           "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
           "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
       - name: Test
         run: .github/scripts/test-stable.sh test
 
@@ -173,7 +179,9 @@ jobs:
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
       - name: Test
         run: .github/scripts/test-stable.sh test
 
@@ -227,6 +235,8 @@ jobs:
       - name: Install Rust
         run: rustup update $nightly && rustup default $nightly
       - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
       - name: Run tests with -Cpanic=abort
         run: .github/scripts/panic-abort.sh
