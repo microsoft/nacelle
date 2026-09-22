@@ -2274,6 +2274,69 @@ async fn shared_serial_listener_serves_and_drains_connection_permits() {
 }
 
 #[tokio::test]
+async fn shared_serial_listener_connection_churn_does_not_leak_permits() {
+    const CONNECTIONS: usize = 32;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let observer = NacelleInMemoryObserver::new();
+    let server = Arc::new(
+        SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+            .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
+            .with_runtime_state(runtime_state.clone()),
+    );
+    let shutdown = NacelleShutdown::new();
+    let server_task = tokio::spawn(
+        crate::runtime::serve_serial_tcp_listener_with_options_and_shutdown_deadline(
+            server,
+            listener,
+            crate::options::NacelleTcpOptions::default(),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ),
+    );
+
+    for _ in 0..CONNECTIONS {
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client.write_all(&[0]).await.expect("request should write");
+        let mut response = [0_u8; 1];
+        client
+            .read_exact(&mut response)
+            .await
+            .expect("response should read");
+        assert_eq!(&response, b"0");
+        client.shutdown().await.expect("client should close");
+        drop(client);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while runtime_state.active_connections() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("connection permit should be released");
+    }
+
+    shutdown.shutdown();
+    server_task
+        .await
+        .expect("listener task should join")
+        .expect("listener should drain cleanly");
+    assert_eq!(runtime_state.active_connections(), 0);
+    assert!(
+        observer
+            .events()
+            .iter()
+            .all(|event| event.kind != NacelleTelemetryEventKind::ConnectionRejected)
+    );
+}
+
+#[tokio::test]
 async fn graceful_drain_delivers_completed_coalesced_response() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

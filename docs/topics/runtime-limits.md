@@ -20,6 +20,10 @@ The important production habit is to size limits together. A high connection
 count with large read and response buffers is a memory budget decision, not just
 a concurrency decision.
 
+Set `NacelleLimits::max_connections` to zero through
+`with_max_connections(0)` to disable only the process-wide connection ceiling.
+Connection accounting and configured per-peer limits remain active.
+
 For configuration details:
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
