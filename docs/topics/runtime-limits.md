@@ -20,6 +20,10 @@ The important production habit is to size limits together. A high connection
 count with large read and response buffers is a memory budget decision, not just
 a concurrency decision.
 
+Call `NacelleLimits::without_max_connections()` to disable only the process-wide
+connection ceiling. Connection accounting and configured per-peer limits remain
+active.
+
 For configuration details:
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
@@ -41,6 +45,21 @@ corresponding HTTP `without_*_timeout()` or
 `without_max_connection_age()` builders. Keep bounded defaults for public-edge
 listeners unless another layer enforces an equivalent deadline.
 
+TCP idle and read deadlines are independent. The default 120-second idle deadline
+bounds waiting for the first byte of a message with an empty input buffer. Once
+bytes are available, the 30-second read deadline bounds decoding that message
+without resetting on additional bytes. Each subsequent request-body read also
+uses the read deadline. Idle time does not include active messages, bodies,
+handlers, or response delivery.
+
+In 0.3.2, this replaces the earlier read-or-idle fallback: silent connections now
+use the idle deadline rather than the read deadline. Set
+`with_idle_timeout(Duration::from_secs(30))` to retain a 30-second silent-connection
+limit. `without_idle_timeout()` now permits indefinite waiting for the next
+message while still bounding active reads. `without_read_timeout()` leaves idle
+waiting bounded but makes active message and body reads unbounded; the idle
+deadline no longer protects those reads.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
@@ -54,9 +73,15 @@ Recommended presets:
 
 Experimental memory budget:
 
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
+
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =

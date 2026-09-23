@@ -44,6 +44,12 @@ start them at 8 KiB. `with_capacity` changes that initial capacity, while
 `with_buffer` accepts caller-provided storage. The buffers remain accessible
 through `buffer` and `buffer_mut` and are returned by `into_parts`.
 
+`MessageReader::read_more()` performs one transport read into that same buffer
+without decoding, retaining EOF state for `read_message()`. A pending read can
+be cancelled without consuming bytes. This lets callers time first-byte waiting
+separately from message completion. Decode between reads to enforce input limits;
+`read_more()` does not enforce them itself.
+
 Decoded messages can be:
 
 - `freeze()` a message into immutable `Bytes`;

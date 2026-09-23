@@ -10,6 +10,12 @@ experimental and not compiled by default. Enable `experimental-memory` and set
 feature is use at your own risk and may change or be removed in a future minor
 release.
 
+`NacelleLimits::without_max_connections()` disables the process-wide connection
+admission ceiling. Active connections are still counted for telemetry, and any
+configured per-peer connection or connection-open rate limits still apply. Use
+this only when another layer enforces an appropriate connection and memory
+boundary.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
@@ -26,9 +32,15 @@ Recommended presets:
 
 Experimental memory budget:
 
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
+
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =
@@ -75,8 +87,13 @@ allocation and its complete replacement. Size the base buffer near a measured
 batch size when using larger thresholds.
 
 Use `NacelleTcpLimits` for TCP socket read, socket write, final writer shutdown,
-and idle timeouts. Set `shutdown_timeout` independently when finalization needs
-a shorter deadline than ordinary response delivery. Disable these only through
+and idle timeouts. `idle_timeout` (120 seconds by default) bounds waiting for the
+first byte of a message when the input buffer is empty. Once input is available,
+`read_timeout` (30 seconds by default) bounds completion of the decoded message;
+it also bounds each subsequent request-body read. Additional message bytes do
+not restart the message deadline. These limits apply independently, including
+when one is disabled. Set `shutdown_timeout` independently when finalization
+needs a shorter deadline than ordinary response delivery. Disable these only through
 the corresponding `without_*_timeout()` builders when an explicitly unbounded
 policy is required.
 Use `NacelleHttpLimits` on `HyperServer` for HTTP header read, request body

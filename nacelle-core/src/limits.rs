@@ -58,6 +58,12 @@ impl NacelleLimits {
         self
     }
 
+    /// Disable the process-wide concurrent connection limit.
+    pub fn without_max_connections(mut self) -> Self {
+        self.max_connections = usize::MAX;
+        self
+    }
+
     pub fn with_max_in_flight_requests(mut self, max: usize) -> Self {
         self.max_in_flight_requests = max.max(1);
         self
@@ -1150,6 +1156,36 @@ mod tests {
         assert_eq!(state.active_connections(), 0);
         assert_eq!(state.active_requests(), 0);
         assert_eq!(state.active_streaming_tasks(), 0);
+    }
+
+    #[test]
+    fn disabled_connection_limit_bypasses_admission_without_leaking_permits() {
+        const ROUNDS: usize = 32;
+        const CONNECTIONS_PER_ROUND: usize = 8;
+
+        let state = NacelleRuntimeState::new(NacelleLimits::default().without_max_connections());
+
+        for _ in 0..ROUNDS {
+            let connections: Vec<_> = (0..CONNECTIONS_PER_ROUND)
+                .map(|_| state.acquire_connection().expect("unbounded connection"))
+                .collect();
+            assert_eq!(state.active_connections(), CONNECTIONS_PER_ROUND);
+            drop(connections);
+            assert_eq!(state.active_connections(), 0);
+        }
+    }
+
+    #[test]
+    fn max_connections_builder_clamps_zero_to_one() {
+        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(0));
+
+        let _connection = state.acquire_connection().expect("first connection");
+        assert!(matches!(
+            state.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections
+            ))
+        ));
     }
 
     #[test]

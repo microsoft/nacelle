@@ -10,6 +10,12 @@ experimental and not compiled by default. Enable `experimental-memory` and set
 feature is use at your own risk and may change or be removed in a future minor
 release.
 
+`NacelleLimits::without_max_connections()` disables the process-wide connection
+admission ceiling. Active connections are still counted for telemetry, and any
+configured per-peer connection or connection-open rate limits still apply. Use
+this only when another layer enforces an appropriate connection and memory
+boundary.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
@@ -30,9 +36,15 @@ library. Custom acceptors own their own protocol policy.
 
 Experimental memory budget:
 
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
+
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =
@@ -93,8 +105,18 @@ complete replacement; a growth attempt is rejected before encoding when that
 temporary allocation cannot be charged.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
-and idle timeouts. Shutdown uses its own deadline so finalization policy can be
-tuned independently of ordinary response delivery. The corresponding
+and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for
+the first byte of a message with an empty input buffer, including the first
+message on a connection. `read_timeout` defaults to 30 seconds and bounds
+completion of a decoded message once bytes are available. Buffered partial
+messages enter the read phase immediately; additional bytes do not restart its
+deadline. Subsequent request-body reads each use `read_timeout`, never
+`idle_timeout`. Idle expiry reports `NacelleTimeoutReason::Idle`; message and
+body read expiry report `TcpRead` and `RequestBodyRead`, respectively.
+
+Neither timeout is a fallback for the other. Idle time excludes handler execution
+and response delivery. Shutdown uses its own deadline so finalization policy can
+be tuned independently of ordinary response delivery. The corresponding
 `without_*_timeout()` builders make an explicitly unbounded policy possible.
 `NacelleHttpLimits` controls HTTP header read, request body read, response
 write, keep-alive, and max connection age behavior on `HyperServer`. Its
