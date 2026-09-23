@@ -36,9 +36,15 @@ library. Custom acceptors own their own protocol policy.
 
 Experimental memory budget:
 
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
+
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =
