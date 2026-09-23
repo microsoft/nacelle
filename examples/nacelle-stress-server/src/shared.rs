@@ -12,7 +12,7 @@ use nacelle::core::pipeline::handler_fn;
 use nacelle::core::telemetry::{NacelleTelemetryObserver, NoopObserver};
 use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry};
 use nacelle::tcp::{
-    NacelleTcpConfig, NacelleTcpLimits, NoOneWayHandler, ResponseWritePolicy, SerialTcpHandler,
+    NacelleTcpConfig, NacelleTcpLimits, ResponseWritePolicy, SerialTcpHandler,
     SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpRequestContext, TcpResponse,
     TcpServer,
 };
@@ -375,17 +375,8 @@ impl SerialTcpHandler<LengthDelimitedProtocol> for SerialEchoHandler {
 }
 
 pub enum StressServer<H, Observer = NoopObserver> {
-    Shared(
-        TcpServer<LengthDelimitedProtocol, H, NoOneWayHandler<LengthDelimitedProtocol>, Observer>,
-    ),
-    Serial(
-        SerialTcpServer<
-            LengthDelimitedProtocol,
-            SerialEchoHandler,
-            NoOneWayHandler<LengthDelimitedProtocol>,
-            Observer,
-        >,
-    ),
+    Shared(TcpServer<LengthDelimitedProtocol, H, Observer>),
+    Serial(SerialTcpServer<LengthDelimitedProtocol, SerialEchoHandler, Observer>),
 }
 
 impl<H, Observer> Clone for StressServer<H, Observer>

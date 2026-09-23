@@ -16,6 +16,13 @@ a typed context with a streaming `NacelleBody`, connection metadata, and concret
 application and connection state, so services can process chunks without forcing
 full buffering.
 
+TCP handlers can also return `Ok(context.complete())` to finish without sending
+bytes. Both outcomes use one request pipeline. Protocols can implement
+`Protocol::error_response` to map framework or handler failures to a typed
+response that uses the normal encoder, including for requests normally completed
+silently. See [error handling](docs/reference/protocol.md#error-handling) for
+delivery boundaries and migration details.
+
 ## Status
 
 Nacelle is currently `0.3.x`. It is ready for experiments and prototype
@@ -114,6 +121,11 @@ cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0
 # TCP and HTTP listeners sharing app state and one host
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
+
+The TCP `echo` example echoes opcode `1`, drains opcode `2` and completes
+silently, and returns a protocol-encoded error for unknown opcodes. This is
+example-specific application policy, not a rule imposed by the reference
+protocol.
 
 ## What Nacelle Provides
 

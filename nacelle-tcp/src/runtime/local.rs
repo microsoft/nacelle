@@ -21,10 +21,7 @@ use crate::connection::{
 use crate::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
-use crate::protocol::{
-    LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler, LocalTcpOneWayHandler,
-    Protocol,
-};
+use crate::protocol::{LocalSerialTcpHandler, LocalTcpHandler, Protocol};
 use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
 
@@ -37,8 +34,8 @@ use super::openssl_optional::detect_tls_handshake;
 ///
 /// This function must run inside a Tokio [`tokio::task::LocalSet`]. Each
 /// accepted stream is spawned locally and remains on the accepting worker.
-pub async fn serve_local_tcp_listener<P, H, OH, Observer>(
-    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_tcp_listener<P, H, Observer>(
+    server: Rc<LocalTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -47,7 +44,6 @@ pub async fn serve_local_tcp_listener<P, H, OH, Observer>(
 where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -84,7 +80,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -115,8 +110,8 @@ where
 }
 
 /// Serve one worker-local serial TCP listener until shared shutdown.
-pub async fn serve_local_serial_tcp_listener<P, H, OH, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_serial_tcp_listener<P, H, Observer>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -125,7 +120,6 @@ pub async fn serve_local_serial_tcp_listener<P, H, OH, Observer>(
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -162,7 +156,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -194,8 +187,8 @@ where
 
 /// Serve one worker-local Rustls TCP listener until shared shutdown.
 #[cfg(feature = "rustls")]
-pub async fn serve_local_tcp_tls_listener<P, H, OH, Observer>(
-    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_tcp_tls_listener<P, H, Observer>(
+    server: Rc<LocalTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleTlsConfig,
@@ -205,7 +198,6 @@ pub async fn serve_local_tcp_tls_listener<P, H, OH, Observer>(
 where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -261,7 +253,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -293,8 +284,8 @@ where
 
 /// Serve one worker-local required-OpenSSL TCP listener until shared shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_tcp_openssl_listener<P, H, OH, Observer>(
-    server: Rc<LocalTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_tcp_openssl_listener<P, H, Observer>(
+    server: Rc<LocalTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -304,7 +295,6 @@ pub async fn serve_local_tcp_openssl_listener<P, H, OH, Observer>(
 where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
-    OH: LocalTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -364,7 +354,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -396,8 +385,8 @@ where
 
 /// Serve one worker-local serial required-OpenSSL listener until shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_serial_tcp_openssl_listener<P, H, OH, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -407,7 +396,6 @@ pub async fn serve_local_serial_tcp_openssl_listener<P, H, OH, Observer>(
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -466,7 +454,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -499,8 +486,8 @@ where
 /// Serve one worker-local serial plaintext-or-OpenSSL listener until shutdown.
 #[cfg(feature = "experimental-openssl-detection")]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, OH, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -511,7 +498,6 @@ pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, OH, Observer
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -563,7 +549,6 @@ where
                             stream,
                             server.protocol(),
                             server.handler(),
-                            server.one_way_handler(),
                             server.config(),
                             server.telemetry(),
                             server.runtime_state(),
@@ -596,7 +581,6 @@ where
                         stream,
                         server.protocol(),
                         server.handler(),
-                        server.one_way_handler(),
                         server.config(),
                         server.telemetry(),
                         server.runtime_state(),
@@ -700,12 +684,12 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
-    use crate::{DecodedMessage, DecodedRequest, FrameBuffer, TcpRequestContext, TcpResponse};
+    use crate::{DecodedRequest, FrameBuffer, TcpRequestContext, TcpResponse};
 
     struct Decoder;
 
     impl MessageDecoder for Decoder {
-        type Message = DecodedMessage<(), std::convert::Infallible>;
+        type Message = DecodedRequest<()>;
         type Error = NacelleError;
 
         fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -713,10 +697,10 @@ mod tests {
                 return Ok(None);
             }
             let _ = src.split_to(1);
-            Ok(Some(DecodedMessage::Request(DecodedRequest {
+            Ok(Some(DecodedRequest {
                 request: (),
                 body_len: 0,
-            })))
+            }))
         }
     }
 
@@ -724,7 +708,6 @@ mod tests {
 
     impl Protocol for TestProtocol {
         type Request = ();
-        type OneWayRequest = std::convert::Infallible;
         type Response = TcpResponse;
         type ConnectionState = ();
         type Decoder = Decoder;
@@ -737,13 +720,6 @@ mod tests {
         fn connection_state(&self, _connection: &nacelle_core::pipeline::ConnectionInfo) {}
         fn request_wire_bytes(&self, _request: &(), body_len: usize) -> usize {
             body_len
-        }
-        fn one_way_wire_bytes(
-            &self,
-            request: &std::convert::Infallible,
-            _body_len: usize,
-        ) -> usize {
-            match *request {}
         }
         fn response_context(&self, _request: &()) {}
         fn error_context(&self, _request: &()) {}
@@ -773,14 +749,6 @@ mod tests {
         fn encode_response_end(
             &self,
             _context: &mut (),
-            _dst: &mut FrameBuffer<'_>,
-        ) -> Result<(), NacelleError> {
-            Ok(())
-        }
-        fn encode_error(
-            &self,
-            _context: Option<&()>,
-            _error: &NacelleError,
             _dst: &mut FrameBuffer<'_>,
         ) -> Result<(), NacelleError> {
             Ok(())

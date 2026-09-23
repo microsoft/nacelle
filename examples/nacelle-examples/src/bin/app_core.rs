@@ -1,11 +1,11 @@
-use std::convert::Infallible;
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use nacelle::core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle::prelude::*;
 use nacelle::tcp::{
-    FrameBuffer, Protocol, TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer,
+    FrameBuffer, Protocol, TcpCompletion, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
+    TcpServer,
 };
 use nacelle_reference_protocol::{
     FrameErrorContext, FrameRequest, FrameResponseContext, LengthDelimitedProtocol,
@@ -49,7 +49,6 @@ impl AppXProtocol {
 
 impl Protocol for AppXProtocol {
     type Request = FrameRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = LengthDelimitedRequestDecoder;
@@ -68,10 +67,6 @@ impl Protocol for AppXProtocol {
 
     fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize {
         self.inner.request_wire_bytes(request, body_len)
-    }
-
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, body_len: usize) -> usize {
-        self.inner.one_way_wire_bytes(request, body_len)
     }
 
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
@@ -121,13 +116,12 @@ impl Protocol for AppXProtocol {
         self.inner.encode_response_end(context, dst)
     }
 
-    fn encode_error(
+    fn error_response(
         &self,
         context: Option<&Self::ErrorContext>,
         error: &NacelleError,
-        dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        self.inner.encode_error(context, error, dst)
+    ) -> Option<TcpCompletion<Self::Response, Self::ResponseContext>> {
+        self.inner.error_response(context, error)
     }
 }
 

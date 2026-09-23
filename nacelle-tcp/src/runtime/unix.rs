@@ -5,10 +5,7 @@ use std::time::Duration;
 use tokio::net::UnixListener;
 
 use crate::options::NacelleUnixSocketOptions;
-use crate::protocol::{
-    Protocol, SerialTcpHandler, SerialTcpOneWayHandler, SharedProtocol, TcpHandler,
-    TcpOneWayHandler,
-};
+use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
 use crate::runtime::common::reap_finished_connections;
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
@@ -28,14 +25,13 @@ use super::common::{
 ///
 /// The socket path is passed directly to Tokio. Existing socket files are not
 /// removed automatically.
-pub async fn serve_unix<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -43,15 +39,14 @@ where
 }
 
 /// Listen on a Unix domain socket until shutdown is requested.
-pub async fn serve_unix_with_shutdown<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_shutdown<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_unix_with_shutdown_timeout(server, path, shutdown, Duration::from_secs(30)).await
@@ -59,8 +54,8 @@ where
 
 /// Listen on a Unix domain socket until shutdown is requested, then drain or
 /// abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -68,7 +63,6 @@ pub async fn serve_unix_with_shutdown_timeout<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_unix_with_shutdown_deadline(
@@ -81,15 +75,14 @@ where
 }
 
 /// Listen on a Unix domain socket with explicit socket-file lifecycle options.
-pub async fn serve_unix_with_options<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_options<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -98,8 +91,8 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options until
 /// shutdown is requested.
-pub async fn serve_unix_with_options_and_shutdown<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -107,7 +100,6 @@ pub async fn serve_unix_with_options_and_shutdown<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_unix_with_options_and_shutdown_timeout(
@@ -122,8 +114,8 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options, then drain
 /// or abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -132,7 +124,6 @@ pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -146,8 +137,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -155,7 +146,6 @@ pub async fn serve_unix_with_shutdown_deadline<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_unix_with_options_and_shutdown_deadline(
@@ -169,8 +159,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -179,7 +169,6 @@ pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let path = path.as_ref();
@@ -197,8 +186,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_listener_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<TcpServer<P, H, OH, Observer>>,
+pub async fn serve_unix_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<TcpServer<P, H, Observer>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,
@@ -207,7 +196,6 @@ pub async fn serve_unix_listener_with_shutdown_deadline<P, H, OH, Observer>(
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
-    OH: TcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let mut connections = tokio::task::JoinSet::new();
@@ -265,15 +253,14 @@ where
 }
 
 /// Listen on a Unix domain socket and serve serial mutable-state connections.
-pub async fn serve_serial_unix<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -281,8 +268,8 @@ where
 }
 
 /// Listen on a Unix domain socket for serial connections until shutdown.
-pub async fn serve_serial_unix_with_shutdown<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_shutdown<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -290,7 +277,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
@@ -304,8 +290,8 @@ where
 }
 
 /// Listen for serial Unix connections with a bounded shutdown drain.
-pub async fn serve_serial_unix_with_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -314,7 +300,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_unix_with_shutdown_deadline(
@@ -327,8 +312,8 @@ where
 }
 
 /// Listen on a Unix domain socket for serial connections with explicit options.
-pub async fn serve_serial_unix_with_options<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_options<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
@@ -336,7 +321,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -351,8 +335,8 @@ where
 }
 
 /// Listen with serial Unix socket options until shutdown is requested.
-pub async fn serve_serial_unix_with_options_and_shutdown<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -361,7 +345,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_unix_with_options_and_shutdown_timeout(
@@ -375,8 +358,8 @@ where
 }
 
 /// Listen with serial Unix options and a bounded shutdown drain.
-pub async fn serve_serial_unix_with_options_and_shutdown_timeout<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown_timeout<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -386,7 +369,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
@@ -400,8 +382,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -410,7 +392,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
@@ -424,8 +405,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_with_options_and_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -435,7 +416,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let path = path.as_ref();
@@ -453,8 +433,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_listener_with_shutdown_deadline<P, H, OH, Observer>(
-    server: Arc<SerialTcpServer<P, H, OH, Observer>>,
+pub async fn serve_serial_unix_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<SerialTcpServer<P, H, Observer>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,
@@ -464,7 +444,6 @@ where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
-    OH: SerialTcpOneWayHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("unix_socket");
@@ -531,7 +510,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::{Bytes, BytesMut};
@@ -540,8 +518,7 @@ mod tests {
 
     use super::*;
     use crate::protocol::{
-        DecodedMessage, DecodedRequest, FrameBuffer, SerialTcpRequestContext, TcpHandlerCompletion,
-        TcpResponse,
+        DecodedRequest, FrameBuffer, SerialTcpRequestContext, TcpHandlerCompletion, TcpResponse,
     };
     use nacelle_core::pipeline::ConnectionInfo;
 
@@ -551,7 +528,7 @@ mod tests {
     struct TestDecoder;
 
     impl MessageDecoder for TestDecoder {
-        type Message = DecodedMessage<(), Infallible>;
+        type Message = DecodedRequest<()>;
         type Error = NacelleError;
 
         fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -559,16 +536,15 @@ mod tests {
                 return Ok(None);
             }
             let _ = src.split_to(1);
-            Ok(Some(DecodedMessage::Request(DecodedRequest {
+            Ok(Some(DecodedRequest {
                 request: (),
                 body_len: 0,
-            })))
+            }))
         }
     }
 
     impl Protocol for TestProtocol {
         type Request = ();
-        type OneWayRequest = Infallible;
         type Response = TcpResponse;
         type ConnectionState = ();
         type Decoder = TestDecoder;
@@ -583,10 +559,6 @@ mod tests {
 
         fn request_wire_bytes(&self, _request: &(), _body_len: usize) -> usize {
             1
-        }
-
-        fn one_way_wire_bytes(&self, request: &Infallible, _body_len: usize) -> usize {
-            match *request {}
         }
 
         fn response_context(&self, _request: &()) {}
@@ -624,15 +596,6 @@ mod tests {
         fn encode_response_end(
             &self,
             _context: &mut (),
-            _dst: &mut FrameBuffer<'_>,
-        ) -> Result<(), NacelleError> {
-            Ok(())
-        }
-
-        fn encode_error(
-            &self,
-            _context: Option<&()>,
-            _error: &NacelleError,
             _dst: &mut FrameBuffer<'_>,
         ) -> Result<(), NacelleError> {
             Ok(())

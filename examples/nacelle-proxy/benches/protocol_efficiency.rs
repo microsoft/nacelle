@@ -5,7 +5,7 @@ use std::hint::black_box;
 use bytes::BytesMut;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use nacelle::codec::MessageDecoder;
-use nacelle::tcp::{DecodedMessage, Protocol};
+use nacelle::tcp::Protocol;
 use nacelle_proxy::wire::ProxyProtocol;
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_START};
 
@@ -38,14 +38,10 @@ fn protocol_efficiency(criterion: &mut Criterion) {
 
             let mut parser = ProxyProtocol.decoder(MAX_FRAME_LEN);
             for _ in 0..FRAME_COUNT {
-                let message = parser
+                let request = parser
                     .decode(&mut encoded)
                     .expect("benchmark decode")
                     .expect("benchmark frame");
-                let request = match message {
-                    DecodedMessage::Request(request) => request,
-                    DecodedMessage::OneWay(one_way) => match one_way.request {},
-                };
                 black_box(request.request);
                 black_box(encoded.split_to(request.body_len));
             }

@@ -5,7 +5,7 @@ use nacelle::core::{
     NacelleInMemoryObserver, NacelleLimits, NacellePeerRateLimiter, NacelleRuntimeState,
     NacelleTelemetry, NacelleTransport,
 };
-use nacelle::tcp::{DecodedMessage, FrameBuffer, Protocol};
+use nacelle::tcp::{FrameBuffer, Protocol};
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use std::hint::black_box;
 use std::net::IpAddr;
@@ -65,10 +65,6 @@ fn protocol_frame_benches(c: &mut Criterion) {
                     .decode(&mut buf)
                     .expect("decode should succeed")
                     .expect("head should be present");
-                let decoded = match decoded {
-                    DecodedMessage::Request(decoded) => decoded,
-                    DecodedMessage::OneWay(decoded) => match decoded.request {},
-                };
                 black_box(decoded)
             },
             BatchSize::SmallInput,
@@ -82,10 +78,6 @@ fn protocol_frame_benches(c: &mut Criterion) {
                     .decode(&mut buf)
                     .expect("decode should succeed")
                     .expect("head should be present");
-                let decoded = match decoded {
-                    DecodedMessage::Request(decoded) => decoded,
-                    DecodedMessage::OneWay(decoded) => match decoded.request {},
-                };
                 black_box(decoded)
             },
             BatchSize::SmallInput,
@@ -145,10 +137,6 @@ fn protocol_pipeline_benches(c: &mut Criterion) {
                         .decode(&mut input)
                         .expect("pipeline decode should succeed")
                         .expect("pipeline request should decode");
-                    let decoded = match decoded {
-                        DecodedMessage::Request(decoded) => decoded,
-                        DecodedMessage::OneWay(decoded) => match decoded.request {},
-                    };
                     let body_len = decoded.body_len;
                     black_box(decoded);
                     black_box(input.split_to(body_len));
@@ -174,10 +162,6 @@ fn protocol_pipeline_benches(c: &mut Criterion) {
                         .decode_buffered()
                         .expect("buffered pipeline decode should succeed")
                         .expect("buffered pipeline request should decode");
-                    let decoded = match decoded {
-                        DecodedMessage::Request(decoded) => decoded,
-                        DecodedMessage::OneWay(decoded) => match decoded.request {},
-                    };
                     let body_len = decoded.body_len;
                     black_box(decoded);
                     black_box(reader.buffer_mut().split_to(body_len));

@@ -3,7 +3,10 @@ use tokio::io::AsyncWrite;
 
 use crate::config::{NacelleTcpConfig, ResponseWritePolicy};
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{FrameBuffer, Protocol, ResponseDeliveryPhase, TcpCompletion};
+use crate::protocol::{
+    FrameBuffer, Protocol, ResponseAbortReason, ResponseCompletionCallback,
+    ResponseDeliveryOutcome, ResponseDeliveryPhase, TcpCompletion,
+};
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 #[cfg(feature = "experimental-memory")]
 use nacelle_core::limits::NacelleMemoryAllocation;
@@ -14,6 +17,52 @@ use super::io::{flush_with_timeout, write_all_tracked_with_timeout};
 #[cfg(test)]
 use super::metrics::TcpTelemetryPlan;
 use super::metrics::{finish_tcp_phase, record_tcp_error, start_tcp_phase};
+
+struct ResponseCompletionGuard {
+    item: Option<ResponseCompletionCallback>,
+}
+
+impl ResponseCompletionGuard {
+    fn new(item: ResponseCompletionCallback) -> Self {
+        Self { item: Some(item) }
+    }
+
+    fn deliver(mut self, encoded_wire_bytes: usize, written_wire_bytes: usize) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Delivered {
+                encoded_wire_bytes,
+                written_wire_bytes,
+            });
+        }
+    }
+
+    fn fail(
+        mut self,
+        phase: ResponseDeliveryPhase,
+        encoded_wire_bytes: usize,
+        written_wire_bytes: usize,
+        error: &NacelleError,
+    ) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Failed {
+                phase,
+                encoded_wire_bytes,
+                written_wire_bytes,
+                error,
+            });
+        }
+    }
+}
+
+impl Drop for ResponseCompletionGuard {
+    fn drop(&mut self) {
+        if let Some(item) = self.item.take() {
+            item(ResponseDeliveryOutcome::Aborted {
+                reason: ResponseAbortReason::Cancelled,
+            });
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct ResponseDeliveryError {
@@ -394,6 +443,102 @@ impl ResponseDelivery {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) async fn deliver_response<P, W, Observer>(
+    protocol: &P,
+    mut completion: TcpCompletion<P::Response, P::ResponseContext>,
+    writer: &mut W,
+    tcp_limits: &NacelleTcpLimits,
+    delivery: &mut ResponseDelivery,
+    runtime_state: &NacelleRuntimeState,
+    telemetry: &NacelleTelemetry<Observer>,
+    metrics_context: Option<&NacelleMetricsContext>,
+    phase_duration_metrics: bool,
+) -> Result<usize, ResponseDeliveryError>
+where
+    P: Protocol,
+    W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
+{
+    let guard = completion
+        .completion
+        .take()
+        .map(ResponseCompletionGuard::new);
+    // Isolate callback-bearing responses from prior coalesced responses.
+    if guard.is_some()
+        && delivery.has_pending()
+        && let Err(error) = delivery
+            .flush(
+                writer,
+                tcp_limits,
+                telemetry,
+                metrics_context,
+                phase_duration_metrics,
+            )
+            .await
+    {
+        if let Some(guard) = guard {
+            guard.fail(error.phase_enum(), 0, 0, &error.error);
+        }
+        return Err(error);
+    }
+    let response_bytes = match encode_response_body(
+        protocol,
+        completion,
+        writer,
+        tcp_limits,
+        delivery,
+        runtime_state,
+        telemetry,
+        metrics_context,
+        phase_duration_metrics,
+    )
+    .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            if let Some(guard) = guard {
+                guard.fail(
+                    error.phase_enum(),
+                    error.encoded_bytes,
+                    error.delivered_bytes,
+                    &error.error,
+                );
+            }
+            if error.is_encode_failure() {
+                record_tcp_error(telemetry, metrics_context, error.phase(), &error.error);
+            }
+            return Err(error);
+        }
+    };
+    // Delivery callbacks require a write-and-flush boundary under every policy.
+    if let Some(guard) = guard {
+        match delivery
+            .flush(
+                writer,
+                tcp_limits,
+                telemetry,
+                metrics_context,
+                phase_duration_metrics,
+            )
+            .await
+        {
+            Ok(_) => guard.deliver(response_bytes, response_bytes),
+            Err(error) => {
+                let phase = error.phase_enum();
+                let written = if matches!(phase, ResponseDeliveryPhase::SocketFlush) {
+                    response_bytes
+                } else {
+                    response_bytes.min(error.delivered_bytes)
+                };
+                guard.fail(phase, response_bytes, written, &error.error);
+                return Err(error);
+            }
+        }
+    }
+    Ok(response_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn encode_response_body<P, W, Observer>(
     protocol: &P,
     completion: TcpCompletion<P::Response, P::ResponseContext>,
@@ -566,19 +711,23 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    delivery
-        .stage_frame(
-            writer,
-            tcp_limits,
-            delivery.base_capacity.max(128),
-            runtime_state,
-            telemetry,
-            metrics_context,
-            phase_duration_metrics,
-            move |dst| protocol.encode_error(context.as_ref(), error, dst),
-        )
-        .await
-        .map(|delivery| delivery.encoded_bytes)
+    match protocol.error_response(context.as_ref(), error) {
+        Some(response) => {
+            deliver_response(
+                protocol,
+                response,
+                writer,
+                tcp_limits,
+                delivery,
+                runtime_state,
+                telemetry,
+                metrics_context,
+                phase_duration_metrics,
+            )
+            .await
+        }
+        None => Ok(0),
+    }
 }
 
 fn response_frame_capacity<P>(protocol: &P, chunk_len: usize) -> Result<usize, NacelleError>
