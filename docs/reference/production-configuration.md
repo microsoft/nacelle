@@ -105,8 +105,18 @@ complete replacement; a growth attempt is rejected before encoding when that
 temporary allocation cannot be charged.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
-and idle timeouts. Shutdown uses its own deadline so finalization policy can be
-tuned independently of ordinary response delivery. The corresponding
+and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for
+the first byte of a message with an empty input buffer, including the first
+message on a connection. `read_timeout` defaults to 30 seconds and bounds
+completion of a decoded message once bytes are available. Buffered partial
+messages enter the read phase immediately; additional bytes do not restart its
+deadline. Subsequent request-body reads each use `read_timeout`, never
+`idle_timeout`. Idle expiry reports `NacelleTimeoutReason::Idle`; message and
+body read expiry report `TcpRead` and `RequestBodyRead`, respectively.
+
+Neither timeout is a fallback for the other. Idle time excludes handler execution
+and response delivery. Shutdown uses its own deadline so finalization policy can
+be tuned independently of ordinary response delivery. The corresponding
 `without_*_timeout()` builders make an explicitly unbounded policy possible.
 `NacelleHttpLimits` controls HTTP header read, request body read, response
 write, keep-alive, and max connection age behavior on `HyperServer`. Its

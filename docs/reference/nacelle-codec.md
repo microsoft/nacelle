@@ -41,6 +41,14 @@ newly appended bytes when encoding fails.
 framing partial reads and writes requires storage across transport operations.
 Use `with_buffer` to supply storage and `into_parts` to reclaim it.
 
+`MessageReader::read_more()` appends one transport read without decoding and
+returns the byte count, or zero at EOF. Once EOF is observed, later calls return
+zero without polling the transport. `read_message()` still handles final
+decoding and incomplete-EOF errors. Cancelling a pending `read_more()` does not
+consume bytes. This primitive supports separate first-byte and message-completion
+deadlines without changing buffer ownership. Callers must decode between reads
+to enforce input limits; repeated `read_more()` calls alone do not bound growth.
+
 A decoded message may share its backing allocation with the reader's input
 buffer. `freeze()` converts it to `Bytes` without copying. Use
 `Bytes::copy_from_slice` or `BytesMut::from` when the decoded message needs an

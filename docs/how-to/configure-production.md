@@ -87,8 +87,13 @@ allocation and its complete replacement. Size the base buffer near a measured
 batch size when using larger thresholds.
 
 Use `NacelleTcpLimits` for TCP socket read, socket write, final writer shutdown,
-and idle timeouts. Set `shutdown_timeout` independently when finalization needs
-a shorter deadline than ordinary response delivery. Disable these only through
+and idle timeouts. `idle_timeout` (120 seconds by default) bounds waiting for the
+first byte of a message when the input buffer is empty. Once input is available,
+`read_timeout` (30 seconds by default) bounds completion of the decoded message;
+it also bounds each subsequent request-body read. Additional message bytes do
+not restart the message deadline. These limits apply independently, including
+when one is disabled. Set `shutdown_timeout` independently when finalization
+needs a shorter deadline than ordinary response delivery. Disable these only through
 the corresponding `without_*_timeout()` builders when an explicitly unbounded
 policy is required.
 Use `NacelleHttpLimits` on `HyperServer` for HTTP header read, request body
