@@ -53,9 +53,14 @@ impl Default for NacelleLimits {
 }
 
 impl NacelleLimits {
-    /// Set the concurrent connection limit, or disable admission limiting with zero.
     pub fn with_max_connections(mut self, max: usize) -> Self {
-        self.max_connections = max;
+        self.max_connections = max.max(1);
+        self
+    }
+
+    /// Disable the process-wide concurrent connection limit.
+    pub fn without_max_connections(mut self) -> Self {
+        self.max_connections = usize::MAX;
         self
     }
 
@@ -492,7 +497,7 @@ impl NacelleRuntimeState {
     }
 
     pub fn acquire_connection_tracked(&self) -> Result<TrackedPermit, NacelleError> {
-        if !try_acquire_connection_counter(
+        if !try_acquire_counter(
             &self.inner.active_connections,
             self.inner.limits.max_connections,
         ) {
@@ -510,7 +515,7 @@ impl NacelleRuntimeState {
     }
 
     pub fn acquire_connection_for_peer(&self, peer: IpAddr) -> Result<TrackedPermit, NacelleError> {
-        if !try_acquire_connection_counter(
+        if !try_acquire_counter(
             &self.inner.active_connections,
             self.inner.limits.max_connections,
         ) {
@@ -998,14 +1003,6 @@ impl NacelleMemoryBudget {
     }
 }
 
-fn try_acquire_connection_counter(counter: &AtomicUsize, limit: usize) -> bool {
-    if limit == 0 {
-        counter.fetch_add(1, Ordering::Relaxed);
-        return true;
-    }
-    try_acquire_counter(counter, limit)
-}
-
 fn try_acquire_counter(counter: &AtomicUsize, limit: usize) -> bool {
     if limit == usize::MAX {
         // Unbounded: the compare-exchange below can only ever succeed, so a
@@ -1162,11 +1159,11 @@ mod tests {
     }
 
     #[test]
-    fn zero_connection_limit_bypasses_admission_without_leaking_permits() {
+    fn disabled_connection_limit_bypasses_admission_without_leaking_permits() {
         const ROUNDS: usize = 32;
         const CONNECTIONS_PER_ROUND: usize = 8;
 
-        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(0));
+        let state = NacelleRuntimeState::new(NacelleLimits::default().without_max_connections());
 
         for _ in 0..ROUNDS {
             let connections: Vec<_> = (0..CONNECTIONS_PER_ROUND)
@@ -1176,6 +1173,19 @@ mod tests {
             drop(connections);
             assert_eq!(state.active_connections(), 0);
         }
+    }
+
+    #[test]
+    fn max_connections_builder_clamps_zero_to_one() {
+        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(0));
+
+        let _connection = state.acquire_connection().expect("first connection");
+        assert!(matches!(
+            state.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections
+            ))
+        ));
     }
 
     #[test]

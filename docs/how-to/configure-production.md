@@ -10,7 +10,7 @@ experimental and not compiled by default. Enable `experimental-memory` and set
 feature is use at your own risk and may change or be removed in a future minor
 release.
 
-`NacelleLimits::with_max_connections(0)` disables the process-wide connection
+`NacelleLimits::without_max_connections()` disables the process-wide connection
 admission ceiling. Active connections are still counted for telemetry, and any
 configured per-peer connection or connection-open rate limits still apply. Use
 this only when another layer enforces an appropriate connection and memory
