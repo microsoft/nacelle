@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-rustls"
-version = "0.3.2"
+version = "0.4.0-dev.1"
 edition = "2024"
 rust-version.workspace = true
 description = "Rustls configuration and metadata integration for Nacelle."

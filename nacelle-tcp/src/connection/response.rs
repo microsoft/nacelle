@@ -525,17 +525,23 @@ where
             Ok(_) => guard.deliver(response_bytes, response_bytes),
             Err(error) => {
                 let phase = error.phase_enum();
-                let written = if matches!(phase, ResponseDeliveryPhase::SocketFlush) {
-                    response_bytes
-                } else {
-                    response_bytes.min(error.delivered_bytes)
-                };
+                let written = delivered_bytes_after_flush_failure(response_bytes, &error);
                 guard.fail(phase, response_bytes, written, &error.error);
                 return Err(error);
             }
         }
     }
     Ok(response_bytes)
+}
+
+fn delivered_bytes_after_flush_failure(
+    response_bytes: usize,
+    error: &ResponseDeliveryError,
+) -> usize {
+    response_bytes
+        .saturating_sub(error.encoded_bytes)
+        .saturating_add(error.delivered_bytes)
+        .min(response_bytes)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1373,6 +1379,30 @@ mod tests {
 
         assert_eq!(error.delivered_bytes, 2);
         assert_eq!(error.phase(), "socket_write");
+    }
+
+    #[test]
+    fn final_flush_failure_counts_previously_delivered_stream_bytes() {
+        let error = ResponseDeliveryError {
+            error: NacelleError::InvalidFrame("test write failure"),
+            encoded_bytes: 3,
+            delivered_bytes: 1,
+            kind: ResponseDeliveryErrorKind::SocketWrite,
+        };
+
+        assert_eq!(delivered_bytes_after_flush_failure(10, &error), 8);
+    }
+
+    #[test]
+    fn final_flush_failure_counts_all_bytes_on_flush_error() {
+        let error = ResponseDeliveryError {
+            error: NacelleError::InvalidFrame("test flush failure"),
+            encoded_bytes: 3,
+            delivered_bytes: 3,
+            kind: ResponseDeliveryErrorKind::SocketFlush,
+        };
+
+        assert_eq!(delivered_bytes_after_flush_failure(10, &error), 10);
     }
 
     #[tokio::test]
