@@ -18,8 +18,6 @@
 
 # How-to guides
 
-- [Migrate from 0.3.0-rc.1 to 0.3.0-rc.2](how-to/migrate-rc-2.md)
-- [Migrate from 0.3.0-beta.5 to 0.3.0-rc.1](how-to/migrate-rc-1.md)
 - [Configure production limits](how-to/configure-production.md)
 - [Run stress tests](how-to/run-stress-tests.md)
 - [Compare performance profiles](how-to/compare-performance.md)
@@ -28,7 +26,6 @@
 
 # Reference
 
-- [0.3.0-rc.2 release and rollback notes](reference/release-notes-0.3.0-rc.2.md)
 - [Reference protocol](reference/protocol.md)
 - [Codec primitives](reference/nacelle-codec.md)
 - [HTTP hardening reference](reference/http-hardening.md)
