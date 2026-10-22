@@ -536,9 +536,13 @@ where
         {
             Ok(_) => guard.deliver(response_bytes, response_bytes),
             Err(error) => {
-                let phase = error.phase_enum();
-                let written = delivered_bytes_after_flush_failure(response_bytes, &error);
-                guard.fail(phase, response_bytes, written, &error.error);
+                let error = error.with_cumulative_final_flush(response_bytes);
+                guard.fail(
+                    error.phase_enum(),
+                    error.encoded_bytes,
+                    error.delivered_bytes,
+                    &error.error,
+                );
                 return Err(error);
             }
         }
@@ -776,6 +780,12 @@ impl ResponseDeliveryError {
             delivered_bytes: delivered_previous.saturating_add(self.delivered_bytes),
             kind: self.kind,
         }
+    }
+
+    fn with_cumulative_final_flush(mut self, response_bytes: usize) -> Self {
+        self.delivered_bytes = delivered_bytes_after_flush_failure(response_bytes, &self);
+        self.encoded_bytes = response_bytes;
+        self
     }
 
     pub(super) fn phase(&self) -> &'static str {
@@ -1401,8 +1411,10 @@ mod tests {
             delivered_bytes: 1,
             kind: ResponseDeliveryErrorKind::SocketWrite,
         };
+        let error = error.with_cumulative_final_flush(10);
 
-        assert_eq!(delivered_bytes_after_flush_failure(10, &error), 8);
+        assert_eq!(error.encoded_bytes, 10);
+        assert_eq!(error.delivered_bytes, 8);
     }
 
     #[test]
@@ -1413,8 +1425,10 @@ mod tests {
             delivered_bytes: 3,
             kind: ResponseDeliveryErrorKind::SocketFlush,
         };
+        let error = error.with_cumulative_final_flush(10);
 
-        assert_eq!(delivered_bytes_after_flush_failure(10, &error), 10);
+        assert_eq!(error.encoded_bytes, 10);
+        assert_eq!(error.delivered_bytes, 10);
     }
 
     #[tokio::test]
