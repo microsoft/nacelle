@@ -25,11 +25,11 @@ use nacelle_tcp::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::options::NacelleTlsDetectionOptions;
 #[cfg(feature = "tcp")]
-use nacelle_tcp::protocol::{LocalTcpHandler, LocalTcpOneWayHandler, Protocol};
+use nacelle_tcp::protocol::{LocalTcpHandler, Protocol};
 #[cfg(feature = "tcp")]
 use nacelle_tcp::server::LocalTcpServer;
 #[cfg(feature = "tcp")]
-use nacelle_tcp::{LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalSerialTcpServer};
+use nacelle_tcp::{LocalSerialTcpHandler, LocalSerialTcpServer};
 
 /// Application runtime topology.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -715,18 +715,17 @@ where
 /// its protocol and `!Send` handlers, and processes accepted connections only
 /// through `spawn_local` on that worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: LocalTcpHandler<P, AppState> + 'static,
-    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -767,18 +766,17 @@ where
 
 /// Run one worker-local serial TCP listener stack per configured worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_serial_tcp_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_serial_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P, AppState> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -819,7 +817,7 @@ where
 
 /// Run one worker-local Rustls TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "rustls"))]
-pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_tcp_tls_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
@@ -827,11 +825,10 @@ pub fn run_local_tcp_tls_thread_per_core<P, H, OH, Observer, ServerObserver, Fac
 where
     P: Protocol,
     H: LocalTcpHandler<P, AppState> + 'static,
-    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -874,15 +871,7 @@ where
 
 /// Run one worker-local required-OpenSSL TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-pub fn run_local_tcp_openssl_thread_per_core<
-    P,
-    H,
-    OH,
-    Observer,
-    ServerObserver,
-    Factory,
-    AppState,
->(
+pub fn run_local_tcp_openssl_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
     server_factory: Factory,
@@ -890,11 +879,10 @@ pub fn run_local_tcp_openssl_thread_per_core<
 where
     P: Protocol,
     H: LocalTcpHandler<P, AppState> + 'static,
-    OH: LocalTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -940,7 +928,6 @@ where
 pub fn run_local_serial_tcp_openssl_thread_per_core<
     P,
     H,
-    OH,
     Observer,
     ServerObserver,
     Factory,
@@ -953,11 +940,10 @@ pub fn run_local_serial_tcp_openssl_thread_per_core<
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P, AppState> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -1003,7 +989,6 @@ where
 pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
     P,
     H,
-    OH,
     Observer,
     ServerObserver,
     Factory,
@@ -1017,11 +1002,10 @@ pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P, AppState> + 'static,
-    OH: LocalSerialTcpOneWayHandler<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, OH, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -1194,9 +1178,8 @@ mod tests {
     };
     #[cfg(all(target_os = "linux", feature = "tcp"))]
     use nacelle_tcp::{
-        DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler, LocalSerialTcpServer,
-        LocalTcpServer, Protocol, SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext,
-        TcpResponse,
+        DecodedRequest, FrameBuffer, LocalSerialTcpHandler, LocalSerialTcpServer, LocalTcpServer,
+        Protocol, SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
     };
 
     #[test]
@@ -1540,7 +1523,7 @@ mod tests {
         struct TestDecoder;
 
         impl MessageDecoder for TestDecoder {
-            type Message = DecodedMessage<(), std::convert::Infallible>;
+            type Message = DecodedRequest<()>;
             type Error = NacelleError;
 
             fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -1553,16 +1536,15 @@ mod tests {
                     return Ok(None);
                 }
                 let _ = src.split_to(4);
-                Ok(Some(DecodedMessage::Request(DecodedRequest {
+                Ok(Some(DecodedRequest {
                     request: (),
                     body_len,
-                })))
+                }))
             }
         }
 
         impl Protocol for TestProtocol {
             type Request = ();
-            type OneWayRequest = std::convert::Infallible;
             type Response = TcpResponse;
             type ConnectionState = Rc<Cell<usize>>;
             type Decoder = TestDecoder;
@@ -1582,14 +1564,6 @@ mod tests {
 
             fn request_wire_bytes(&self, _request: &(), body_len: usize) -> usize {
                 4 + body_len
-            }
-
-            fn one_way_wire_bytes(
-                &self,
-                request: &std::convert::Infallible,
-                _body_len: usize,
-            ) -> usize {
-                match *request {}
             }
 
             fn response_context(&self, _request: &()) {}
@@ -1633,13 +1607,12 @@ mod tests {
                 dst.put_u32_le(0)
             }
 
-            fn encode_error(
+            fn error_response(
                 &self,
                 _context: Option<&()>,
                 _error: &NacelleError,
-                dst: &mut FrameBuffer<'_>,
-            ) -> Result<(), NacelleError> {
-                dst.put_u32_le(0)
+            ) -> Option<nacelle_tcp::TcpCompletion<TcpResponse, ()>> {
+                Some(nacelle_tcp::TcpCompletion::new(TcpResponse::empty(), ()))
             }
         }
 

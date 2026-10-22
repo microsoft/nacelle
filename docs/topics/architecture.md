@@ -23,7 +23,12 @@ becoming part of the published library API.
 
 Nacelle is organized so application behavior lives behind statically dispatched
 handler boundaries. TCP handlers receive `TcpRequestContext<P, AppState>` and
-complete requests with the response type associated with `P`. HTTP handlers
+complete requests with the response type associated with `P`, or explicitly
+finish silently with `context.complete()`. Both TCP outcomes share one decoder,
+handler, body-processing, and admission pipeline. Protocols map eligible
+framework failures through `Protocol::error_response`; any returned typed
+response uses the same encoder and bounded delivery path as handler responses.
+HTTP handlers
 receive `HttpRequestContext<ConnectionState, AppState>` and complete through
 `HttpResponse`. Both state parameters default to `()`.
 

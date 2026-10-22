@@ -68,6 +68,15 @@ there is no compatibility adapter.
 
 Before `1.0`, minor releases may change defaults or builder methods when production safety requires it. After `1.0`, public API changes should follow semver, with migration notes for config/default changes.
 
+## Unified TCP completion migration
+
+TCP now uses one request type and handler for both responses and explicit silent
+completion. The separate one-way handler API has been removed. Protocol error
+replies are typed responses passed through the normal encoder rather than a
+separate `encode_error` hook. These are source-breaking changes; follow the
+[TCP migration guide](protocol.md#migrating-from-separate-one-way-handlers).
+HTTP retains its required-response contract.
+
 ## Reference protocol migration
 
 The former `reference_protocol` feature and its facade/prelude exports have

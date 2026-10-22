@@ -8,23 +8,23 @@ minor lines receive support.
 
 Every new major or minor release line progresses through three stages:
 
-1. Publish one or more beta versions, such as `0.4.0-beta.1` and
-   `0.4.0-beta.2`, while the release scope and public contracts stabilize.
-2. Promote the beta line to a release candidate, such as `0.4.0-rc.1`, when it
-   is ready for final compatibility and release validation. Publish another
-   release candidate if the candidate requires changes.
+1. Publish one or more development versions, such as `0.4.0-dev.1` and
+   `0.4.0-dev.2`, while the release scope and public contracts stabilize.
+2. Promote the development line to a release candidate, such as `0.4.0-rc.1`,
+   when it is ready for final compatibility and release validation. Publish
+   another release candidate if the candidate requires changes.
 3. Promote a validated release candidate to the release version, such as
    `0.4.0`.
 
-This promotion path applies to both major and minor releases. Beta and release
-candidate versions are prereleases for evaluation and stabilization; they do
-not add a supported minor line to the support window.
+This promotion path applies to both major and minor releases. Development and
+release-candidate versions are prereleases for evaluation and stabilization;
+they do not add a supported minor line to the support window.
 
 ## Patch releases
 
-Patch releases do not repeat the beta and release-candidate progression. Apply
-a compatible patch directly to the applicable supported release branch and to
-`main` when the fix is still relevant there, then publish the next patch
+Patch releases do not repeat the development and release-candidate progression.
+Apply a compatible patch directly to the applicable supported release branch
+and to `main` when the fix is still relevant there, then publish the next patch
 version. For example, a fix for `0.4.0` is released directly as `0.4.1`.
 
 A patch may differ on the release branch and `main` when later development has

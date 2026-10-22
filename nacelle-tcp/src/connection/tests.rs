@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,16 +15,15 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
+    NacelleTelemetryEventKind, NacelleTelemetryObserver,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::protocol::{
-    DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler,
-    LocalSerialTcpOneWayHandler, NoOneWayHandler, Protocol, ResponseAbortReason,
-    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpOneWayContext,
-    SerialTcpOneWayHandler, SerialTcpRequestContext, TcpOneWayContext, TcpRequestContext,
-    TcpResponse,
+    DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, ResponseAbortReason,
+    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpRequestContext,
+    TcpCompletion, TcpRequestContext, TcpResponse,
 };
 use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::TcpServer;
@@ -34,6 +32,8 @@ use super::{
     serve_local_stream_without_connection_limit, serve_serial_stream_without_connection_limit,
     serve_stream_with_connection_meta,
 };
+
+mod unified;
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;
 
@@ -182,7 +182,7 @@ struct PhaseProtocol {
 struct PhaseDecoder;
 
 impl MessageDecoder for PhaseDecoder {
-    type Message = DecodedMessage<PhaseRequest, Infallible>;
+    type Message = DecodedRequest<PhaseRequest>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -194,16 +194,15 @@ impl MessageDecoder for PhaseDecoder {
         }
         let body_len = src[0] as usize;
         let _head = src.split_to(1);
-        Ok(Some(DecodedMessage::Request(DecodedRequest {
+        Ok(Some(DecodedRequest {
             request: PhaseRequest,
             body_len,
-        })))
+        }))
     }
 }
 
 impl Protocol for PhaseProtocol {
     type Request = PhaseRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = AuthState;
     type Decoder = PhaseDecoder;
@@ -226,10 +225,6 @@ impl Protocol for PhaseProtocol {
             observed.store(wire_bytes, Ordering::SeqCst);
         }
         wire_bytes
-    }
-
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
-        match *request {}
     }
 
     fn max_request_body_bytes(
@@ -290,14 +285,15 @@ impl Protocol for PhaseProtocol {
         Ok(())
     }
 
-    fn encode_error(
+    fn error_response(
         &self,
         _context: Option<&Self::ErrorContext>,
         error: &NacelleError,
-        dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        dst.extend_from_slice(error.to_string().as_bytes())?;
-        Ok(())
+    ) -> Option<TcpCompletion<Self::Response, Self::ResponseContext>> {
+        Some(TcpCompletion::new(
+            TcpResponse::bytes(error.to_string()),
+            (),
+        ))
     }
 }
 
@@ -402,6 +398,59 @@ fn direct_stream_applies_disabled_metrics_before_runtime_permits() {
     assert_eq!(runtime_state.active_connections(), 0);
     assert_eq!(runtime_state.active_requests(), 0);
     assert!(snapshotter.snapshot().into_vec().is_empty());
+}
+
+#[test]
+fn request_failure_metrics_do_not_require_an_observer() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+
+    metrics::with_local_recorder(&recorder, || {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(serve_stream_with_connection_meta(
+                RecordingIo {
+                    input: vec![0],
+                    position: 0,
+                    writes: Arc::new(std::sync::Mutex::new(Vec::new())),
+                },
+                Arc::new(PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }),
+                handler_fn(|_context: TcpRequestContext<PhaseProtocol>| async move {
+                    Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+                }),
+                NacelleTcpConfig::default(),
+                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetricsConfig {
+                    started: false,
+                    completed: false,
+                    in_flight: false,
+                    duration_ms: false,
+                    byte_counts: false,
+                }),
+                NacelleRuntimeState::default(),
+                NacelleConnectionMeta::tcp(None, None),
+            ));
+
+        assert!(matches!(
+            result,
+            Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+        ));
+    });
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    for name in ["server.request.failed", "server.request.timed_out"] {
+        assert!(
+            snapshot
+                .iter()
+                .any(|(key, _, _, _)| key.key().name() == name),
+            "missing metric {name}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -847,7 +896,6 @@ async fn local_dispatch_uses_identical_state_aware_body_limits() {
             encoder_writes_then_errors: false,
         }),
         std::rc::Rc::new(handler),
-        std::rc::Rc::new(crate::protocol::NoOneWayHandler::<PhaseProtocol>::new()),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(4)),
@@ -1239,15 +1287,18 @@ async fn body_error_after_streamed_frame_drops_pending_chunk() {
     ));
 }
 
-#[derive(Debug)]
-struct OneWayHead;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MixedHead {
+    Silent,
+    Respond,
+}
 
 struct MixedProtocol;
 
 struct MixedDecoder;
 
 impl MessageDecoder for MixedDecoder {
-    type Message = DecodedMessage<PhaseRequest, OneWayHead>;
+    type Message = DecodedRequest<MixedHead>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -1258,14 +1309,14 @@ impl MessageDecoder for MixedDecoder {
         let body_len = usize::from(src[1]);
         drop(src.split_to(2));
         match kind {
-            1 => Ok(Some(DecodedMessage::OneWay(DecodedRequest {
-                request: OneWayHead,
+            1 => Ok(Some(DecodedRequest {
+                request: MixedHead::Silent,
                 body_len,
-            }))),
-            2 => Ok(Some(DecodedMessage::Request(DecodedRequest {
-                request: PhaseRequest,
+            })),
+            2 => Ok(Some(DecodedRequest {
+                request: MixedHead::Respond,
                 body_len,
-            }))),
+            })),
             _ => Err(NacelleError::InvalidFrame("mixed message kind")),
         }
     }
@@ -1284,8 +1335,7 @@ fn incomplete_classification_prefix_does_not_consume_input() {
 }
 
 impl Protocol for MixedProtocol {
-    type Request = PhaseRequest;
-    type OneWayRequest = OneWayHead;
+    type Request = MixedHead;
     type Response = TcpResponse;
     type ConnectionState = AtomicUsize;
     type Decoder = MixedDecoder;
@@ -1304,18 +1354,14 @@ impl Protocol for MixedProtocol {
         2 + body_len
     }
 
-    fn one_way_wire_bytes(&self, _request: &Self::OneWayRequest, body_len: usize) -> usize {
-        2 + body_len
-    }
-
-    fn max_one_way_body_bytes(
+    fn max_request_body_bytes(
         &self,
-        _request: &Self::OneWayRequest,
+        request: &Self::Request,
         _connection: &ConnectionInfo,
         state: &Self::ConnectionState,
         default_limit: usize,
     ) -> usize {
-        if state.load(Ordering::Acquire) == 0 {
+        if *request == MixedHead::Silent && state.load(Ordering::Acquire) == 0 {
             PRE_AUTH_BODY_LIMIT
         } else {
             default_limit
@@ -1361,37 +1407,27 @@ impl Protocol for MixedProtocol {
     ) -> Result<(), NacelleError> {
         Ok(())
     }
-
-    fn encode_error(
-        &self,
-        _context: Option<&Self::ErrorContext>,
-        _error: &NacelleError,
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
 }
 
 #[tokio::test]
-async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
+async fn silent_completion_emits_no_bytes_and_preserves_connection_framing() {
     let (mut client, server_io) = tokio::io::duplex(64);
     let server = TcpServer::<MixedProtocol>::builder()
         .protocol(MixedProtocol)
         .handler(handler_fn(
-            |context: TcpRequestContext<MixedProtocol>| async move {
-                let seen = context.connection().state.fetch_add(1, Ordering::SeqCst);
-                context.respond(TcpResponse::bytes(seen.to_string())).await
-            },
-        ))
-        .one_way_handler(handler_fn(
-            |mut context: TcpOneWayContext<MixedProtocol>| async move {
-                let mut body = Vec::new();
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
-                    body.extend_from_slice(&chunk?);
+            |mut context: TcpRequestContext<MixedProtocol>| async move {
+                if context.request().head == MixedHead::Silent {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        body.extend_from_slice(&chunk?);
+                    }
+                    assert_eq!(body, b"event");
+                    context.connection().state.fetch_add(1, Ordering::SeqCst);
+                    Ok(context.complete())
+                } else {
+                    let seen = context.connection().state.fetch_add(1, Ordering::SeqCst);
+                    context.respond(TcpResponse::bytes(seen.to_string())).await
                 }
-                assert_eq!(body, b"event");
-                context.connection().state.fetch_add(1, Ordering::SeqCst);
-                Ok(context.complete())
             },
         ))
         .build()
@@ -1418,19 +1454,14 @@ async fn one_way_message_emits_no_bytes_and_preserves_connection_framing() {
 }
 
 #[tokio::test]
-async fn one_way_limit_rejects_before_body_read_or_handler_dispatch() {
+async fn silent_request_limit_rejects_before_body_read_or_handler_dispatch() {
     let (mut client, server_io) = tokio::io::duplex(64);
     let handler_called = Arc::new(AtomicBool::new(false));
     let server = TcpServer::<MixedProtocol>::builder()
         .protocol(MixedProtocol)
-        .handler(handler_fn(
-            |context: TcpRequestContext<MixedProtocol>| async move {
-                context.respond(TcpResponse::empty()).await
-            },
-        ))
-        .one_way_handler(handler_fn({
+        .handler(handler_fn({
             let handler_called = handler_called.clone();
-            move |context: TcpOneWayContext<MixedProtocol>| {
+            move |context: TcpRequestContext<MixedProtocol>| {
                 handler_called.store(true, Ordering::SeqCst);
                 async move { Ok(context.complete()) }
             }
@@ -1442,7 +1473,7 @@ async fn one_way_limit_rejects_before_body_read_or_handler_dispatch() {
     client
         .write_all(&[1, 3])
         .await
-        .expect("one-way head should write");
+        .expect("silent request head should write");
     let result = tokio::time::timeout(Duration::from_secs(1), server_task)
         .await
         .expect("server should reject without waiting for body bytes")
@@ -1466,17 +1497,16 @@ async fn tcp_server_with_arc_in_memory_observer_serves_and_records_request_event
     let server = TcpServer::<MixedProtocol>::builder()
         .protocol(MixedProtocol)
         .handler(handler_fn(
-            |context: TcpRequestContext<MixedProtocol>| async move {
-                let seen = context.connection().state.load(Ordering::SeqCst);
-                context.respond(TcpResponse::bytes(seen.to_string())).await
-            },
-        ))
-        .one_way_handler(handler_fn(
-            |mut context: TcpOneWayContext<MixedProtocol>| async move {
-                while let Some(chunk) = context.request_mut().body.next_chunk().await {
-                    let _ = chunk?;
+            |mut context: TcpRequestContext<MixedProtocol>| async move {
+                if context.request().head == MixedHead::Silent {
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        let _ = chunk?;
+                    }
+                    Ok(context.complete())
+                } else {
+                    let seen = context.connection().state.load(Ordering::SeqCst);
+                    context.respond(TcpResponse::bytes(seen.to_string())).await
                 }
-                Ok(context.complete())
             },
         ))
         .telemetry(telemetry)
@@ -1573,7 +1603,6 @@ struct SerialCounterState {
 
 impl Protocol for SerialCounterProtocol {
     type Request = PhaseRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = SerialCounterState;
     type Decoder = PhaseDecoder;
@@ -1593,10 +1622,6 @@ impl Protocol for SerialCounterProtocol {
 
     fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
         1 + body_len
-    }
-
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
-        match *request {}
     }
 
     fn max_request_body_bytes(
@@ -1652,15 +1677,6 @@ impl Protocol for SerialCounterProtocol {
     ) -> Result<(), NacelleError> {
         Ok(())
     }
-
-    fn encode_error(
-        &self,
-        _context: Option<&Self::ErrorContext>,
-        _error: &NacelleError,
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
 }
 
 struct SerialCounterHandler;
@@ -1688,7 +1704,6 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
         &mut server_io,
         Arc::new(SerialCounterProtocol),
         Arc::new(SerialCounterHandler),
-        Arc::new(NoOneWayHandler::<SerialCounterProtocol>::new()),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),
@@ -1773,7 +1788,6 @@ fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
         &mut serial_io,
         Arc::new(SerialCounterProtocol),
         Arc::new(SerialCounterHandler),
-        Arc::new(NoOneWayHandler::<SerialCounterProtocol>::new()),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),
@@ -1794,7 +1808,6 @@ fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
                 context.respond(TcpResponse::empty()).await
             },
         )),
-        Rc::new(NoOneWayHandler::<PhaseProtocol>::new()),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),
@@ -2031,17 +2044,11 @@ impl SerialTcpHandler<MixedProtocol> for SerialMixedHandler {
         let state = context.connection_mut().state.get_mut();
         let response = state.to_string();
         *state += 1;
-        context.respond(TcpResponse::bytes(response)).await
-    }
-}
-
-impl SerialTcpOneWayHandler<MixedProtocol> for SerialMixedHandler {
-    async fn call<'connection>(
-        &'connection self,
-        mut context: SerialTcpOneWayContext<'connection, MixedProtocol>,
-    ) -> Result<nacelle_core::pipeline::Completed, NacelleError> {
-        *context.connection_mut().state.get_mut() += 1;
-        Ok(context.complete())
+        if context.request().head == MixedHead::Silent {
+            Ok(context.complete())
+        } else {
+            context.respond(TcpResponse::bytes(response)).await
+        }
     }
 }
 
@@ -2053,27 +2060,20 @@ impl LocalSerialTcpHandler<MixedProtocol> for SerialMixedHandler {
         let state = context.connection_mut().state.get_mut();
         let response = state.to_string();
         *state += 1;
-        context.respond(TcpResponse::bytes(response)).await
-    }
-}
-
-impl LocalSerialTcpOneWayHandler<MixedProtocol> for SerialMixedHandler {
-    async fn call<'connection>(
-        &'connection self,
-        mut context: SerialTcpOneWayContext<'connection, MixedProtocol>,
-    ) -> Result<nacelle_core::pipeline::Completed, NacelleError> {
-        *context.connection_mut().state.get_mut() += 1;
-        Ok(context.complete())
+        if context.request().head == MixedHead::Silent {
+            Ok(context.complete())
+        } else {
+            context.respond(TcpResponse::bytes(response)).await
+        }
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn serial_one_way_mutation_emits_no_bytes_in_shared_and_local_modes() {
+async fn serial_silent_mutation_emits_no_bytes_in_shared_and_local_modes() {
     let messages = [2, 0, 1, 0, 2, 0];
 
     let (mut shared_client, shared_io) = tokio::io::duplex(64);
-    let shared_server =
-        SerialTcpServer::with_handlers(MixedProtocol, SerialMixedHandler, SerialMixedHandler);
+    let shared_server = SerialTcpServer::new(MixedProtocol, SerialMixedHandler);
     let shared = async move { shared_server.serve_io(shared_io).await };
     let shared_client = async move {
         shared_client
@@ -2092,8 +2092,7 @@ async fn serial_one_way_mutation_emits_no_bytes_in_shared_and_local_modes() {
     shared_result.expect("shared mixed server");
 
     let (mut local_client, local_io) = tokio::io::duplex(64);
-    let local_server =
-        LocalSerialTcpServer::with_handlers(MixedProtocol, SerialMixedHandler, SerialMixedHandler);
+    let local_server = LocalSerialTcpServer::new(MixedProtocol, SerialMixedHandler);
     let local = async move { local_server.serve_io(local_io).await };
     let local_client = async move {
         local_client
@@ -2119,7 +2118,6 @@ struct LocalOnlyProtocol;
 
 impl Protocol for LocalOnlyProtocol {
     type Request = PhaseRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = std::rc::Rc<std::cell::Cell<usize>>;
     type Decoder = PhaseDecoder;
@@ -2136,10 +2134,6 @@ impl Protocol for LocalOnlyProtocol {
 
     fn request_wire_bytes(&self, _request: &Self::Request, body_len: usize) -> usize {
         1 + body_len
-    }
-
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
-        match *request {}
     }
 
     fn response_context(&self, _req: &Self::Request) -> Self::ResponseContext {}
@@ -2170,14 +2164,6 @@ impl Protocol for LocalOnlyProtocol {
     fn encode_response_end(
         &self,
         _context: &mut Self::ResponseContext,
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
-    fn encode_error(
-        &self,
-        _context: Option<&Self::ErrorContext>,
-        _error: &NacelleError,
         _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())
@@ -3204,6 +3190,76 @@ async fn completion_item_runs_on_cancellation() {
     // The delivery write parks forever; cancel the connection mid-delivery.
     let timed_out = tokio::time::timeout(Duration::from_millis(50), server).await;
     assert!(timed_out.is_err(), "delivery should still be pending");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Aborted {
+            reason: ResponseAbortReason::Cancelled,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn completion_item_runs_when_cancelled_during_request_body_drain() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_completed = Arc::new(tokio::sync::Notify::new());
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            let handler_completed = handler_completed.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                let handler_completed = handler_completed.clone();
+                async move {
+                    let completion =
+                        context
+                            .respond(TcpResponse::bytes("ok"))
+                            .await?
+                            .map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            });
+                    handler_completed.notify_one();
+                    Ok(completion)
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Streaming),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(16)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[4, b'a'])
+        .await
+        .expect("partial request body should write");
+    tokio::time::timeout(Duration::from_millis(250), handler_completed.notified())
+        .await
+        .expect("handler should return before cancellation");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    server_task.abort();
+    let join_error = server_task
+        .await
+        .expect_err("connection task should be cancelled");
+    assert!(join_error.is_cancelled());
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(

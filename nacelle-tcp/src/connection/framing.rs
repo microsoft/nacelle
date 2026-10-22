@@ -173,30 +173,46 @@ pub(super) fn map_message_read_error(error: MessageReadError<NacelleError>) -> N
 
 pub(super) struct MessageReadFailure {
     error: NacelleError,
-    protocol_failure: bool,
+    can_respond: bool,
 }
 
 impl MessageReadFailure {
-    pub(super) const fn transport(error: NacelleError) -> Self {
-        Self {
-            error,
-            protocol_failure: false,
-        }
+    pub(super) fn transport(error: NacelleError) -> Self {
+        let can_respond = matches!(error, NacelleError::Timeout(_));
+        Self { error, can_respond }
     }
 
     pub(super) fn from_message_read(error: MessageReadError<NacelleError>) -> Self {
-        let protocol_failure = !matches!(error, MessageReadError::Io(_));
+        let can_respond = !matches!(error, MessageReadError::Io(_));
         Self {
             error: map_message_read_error(error),
-            protocol_failure,
+            can_respond,
         }
     }
 
     pub(super) const fn should_encode(&self) -> bool {
-        self.protocol_failure
+        self.can_respond
     }
 
     pub(super) fn into_error(self) -> NacelleError {
         self.error
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nacelle_core::error::NacelleTimeoutReason;
+
+    #[test]
+    fn timeout_can_respond_but_socket_io_failure_cannot() {
+        let timeout =
+            MessageReadFailure::transport(NacelleError::Timeout(NacelleTimeoutReason::Idle));
+        assert!(timeout.should_encode());
+        let io = MessageReadFailure::from_message_read(MessageReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "peer reset",
+        )));
+        assert!(!io.should_encode());
     }
 }

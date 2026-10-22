@@ -45,12 +45,11 @@ returning a request consumes at least one head byte, while requesting more input
 leaves the cumulative buffer unchanged.
 
 A decoder may wait for a fixed header plus a small protocol prefix before
-classifying a message as `DecodedMessage::Request` or
-`DecodedMessage::OneWay`. If the prefix is incomplete, return `Ok(None)` and
+returning a `DecodedRequest<Protocol::Request>`. If the prefix is incomplete, return `Ok(None)` and
 leave every byte untouched. Once classification is possible, consume only the
 header/prefix and report the unconsumed body length in `DecodedRequest`. This
-preserves early body-limit checks and streaming while allowing one-way flags to
-live immediately after the fixed header.
+preserves early body-limit checks and streaming. The request head can carry an
+opcode or flag that the handler uses to choose a response or silent completion.
 
 `opcode` is request metadata. The application handler decides whether to use it
 for routing, reject it, or ignore it. If the handler rejects an opcode after
@@ -71,22 +70,25 @@ State confined to the serial connection loop can use `SerialTcpServer` or
 `LocalSerialTcpHandler` and receive `SerialTcpRequestContext<'_, P>`, which
 lends exclusive mutable access to directly owned connection state. The loop
 awaits completion before decoding the next message, so one connection cannot
-overlap serial handler calls. Serial one-way contexts expose the same mutable
-state and still provide no response capability.
+overlap serial handler calls. The same serial context permits either a response
+or explicit silent completion.
 
 ## Responses
 
-Handlers call `context.respond(P::Response)` and return the resulting typed
-completion. A protocol can accept its own response type; the reference protocol
+Handlers call `context.respond(P::Response).await` or return
+`Ok(context.complete())` and return the resulting typed completion. A protocol can accept its own response type; the reference protocol
 uses `TcpResponse`, whose body may be empty, one chunk, or streaming. Returning
 an HTTP response from a TCP handler does not compile.
 
-Protocols classify decoded messages as `DecodedMessage::Request` or
-`DecodedMessage::OneWay`. Required requests use `TcpRequestContext<P>` and must
-respond. One-way messages use `TcpOneWayContext<P>` with `NoResponse`, so no
-`respond` method exists. Servers supporting one-way messages install a separate
-concrete handler with `TcpServer::<YourProtocol>::builder().one_way_handler(...)`. Request-only
-protocols use `Infallible` as their one-way request type.
+Every decoded message uses `TcpRequestContext<P>` and the same concrete handler.
+`TcpHandlerCompletion<P>` wraps an optional response; explicit silent completion
+does not call the encoder or emit any bytes. This differs from responding with
+`TcpResponse::empty()`, which still produces protocol framing.
+
+Silent completion is application policy, not a compile-time prohibition on
+responses. Framework failures may still produce an error response. Protocols
+requiring strict silence for a particular message must encode that policy in
+their handler and `error_response` hook.
 
 The TCP runtime encodes and writes each streaming response chunk before polling
 the next one, so socket backpressure bounds response production. It stages only
@@ -113,23 +115,65 @@ The protocol guarantees:
 - the first response frame has `FRAME_FLAG_START`
 - the last response frame has `FRAME_FLAG_END`
 - a handler that returns an empty body still emits a start/end response frame
-- a handler error emits a start/end/error frame
+- a handler error emits a start/end/error frame through the fixture's
+  `error_response` implementation
 
 Responses are written in request-processing order for a single connection. The
 prototype does not yet provide concurrent per-connection response interleaving.
 
 ## Error Handling
 
-Malformed frame heads, oversized frames, and EOF before a complete frame cause
-the connection to fail. Decoder, framing-progress, and incomplete-head failures
-are offered to `Protocol::encode_error` without an error context before the
-connection closes. Once a request head has been decoded, buffered and streaming
-body-read failures, handler errors, and handler timeouts are offered with that
-request's error context. Streaming request read failure also cancels the handler
-future. If encoding or writing an error frame fails, that delivery failure is
-returned without another delivery attempt. The connection closes after a
-terminal request failure so unread body bytes cannot be interpreted as another
-frame. Unknown opcode handling is application policy.
+`Protocol::error_response(context, error)` returns either
+`Some(TcpCompletion::new(response, response_context))` or `None`. The default is
+`None`, meaning no error response. A returned response passes through
+`apply_response`, `response_body`, and the ordinary `encode_response_*` methods:
+there is no separate error-frame encoder. The protocol chooses a peer-safe
+payload and any response metadata or error flag. Avoid exposing arbitrary
+internal error text to untrusted peers.
+
+Malformed heads, oversized frames, framing-progress violations, incomplete-head
+EOF, idle timeout, and message-read timeout are offered without a request error
+context. Once a head is decoded, body-limit rejection, request/streaming
+admission failures, body-memory failures, body-read failures, handler errors,
+and handler timeouts are offered with the context captured by `error_context`.
+This includes failures while draining the body after a handler completes
+silently or prepares a response. A streaming body-read failure cancels a still
+running handler.
+
+Responses retain the configured body/memory limits, write policy, and write
+deadlines. They are best-effort: resource exhaustion can prevent delivery.
+Connection admission, initial connection-buffer allocation, and TLS handshake
+failures occur before this hook is available. Initial socket read I/O failures
+and failures during response encoding, streaming, writing, flushing, or shutdown
+do not initiate a new error response. In particular, a partially delivered
+response is never followed by an automatic replacement response, and an
+error-response delivery failure never recursively invokes the hook.
+
+The connection closes after a terminal failure, even if its custom response is
+successfully sent, so unread body bytes cannot become another request. The
+original error is returned unless response delivery fails; sending an error
+payload does not turn the request into success. Unknown opcode handling remains
+application policy.
+
+### Migrating from separate one-way handlers
+
+- Return `DecodedRequest<Request>` directly from the decoder, without
+  `DecodedMessage::Request` or `DecodedMessage::OneWay`.
+- Combine request head types into one `Protocol::Request` (an enum is suitable
+  when message shapes differ). Remove `OneWayRequest`, `one_way_wire_bytes`,
+  and `max_one_way_body_bytes`; apply the ordinary request hooks to every head.
+- Move `.one_way_handler(...)` logic into `.handler(...)` and return
+  `Ok(context.complete())` for the silent branch. Use the ordinary serial or
+  local handler for those execution modes.
+- Replace `encode_error` with `error_response` and represent error-specific
+  framing in the typed response or response context.
+- `TcpHandlerCompletion` is now an `OptionalCompletion`; use `into_response()`
+  when inspecting it. Its `map(...)` helper transforms only actual responses,
+  retaining delivery completion items without running on silent completions.
+- TCP server type parameters no longer include a separate one-way handler.
+
+These are source-breaking TCP API changes. HTTP required-response contexts and
+the core required/no-response capability primitives are unchanged.
 
 ## Limits
 
@@ -148,9 +192,8 @@ the decoded head, immutable `ConnectionInfo`, and the same concrete
 `Protocol::ConnectionState` exposed to handlers. Rejection occurs before
 body-specific allocation or additional body reads, although decoder read-ahead
 may already have buffered bytes.
-One-way messages use the equivalent
-`Protocol::max_one_way_body_bytes(request, connection, state, default_limit)`
-hook and the same early-rejection boundary.
+Messages that the handler completes silently use these same hooks and
+early-rejection boundary.
 
 TCP request handling is sequential per connection. Pipelined frames can sit
 in the socket/read buffer, but Nacelle does not run multiple handlers

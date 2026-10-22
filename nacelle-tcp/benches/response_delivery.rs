@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +10,7 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::telemetry::NacelleTelemetry;
 use nacelle_tcp::{
-    DecodedMessage, DecodedRequest, FrameBuffer, NacelleTcpConfig, Protocol, ResponseWritePolicy,
+    DecodedRequest, FrameBuffer, NacelleTcpConfig, Protocol, ResponseWritePolicy,
     TcpRequestContext, TcpResponse, TcpServer,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -26,7 +25,7 @@ const REQUEST_BYTES: [u8; 64] = [0; 64];
 struct Decoder;
 
 impl MessageDecoder for Decoder {
-    type Message = DecodedMessage<(), Infallible>;
+    type Message = DecodedRequest<()>;
     type Error = NacelleError;
 
     fn decode(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -34,10 +33,10 @@ impl MessageDecoder for Decoder {
             return Ok(None);
         }
         let _ = input.split_to(1);
-        Ok(Some(DecodedMessage::Request(DecodedRequest {
+        Ok(Some(DecodedRequest {
             request: (),
             body_len: 0,
-        })))
+        }))
     }
 }
 
@@ -46,7 +45,6 @@ struct BenchProtocol;
 
 impl Protocol for BenchProtocol {
     type Request = ();
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = Decoder;
@@ -59,9 +57,6 @@ impl Protocol for BenchProtocol {
     fn connection_state(&self, _connection: &ConnectionInfo) {}
     fn request_wire_bytes(&self, _request: &(), _body_len: usize) -> usize {
         1
-    }
-    fn one_way_wire_bytes(&self, request: &Infallible, _body_len: usize) -> usize {
-        match *request {}
     }
     fn response_context(&self, _request: &()) {}
     fn error_context(&self, _request: &()) {}
@@ -91,14 +86,6 @@ impl Protocol for BenchProtocol {
     fn encode_response_end(
         &self,
         _context: &mut (),
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
-    fn encode_error(
-        &self,
-        _context: Option<&()>,
-        _error: &NacelleError,
         _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())

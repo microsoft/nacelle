@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -13,7 +12,7 @@ use nacelle_openssl::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::protocol::{
-    DecodedMessage, DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
+    DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
     SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
 };
 use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
@@ -43,7 +42,7 @@ struct PlainProtocol;
 struct PlainDecoder;
 
 impl MessageDecoder for PlainDecoder {
-    type Message = DecodedMessage<PlainRequest, Infallible>;
+    type Message = DecodedRequest<PlainRequest>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -52,16 +51,15 @@ impl MessageDecoder for PlainDecoder {
         }
         let head_len = src.len();
         src.clear();
-        Ok(Some(DecodedMessage::Request(DecodedRequest {
+        Ok(Some(DecodedRequest {
             request: PlainRequest { head_len },
             body_len: 0,
-        })))
+        }))
     }
 }
 
 impl Protocol for PlainProtocol {
     type Request = PlainRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = PlainDecoder;
@@ -76,10 +74,6 @@ impl Protocol for PlainProtocol {
 
     fn request_wire_bytes(&self, request: &Self::Request, body_len: usize) -> usize {
         request.head_len + body_len
-    }
-
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
-        match *request {}
     }
 
     fn response_context(&self, _req: &PlainRequest) -> Self::ResponseContext {}
@@ -118,15 +112,6 @@ impl Protocol for PlainProtocol {
     fn encode_response_end(
         &self,
         _context: &mut Self::ResponseContext,
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
-
-    fn encode_error(
-        &self,
-        _context: Option<&Self::ErrorContext>,
-        _error: &NacelleError,
         _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())

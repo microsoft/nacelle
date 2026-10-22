@@ -16,6 +16,13 @@ a typed context with a streaming `NacelleBody`, connection metadata, and concret
 application and connection state, so services can process chunks without forcing
 full buffering.
 
+TCP handlers can also return `Ok(context.complete())` to finish without sending
+bytes. Both outcomes use one request pipeline. Protocols can implement
+`Protocol::error_response` to map framework or handler failures to a typed
+response that uses the normal encoder, including for requests normally completed
+silently. See [error handling](docs/reference/protocol.md#error-handling) for
+delivery boundaries and migration details.
+
 ## Status
 
 Nacelle is currently `0.3.x`. It is ready for experiments and prototype
@@ -115,6 +122,11 @@ cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
 
+The TCP `echo` example echoes opcode `1`, drains opcode `2` and completes
+silently, and returns a protocol-encoded error for unknown opcodes. This is
+example-specific application policy, not a rule imposed by the reference
+protocol.
+
 ## What Nacelle Provides
 
 - Transport-owned typed request, response, and completion contracts.
@@ -140,34 +152,34 @@ Choose the smallest feature set that matches the transports you actually run:
 
 ```toml
 # TCP with a custom protocol (enabled by default)
-nacelle = { version = "0.3.0" }
+nacelle = { version = "0.3" }
 
 # HTTP only
-nacelle = { version = "0.3.0", default-features = false, features = ["http"] }
+nacelle = { version = "0.3", default-features = false, features = ["http"] }
 
 # TCP + HTTP; backend-neutral metrics are always available
-nacelle = { version = "0.3.0", features = ["http"] }
+nacelle = { version = "0.3", features = ["http"] }
 
 # TCP diagnostic phase histograms; still requires runtime activation
-nacelle = { version = "0.3.0", features = ["phase-timing"] }
+nacelle = { version = "0.3", features = ["phase-timing"] }
 
 # Experimental runtime memory accounting and admission
-nacelle = { version = "0.3.0", features = ["experimental-memory"] }
+nacelle = { version = "0.3", features = ["experimental-memory"] }
 
 # Experimental Linux thread-per-core runtime with TCP
-nacelle = { version = "0.3.0", features = ["tcp", "experimental-thread-per-core"] }
+nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
 
 # Experimental plaintext/OpenSSL detection; implies TCP and OpenSSL
-nacelle = { version = "0.3.0", default-features = false, features = ["experimental-openssl-detection"] }
+nacelle = { version = "0.3", default-features = false, features = ["experimental-openssl-detection"] }
 
 # Expose structured setup hints through NacelleError::hint()
-nacelle = { version = "0.3.0", features = ["error-hints"] }
+nacelle = { version = "0.3", features = ["error-hints"] }
 
 # Local self-signed TLS for tests
-nacelle = { version = "0.3.0", features = ["tls-self-signed"] }
+nacelle = { version = "0.3", features = ["tls-self-signed"] }
 
 # TCP with OpenSSL, without Rustls
-nacelle = { version = "0.3.0", default-features = false, features = ["tcp", "openssl"] }
+nacelle = { version = "0.3", default-features = false, features = ["tcp", "openssl"] }
 ```
 
 | Feature | Purpose |

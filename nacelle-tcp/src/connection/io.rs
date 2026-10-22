@@ -180,7 +180,7 @@ mod tests {
             let result = read_message_with_timeout(&mut reader, &limits).await;
 
             let failure = result.expect_err("silent connection should time out");
-            assert!(!failure.should_encode());
+            assert!(failure.should_encode());
             assert!(matches!(
                 failure.into_error(),
                 NacelleError::Timeout(NacelleTimeoutReason::Idle)
@@ -233,7 +233,7 @@ mod tests {
 
         let (result, ()) = tokio::join!(read_message_with_timeout(&mut reader, &limits), send);
         let failure = result.expect_err("incomplete message should time out");
-        assert!(!failure.should_encode());
+        assert!(failure.should_encode());
         assert!(matches!(
             failure.into_error(),
             NacelleError::Timeout(NacelleTimeoutReason::TcpRead)

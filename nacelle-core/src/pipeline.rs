@@ -369,6 +369,15 @@ impl<ResponseCompletion> OptionalCompletion<ResponseCompletion> {
     pub fn into_response(self) -> Option<ResponseCompletion> {
         self.0
     }
+
+    /// Transform a response completion without changing silent completion.
+    #[must_use = "the transformed completion token must be returned to the runtime"]
+    pub fn map<F>(self, transform: F) -> Self
+    where
+        F: FnOnce(ResponseCompletion) -> ResponseCompletion,
+    {
+        Self(self.0.map(transform))
+    }
 }
 
 /// Optional response capability around a concrete transport responder.
@@ -635,6 +644,35 @@ mod tests {
         assert!(!optional.complete().responded());
         let completion = one_way.complete();
         assert_eq!(std::mem::size_of_val(&completion), 0);
+    }
+
+    #[tokio::test]
+    async fn optional_completion_maps_only_responses() {
+        let context = RequestContext::new(
+            5,
+            OptionalResponder::new(TestResponder),
+            Arc::new(()),
+            connection(()),
+        );
+        let completion = context.respond(7).await.expect("infallible response");
+        assert_eq!(
+            completion.map(|response| response + 1).into_response(),
+            Some(8)
+        );
+
+        let context = RequestContext::new(
+            5,
+            OptionalResponder::new(TestResponder),
+            Arc::new(()),
+            connection(()),
+        );
+        assert_eq!(
+            context
+                .complete()
+                .map(|_| panic!("no response to map"))
+                .into_response(),
+            None,
+        );
     }
 
     #[tokio::test]

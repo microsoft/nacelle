@@ -1,5 +1,3 @@
-use std::convert::Infallible;
-
 use bytes::{Bytes, BytesMut};
 use criterion::{Criterion, criterion_group, criterion_main};
 use nacelle_codec::MessageDecoder;
@@ -7,15 +5,14 @@ use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_core::telemetry::{NacelleTelemetry, NoopObserver};
 use nacelle_tcp::{
-    DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse,
-    TcpServer,
+    DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse, TcpServer,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 struct Decoder;
 
 impl MessageDecoder for Decoder {
-    type Message = DecodedMessage<(), Infallible>;
+    type Message = DecodedRequest<()>;
     type Error = NacelleError;
 
     fn decode(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -23,10 +20,10 @@ impl MessageDecoder for Decoder {
             return Ok(None);
         }
         let _ = input.split_to(1);
-        Ok(Some(DecodedMessage::Request(DecodedRequest {
+        Ok(Some(DecodedRequest {
             request: (),
             body_len: 0,
-        })))
+        }))
     }
 }
 
@@ -35,7 +32,6 @@ struct BenchProtocol;
 
 impl Protocol for BenchProtocol {
     type Request = ();
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = Decoder;
@@ -50,10 +46,6 @@ impl Protocol for BenchProtocol {
 
     fn request_wire_bytes(&self, _request: &(), _body_len: usize) -> usize {
         1
-    }
-
-    fn one_way_wire_bytes(&self, request: &Infallible, _body_len: usize) -> usize {
-        match *request {}
     }
 
     fn response_context(&self, _request: &()) {}
@@ -89,15 +81,6 @@ impl Protocol for BenchProtocol {
     fn encode_response_end(
         &self,
         _context: &mut (),
-        _dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
-        Ok(())
-    }
-
-    fn encode_error(
-        &self,
-        _context: Option<&()>,
-        _error: &NacelleError,
         _dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         Ok(())

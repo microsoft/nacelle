@@ -10,15 +10,13 @@ use crate::config::TcpStreamingBodyMemoryPolicy;
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
-    DecodedRequest, LocalSerialTcpHandler, LocalSerialTcpOneWayHandler, LocalTcpHandler,
-    LocalTcpOneWayHandler, Protocol, ResponseAbortReason, ResponseCompletionCallback,
-    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpOneWayHandler,
-    SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpOneWayHandler, TcpRequest, TcpResponder,
+    DecodedRequest, LocalSerialTcpHandler, LocalTcpHandler, Protocol, SerialTcpHandler,
+    SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpRequest, TcpResponder,
 };
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, NoResponse, RequestContext, RequiredResponder,
+    ConnectionContext, ConnectionInfo, OptionalResponder, RequestContext,
 };
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
@@ -28,60 +26,7 @@ use super::metrics::{
     TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
-use super::response::{ResponseDelivery, encode_response_body, write_error};
-
-/// Holds an application-owned response completion item across delivery so it
-/// runs exactly once: on successful delivery, on delivery failure, or on abort
-/// (cancellation, shutdown, or connection close) before delivery settles.
-///
-/// The item is stored in an `Option` and taken on the first settlement. If the
-/// connection task is dropped before an explicit settlement, `Drop` reports an
-/// [`ResponseDeliveryOutcome::Aborted`] rather than silently dropping the item.
-struct ResponseCompletionGuard {
-    item: Option<ResponseCompletionCallback>,
-}
-
-impl ResponseCompletionGuard {
-    fn new(item: ResponseCompletionCallback) -> Self {
-        Self { item: Some(item) }
-    }
-
-    fn deliver(mut self, encoded_wire_bytes: usize, written_wire_bytes: usize) {
-        if let Some(item) = self.item.take() {
-            item(ResponseDeliveryOutcome::Delivered {
-                encoded_wire_bytes,
-                written_wire_bytes,
-            });
-        }
-    }
-
-    fn fail(
-        mut self,
-        phase: ResponseDeliveryPhase,
-        encoded_wire_bytes: usize,
-        written_wire_bytes: usize,
-        error: &NacelleError,
-    ) {
-        if let Some(item) = self.item.take() {
-            item(ResponseDeliveryOutcome::Failed {
-                phase,
-                encoded_wire_bytes,
-                written_wire_bytes,
-                error,
-            });
-        }
-    }
-}
-
-impl Drop for ResponseCompletionGuard {
-    fn drop(&mut self) {
-        if let Some(item) = self.item.take() {
-            item(ResponseDeliveryOutcome::Aborted {
-                reason: ResponseAbortReason::Cancelled,
-            });
-        }
-    }
-}
+use super::response::{GuardedResponseCompletion, ResponseDelivery, deliver_response, write_error};
 
 pub(super) trait ConnectionAccess<P>
 where
@@ -110,29 +55,14 @@ where
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
-        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+        responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection;
 }
 
-pub(super) trait OneWayDispatch<P, Connection>
-where
-    P: Protocol,
-{
-    fn call<'connection>(
-        &'connection self,
-        connection: &'connection mut Connection,
-        request: TcpRequest<P::OneWayRequest>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection;
-}
-
 pub(super) struct SharedRequestDispatch<H>(pub(super) Arc<H>);
-pub(super) struct SharedOneWayDispatch<H>(pub(super) Arc<H>);
 pub(super) struct LocalRequestDispatch<H>(pub(super) Rc<H>);
-pub(super) struct LocalOneWayDispatch<H>(pub(super) Rc<H>);
 pub(super) struct SerialRequestDispatch<H>(pub(super) Arc<H>);
-pub(super) struct SerialOneWayDispatch<H>(pub(super) Arc<H>);
 pub(super) struct LocalSerialRequestDispatch<H>(pub(super) Rc<H>);
-pub(super) struct LocalSerialOneWayDispatch<H>(pub(super) Rc<H>);
 
 impl<P, H> ConnectionAccess<P> for SharedRequestDispatch<H>
 where
@@ -248,25 +178,9 @@ where
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
-        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+        responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         let context = RequestContext::without_app_state(request, responder, connection.clone());
-        nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
-    }
-}
-
-impl<P, H> OneWayDispatch<P, ConnectionContext<Arc<P::ConnectionState>>> for SharedOneWayDispatch<H>
-where
-    P: SharedProtocol,
-    H: TcpOneWayHandler<P>,
-{
-    fn call<'connection>(
-        &'connection self,
-        connection: &'connection mut ConnectionContext<Arc<P::ConnectionState>>,
-        request: TcpRequest<P::OneWayRequest>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
-    {
-        let context = RequestContext::without_app_state(request, NoResponse, connection.clone());
         nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
     }
 }
@@ -281,30 +195,11 @@ where
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
-        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+        responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         SerialTcpHandler::call(
             self.0.as_ref(),
             RequestContext::without_app_state(request, responder, connection),
-        )
-    }
-}
-
-impl<P, H> OneWayDispatch<P, ConnectionContext<P::ConnectionState>> for SerialOneWayDispatch<H>
-where
-    P: Protocol,
-    P::ConnectionState: Send,
-    H: SerialTcpOneWayHandler<P>,
-{
-    fn call<'connection>(
-        &'connection self,
-        connection: &'connection mut ConnectionContext<P::ConnectionState>,
-        request: TcpRequest<P::OneWayRequest>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
-    {
-        SerialTcpOneWayHandler::call(
-            self.0.as_ref(),
-            RequestContext::without_app_state(request, NoResponse, connection),
         )
     }
 }
@@ -319,26 +214,9 @@ where
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
-        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+        responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         let context = RequestContext::without_app_state(request, responder, connection.clone());
-        nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
-    }
-}
-
-#[allow(clippy::future_not_send)]
-impl<P, H> OneWayDispatch<P, ConnectionContext<Arc<P::ConnectionState>>> for LocalOneWayDispatch<H>
-where
-    P: Protocol,
-    H: LocalTcpOneWayHandler<P>,
-{
-    fn call<'connection>(
-        &'connection self,
-        connection: &'connection mut ConnectionContext<Arc<P::ConnectionState>>,
-        request: TcpRequest<P::OneWayRequest>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
-    {
-        let context = RequestContext::without_app_state(request, NoResponse, connection.clone());
         nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
     }
 }
@@ -353,30 +231,11 @@ where
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
-        responder: RequiredResponder<TcpResponder<P::Response, P::ResponseContext>>,
+        responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         LocalSerialTcpHandler::call(
             self.0.as_ref(),
             RequestContext::without_app_state(request, responder, connection),
-        )
-    }
-}
-
-#[allow(clippy::future_not_send)]
-impl<P, H> OneWayDispatch<P, ConnectionContext<P::ConnectionState>> for LocalSerialOneWayDispatch<H>
-where
-    P: Protocol,
-    H: LocalSerialTcpOneWayHandler<P>,
-{
-    fn call<'connection>(
-        &'connection self,
-        connection: &'connection mut ConnectionContext<P::ConnectionState>,
-        request: TcpRequest<P::OneWayRequest>,
-    ) -> impl Future<Output = Result<nacelle_core::pipeline::Completed, NacelleError>> + 'connection
-    {
-        LocalSerialTcpOneWayHandler::call(
-            self.0.as_ref(),
-            RequestContext::without_app_state(request, NoResponse, connection),
         )
     }
 }
@@ -419,10 +278,7 @@ where
 {
     let request = decoded.request;
     let detailed_request_metrics = telemetry_plan.request_metrics;
-    let core_request_events = telemetry_plan.observer;
-    // Read the monotonic clock once. Generic telemetry only observes it when
-    // request-duration timing is enabled, but an attached response completion
-    // item needs a request-start instant even when telemetry is disabled.
+    let core_request_events = telemetry_plan.request_events;
     let request_started = telemetry_plan
         .request_duration
         .then(std::time::Instant::now);
@@ -434,297 +290,197 @@ where
         handler.state(connection_context),
         runtime_state.limits().max_request_body_bytes,
     );
-    if decoded.body_len > max_request_body_bytes {
-        let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
-        record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
-        record_core_request_failed(
-            telemetry,
-            core_request_events,
-            !detailed_request_metrics,
-            connection.transport,
-            request_started,
-            &error,
-        );
-        if let Err(delivery_error) = write_error::<P, W, Observer>(
-            writer,
-            protocol,
-            Some(error_context),
-            &error,
-            tcp_limits,
-            delivery,
-            runtime_state,
-            telemetry,
-            metrics_context,
-            telemetry_plan.phase_duration,
-        )
-        .await
-        {
-            return Err(delivery_error.error);
-        }
-        return Err(NacelleError::ResourceLimit(
-            NacelleResourceLimitReason::RequestBodyBytes,
-        ));
-    }
-    let _request_permit = match runtime_state.acquire_request_tracked() {
-        Ok(permit) => permit,
-        Err(error) => {
-            record_tcp_error(telemetry, metrics_context, "request_permit", &error);
-            return Err(error);
-        }
-    };
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
-    let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
-    let outcome = if use_buffered_body {
-        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
-        let body =
-            buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
-        finish_tcp_phase(
-            telemetry,
-            metrics_context,
-            "request_body_read",
-            body_started,
-        );
-        execute_handler_with_metrics(
-            handler,
-            request,
-            body,
-            response_context,
-            runtime_state,
-            connection_context,
-            telemetry,
-            metrics_context,
-            telemetry_plan.phase_duration,
-        )
-        .await
-    } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
-        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
-        let body_result = read_buffered_request_body(
-            reader,
-            read_buf,
-            decoded.body_len,
-            runtime_state,
-            tcp_limits,
-        )
-        .await
-        .inspect_err(|error| {
-            record_tcp_error(telemetry, metrics_context, "request_body_read", error)
+    let mut _request_permit = None;
+    let outcome = async {
+        if decoded.body_len > max_request_body_bytes {
+            let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
+            record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
+            return Err(error);
+        }
+        _request_permit = Some(match runtime_state.acquire_request_tracked() {
+            Ok(permit) => permit,
+            Err(error) => {
+                record_tcp_error(telemetry, metrics_context, "request_permit", &error);
+                return Err(error);
+            }
         });
-        finish_tcp_phase(
-            telemetry,
-            metrics_context,
-            "request_body_read",
-            body_started,
-        );
-        match body_result {
-            Ok(body) => {
-                execute_handler_with_metrics(
-                    handler,
-                    request,
-                    body,
-                    response_context,
+        let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
+        if use_buffered_body {
+            let body_started = start_tcp_phase(telemetry_plan.phase_duration);
+            let body =
+                buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
+            finish_tcp_phase(
+                telemetry,
+                metrics_context,
+                "request_body_read",
+                body_started,
+            );
+            execute_handler_with_metrics(
+                handler,
+                request,
+                body,
+                response_context,
+                runtime_state,
+                connection_context,
+                telemetry,
+                metrics_context,
+                telemetry_plan.phase_duration,
+            )
+            .await
+        } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
+            let body_started = start_tcp_phase(telemetry_plan.phase_duration);
+            let body_result = read_buffered_request_body(
+                reader,
+                read_buf,
+                decoded.body_len,
+                runtime_state,
+                tcp_limits,
+            )
+            .await
+            .inspect_err(|error| {
+                record_tcp_error(telemetry, metrics_context, "request_body_read", error)
+            });
+            finish_tcp_phase(
+                telemetry,
+                metrics_context,
+                "request_body_read",
+                body_started,
+            );
+            match body_result {
+                Ok(body) => {
+                    execute_handler_with_metrics(
+                        handler,
+                        request,
+                        body,
+                        response_context,
+                        runtime_state,
+                        connection_context,
+                        telemetry,
+                        metrics_context,
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            let _streaming_permit =
+                runtime_state
+                    .acquire_streaming_task_tracked()
+                    .inspect_err(|error| {
+                        record_tcp_error(telemetry, metrics_context, "streaming_task", error)
+                    })?;
+            #[cfg(feature = "experimental-memory")]
+            let _streaming_body_allocation = if config.streaming_body_memory_policy
+                == TcpStreamingBodyMemoryPolicy::DeclaredLength
+            {
+                Some(
+                    runtime_state
+                        .allocate_memory_with_timeout(
+                            decoded.body_len,
+                            runtime_state.limits().memory_allocation_timeout,
+                        )
+                        .await
+                        .inspect_err(|error| {
+                            record_tcp_error(telemetry, metrics_context, "streaming_memory", error)
+                        })?,
+                )
+            } else {
+                None
+            };
+            let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
+            let body = NacelleBody::new(body_rx, decoded.body_len);
+            let handler_future = execute_handler_with_metrics(
+                handler,
+                request,
+                body,
+                response_context,
+                runtime_state,
+                connection_context,
+                telemetry,
+                metrics_context,
+                telemetry_plan.phase_duration,
+            );
+            let pump_future = pump_request_body(
+                reader,
+                read_buf,
+                decoded.body_len,
+                body_tx,
+                config,
+                runtime_state,
+                tcp_limits,
+            );
+            tokio::pin!(handler_future);
+            tokio::pin!(pump_future);
+
+            tokio::select! {
+                biased;
+                pump_result = &mut pump_future => {
+                    match pump_result {
+                        Ok(()) => handler_future.await,
+                        Err(error) => {
+                            record_tcp_error(
+                                telemetry,
+                                metrics_context,
+                                "request_body_read",
+                                &error,
+                            );
+                            Err(error)
+                        }
+                    }
+                }
+                handler_result = &mut handler_future => {
+                    match handler_result {
+                        Ok(completion) => {
+                            let body_started = start_tcp_phase(telemetry_plan.phase_duration);
+                            let pump_result = pump_future.await;
+                            finish_tcp_phase(
+                                telemetry,
+                                metrics_context,
+                                "request_body_read",
+                                body_started,
+                            );
+                            if let Err(error) = &pump_result {
+                                record_tcp_error(telemetry, metrics_context, "request_body_read", error);
+                            }
+                            pump_result?;
+                            Ok(completion)
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+            }
+        }
+    }
+    .await;
+
+    match outcome {
+        Ok(completion) => {
+            let response_bytes = if let Some(completion) = completion {
+                match deliver_response::<P, W, Observer>(
+                    protocol,
+                    completion,
+                    writer,
+                    tcp_limits,
+                    delivery,
                     runtime_state,
-                    connection_context,
                     telemetry,
                     metrics_context,
                     telemetry_plan.phase_duration,
                 )
                 .await
-            }
-            Err(error) => Err(error),
-        }
-    } else {
-        let _streaming_permit =
-            runtime_state
-                .acquire_streaming_task_tracked()
-                .inspect_err(|error| {
-                    record_tcp_error(telemetry, metrics_context, "streaming_task", error)
-                })?;
-        #[cfg(feature = "experimental-memory")]
-        let _streaming_body_allocation = if config.streaming_body_memory_policy
-            == TcpStreamingBodyMemoryPolicy::DeclaredLength
-        {
-            Some(
-                runtime_state
-                    .allocate_memory_with_timeout(
-                        decoded.body_len,
-                        runtime_state.limits().memory_allocation_timeout,
-                    )
-                    .await
-                    .inspect_err(|error| {
-                        record_tcp_error(telemetry, metrics_context, "streaming_memory", error)
-                    })?,
-            )
-        } else {
-            None
-        };
-        let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
-        let body = NacelleBody::new(body_rx, decoded.body_len);
-        let handler_future = execute_handler_with_metrics(
-            handler,
-            request,
-            body,
-            response_context,
-            runtime_state,
-            connection_context,
-            telemetry,
-            metrics_context,
-            telemetry_plan.phase_duration,
-        );
-        let pump_future = pump_request_body(
-            reader,
-            read_buf,
-            decoded.body_len,
-            body_tx,
-            config,
-            runtime_state,
-            tcp_limits,
-        );
-        tokio::pin!(handler_future);
-        tokio::pin!(pump_future);
-
-        tokio::select! {
-            biased;
-            pump_result = &mut pump_future => {
-                match pump_result {
-                    Ok(()) => handler_future.await,
-                    Err(error) => {
-                        record_tcp_error(
-                            telemetry,
-                            metrics_context,
-                            "request_body_read",
-                            &error,
-                        );
-                        Err(error)
-                    }
-                }
-            }
-            handler_result = &mut handler_future => {
-                match handler_result {
-                    Ok(completion) => {
-                        let body_started = start_tcp_phase(telemetry_plan.phase_duration);
-                        let pump_result = pump_future.await;
-                        finish_tcp_phase(
-                            telemetry,
-                            metrics_context,
-                            "request_body_read",
-                            body_started,
-                        );
-                        if let Err(error) = &pump_result {
-                            record_tcp_error(telemetry, metrics_context, "request_body_read", error);
-                        }
-                        pump_result?;
-                        Ok(completion)
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-        }
-    };
-
-    match outcome {
-        Ok(completion) => {
-            let mut completion = completion.into_inner();
-            let completion_guard = completion
-                .completion
-                .take()
-                .map(ResponseCompletionGuard::new);
-            // Isolate an item-bearing response from any bytes a prior response
-            // coalesced into the shared buffer, so the reported encoded and
-            // written counts (and the error metric below) reflect only this
-            // response. In the common case where the previous response also
-            // carried an item, its forced flush already drained the buffer, so
-            // this pre-flush is skipped and costs nothing.
-            if completion_guard.is_some()
-                && delivery.has_pending()
-                && let Err(delivery_error) = delivery
-                    .flush(
-                        writer,
-                        tcp_limits,
-                        telemetry,
-                        metrics_context,
-                        telemetry_plan.phase_duration,
-                    )
-                    .await
-            {
-                // The prior coalesced bytes failed to reach the transport;
-                // this response was never encoded or written.
-                if let Some(guard) = completion_guard {
-                    guard.fail(delivery_error.phase_enum(), 0, 0, &delivery_error.error);
-                }
-                request_metrics.complete("error", delivery_error.delivered_bytes);
-                return Err(delivery_error.error);
-            }
-            let encode_result = encode_response_body::<P, W, Observer>(
-                protocol,
-                completion,
-                writer,
-                tcp_limits,
-                delivery,
-                runtime_state,
-                telemetry,
-                metrics_context,
-                telemetry_plan.phase_duration,
-            )
-            .await;
-            let response_bytes = match encode_result {
-                Ok(response_bytes) => response_bytes,
-                Err(delivery_error) => {
-                    if let Some(guard) = completion_guard {
-                        guard.fail(
-                            delivery_error.phase_enum(),
-                            delivery_error.encoded_bytes,
-                            delivery_error.delivered_bytes,
-                            &delivery_error.error,
-                        );
-                    }
-                    if delivery_error.is_encode_failure() {
-                        record_tcp_error(
-                            telemetry,
-                            metrics_context,
-                            delivery_error.phase(),
-                            &delivery_error.error,
-                        );
-                    }
-                    request_metrics.complete("error", delivery_error.delivered_bytes);
-                    return Err(delivery_error.error);
-                }
-            };
-            // An attached completion item requests a per-response write-and-flush
-            // boundary: force a flush so `Delivered` only settles once the encoded
-            // bytes have been accepted by the transport and flushed. The path
-            // without an item keeps the configured write policy and its cost.
-            if let Some(guard) = completion_guard {
-                match delivery
-                    .flush(
-                        writer,
-                        tcp_limits,
-                        telemetry,
-                        metrics_context,
-                        telemetry_plan.phase_duration,
-                    )
-                    .await
                 {
-                    Ok(_) => guard.deliver(response_bytes, response_bytes),
+                    Ok(response_bytes) => response_bytes,
                     Err(delivery_error) => {
-                        let phase = delivery_error.phase_enum();
-                        let written_wire_bytes =
-                            if matches!(phase, ResponseDeliveryPhase::SocketFlush) {
-                                response_bytes
-                            } else {
-                                response_bytes.min(delivery_error.delivered_bytes)
-                            };
-                        guard.fail(
-                            phase,
-                            response_bytes,
-                            written_wire_bytes,
-                            &delivery_error.error,
-                        );
                         request_metrics.complete("error", delivery_error.delivered_bytes);
                         return Err(delivery_error.error);
                     }
                 }
-            }
+            } else {
+                0
+            };
             record_core_request_completed(
                 telemetry,
                 core_request_events,
@@ -737,7 +493,6 @@ where
             request_metrics.complete("ok", response_bytes);
         }
         Err(error) => {
-            record_tcp_error(telemetry, metrics_context, "handler", &error);
             record_core_request_failed(
                 telemetry,
                 core_request_events,
@@ -784,167 +539,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_one_way<P, A, D, R, Observer>(
-    reader: &mut R,
-    read_buf: &mut BytesMut,
-    protocol: &P,
-    connection_access: &A,
-    handler: &D,
-    decoded: DecodedRequest<P::OneWayRequest>,
-    config: &NacelleTcpConfig,
-    telemetry: &NacelleTelemetry<Observer>,
-    runtime_state: &NacelleRuntimeState,
-    tcp_limits: &NacelleTcpLimits,
-    connection: &NacelleConnectionMeta,
-    connection_context: &mut A::Connection,
-    metrics_context: Option<&NacelleMetricsContext>,
-    telemetry_plan: TcpTelemetryPlan,
-) -> Result<(), NacelleError>
-where
-    P: Protocol,
-    A: ConnectionAccess<P>,
-    D: OneWayDispatch<P, A::Connection>,
-    Observer: NacelleTelemetryObserver,
-    R: AsyncRead + Unpin,
-{
-    let request = decoded.request;
-    let request_bytes = protocol.one_way_wire_bytes(&request, decoded.body_len);
-    let request_started = telemetry_plan
-        .request_duration
-        .then(std::time::Instant::now);
-    let max_request_body_bytes = protocol.max_one_way_body_bytes(
-        &request,
-        connection_access.info(connection_context),
-        connection_access.state(connection_context),
-        runtime_state.limits().max_request_body_bytes,
-    );
-    if decoded.body_len > max_request_body_bytes {
-        return Err(NacelleError::ResourceLimit(
-            NacelleResourceLimitReason::RequestBodyBytes,
-        ));
-    }
-    let _request_permit = runtime_state.acquire_request_tracked()?;
-    let mut request_metrics =
-        TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
-
-    let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
-    let result = if use_buffered_body {
-        let body =
-            buffered_request_body(read_buf, decoded.body_len, config.request_body_chunk_size);
-        execute_one_way(handler, request, body, runtime_state, connection_context).await
-    } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
-        let body = read_buffered_request_body(
-            reader,
-            read_buf,
-            decoded.body_len,
-            runtime_state,
-            tcp_limits,
-        )
-        .await?;
-        execute_one_way(handler, request, body, runtime_state, connection_context).await
-    } else {
-        let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
-        #[cfg(feature = "experimental-memory")]
-        let _streaming_body_allocation = if config.streaming_body_memory_policy
-            == TcpStreamingBodyMemoryPolicy::DeclaredLength
-        {
-            Some(
-                runtime_state
-                    .allocate_memory_with_timeout(
-                        decoded.body_len,
-                        runtime_state.limits().memory_allocation_timeout,
-                    )
-                    .await?,
-            )
-        } else {
-            None
-        };
-        let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
-        let body = NacelleBody::new(body_rx, decoded.body_len);
-        let handler_future =
-            execute_one_way(handler, request, body, runtime_state, connection_context);
-        let pump_future = pump_request_body(
-            reader,
-            read_buf,
-            decoded.body_len,
-            body_tx,
-            config,
-            runtime_state,
-            tcp_limits,
-        );
-        tokio::pin!(handler_future);
-        tokio::pin!(pump_future);
-        tokio::select! {
-            biased;
-            pump_result = &mut pump_future => {
-                pump_result?;
-                handler_future.await
-            }
-            handler_result = &mut handler_future => {
-                let completion = handler_result?;
-                pump_future.await?;
-                Ok(completion)
-            }
-        }
-    };
-
-    match result {
-        Ok(_completed) => {
-            request_metrics.complete("ok", 0);
-            record_core_request_completed(
-                telemetry,
-                telemetry_plan.request_events,
-                metrics_context.is_none(),
-                connection.transport,
-                request_bytes,
-                0,
-                request_started,
-            );
-            Ok(())
-        }
-        Err(error) => {
-            request_metrics.complete("error", 0);
-            record_core_request_failed(
-                telemetry,
-                telemetry_plan.request_events,
-                metrics_context.is_none(),
-                connection.transport,
-                request_started,
-                &error,
-            );
-            Err(error)
-        }
-    }
-}
-
-async fn execute_one_way<P, D, Connection>(
-    handler: &D,
-    request: P::OneWayRequest,
-    body: NacelleBody,
-    runtime_state: &NacelleRuntimeState,
-    connection_context: &mut Connection,
-) -> Result<nacelle_core::pipeline::Completed, NacelleError>
-where
-    P: Protocol,
-    D: OneWayDispatch<P, Connection>,
-{
-    let future = handler.call(
-        connection_context,
-        TcpRequest {
-            head: request,
-            body,
-        },
-    );
-    if let Some(timeout) = runtime_state.limits().handler_timeout {
-        tokio::time::timeout(timeout, future)
-            .await
-            .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
-    } else {
-        future.await
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn execute_handler_with_metrics<P, D, Observer>(
     handler: &D,
     request: P::Request,
@@ -955,7 +549,7 @@ async fn execute_handler_with_metrics<P, D, Observer>(
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase_duration_metrics: bool,
-) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
+) -> Result<Option<GuardedResponseCompletion<P::Response, P::ResponseContext>>, NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
@@ -971,8 +565,15 @@ where
         connection_context,
     )
     .await;
+    if let Err(error) = &result {
+        record_tcp_error(telemetry, metrics_context, "handler", error);
+    }
     finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
-    result
+    result.map(|completion| {
+        completion
+            .into_response()
+            .map(GuardedResponseCompletion::new)
+    })
 }
 
 async fn execute_handler<P, D>(
@@ -993,7 +594,7 @@ where
             head: request,
             body,
         },
-        RequiredResponder::new(TcpResponder::new(response_context)),
+        OptionalResponder::new(TcpResponder::new(response_context)),
     );
     if let Some(timeout) = runtime_state.limits().handler_timeout {
         tokio::time::timeout(timeout, future)

@@ -1,12 +1,10 @@
 //! Example length-delimited protocol used by Nacelle examples and tests.
 
-use std::convert::Infallible;
-
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::pipeline::ConnectionInfo;
 use nacelle_core::{NacelleBody, NacelleError};
-use nacelle_tcp::{DecodedMessage, DecodedRequest, FrameBuffer, Protocol, TcpResponse};
+use nacelle_tcp::{DecodedRequest, FrameBuffer, Protocol, TcpCompletion, TcpResponse};
 
 const HEADER_LEN: usize = 24;
 const FIXED_FRAME_FIELDS_LEN: usize = HEADER_LEN - 4;
@@ -35,6 +33,7 @@ pub struct FrameResponseContext {
     request_id: u64,
     opcode: u64,
     started: bool,
+    error: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +58,7 @@ impl LengthDelimitedProtocol {
 }
 
 impl MessageDecoder for LengthDelimitedRequestDecoder {
-    type Message = DecodedMessage<FrameRequest, Infallible>;
+    type Message = DecodedRequest<FrameRequest>;
     type Error = NacelleError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
@@ -90,7 +89,7 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
         drop(src.split_to(HEADER_LEN));
         let body_len = frame_len - FIXED_FRAME_FIELDS_LEN;
 
-        Ok(Some(DecodedMessage::Request(DecodedRequest {
+        Ok(Some(DecodedRequest {
             request: FrameRequest {
                 request_id,
                 opcode,
@@ -98,13 +97,12 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
                 body_len,
             },
             body_len,
-        })))
+        }))
     }
 }
 
 impl Protocol for LengthDelimitedProtocol {
     type Request = FrameRequest;
-    type OneWayRequest = Infallible;
     type Response = TcpResponse;
     type ConnectionState = ();
     type Decoder = LengthDelimitedRequestDecoder;
@@ -121,15 +119,12 @@ impl Protocol for LengthDelimitedProtocol {
         HEADER_LEN + body_len
     }
 
-    fn one_way_wire_bytes(&self, request: &Self::OneWayRequest, _body_len: usize) -> usize {
-        match *request {}
-    }
-
     fn response_context(&self, req: &FrameRequest) -> Self::ResponseContext {
         FrameResponseContext {
             request_id: req.request_id,
             opcode: req.opcode,
             started: false,
+            error: false,
         }
     }
 
@@ -156,7 +151,7 @@ impl Protocol for LengthDelimitedProtocol {
         chunk: Bytes,
         dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
-        let mut flags = 0;
+        let mut flags = if context.error { FRAME_FLAG_ERROR } else { 0 };
         if !context.started {
             flags |= FRAME_FLAG_START;
             context.started = true;
@@ -171,6 +166,9 @@ impl Protocol for LengthDelimitedProtocol {
         dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let mut flags = FRAME_FLAG_END;
+        if context.error {
+            flags |= FRAME_FLAG_ERROR;
+        }
         if !context.started {
             flags |= FRAME_FLAG_START;
             context.started = true;
@@ -186,6 +184,9 @@ impl Protocol for LengthDelimitedProtocol {
         dst: &mut FrameBuffer<'_>,
     ) -> Result<(), NacelleError> {
         let mut flags = FRAME_FLAG_END;
+        if context.error {
+            flags |= FRAME_FLAG_ERROR;
+        }
         if !context.started {
             flags |= FRAME_FLAG_START;
             context.started = true;
@@ -194,23 +195,23 @@ impl Protocol for LengthDelimitedProtocol {
         encode_frame(context.request_id, context.opcode, flags, &chunk, dst)
     }
 
-    fn encode_error(
+    fn error_response(
         &self,
         context: Option<&Self::ErrorContext>,
         error: &NacelleError,
-        dst: &mut FrameBuffer<'_>,
-    ) -> Result<(), NacelleError> {
+    ) -> Option<TcpCompletion<Self::Response, Self::ResponseContext>> {
         let (request_id, opcode) = context
             .map(|context| (context.request_id, context.opcode))
             .unwrap_or((0, 0));
-        let message = error.to_string();
-        encode_frame(
-            request_id,
-            opcode,
-            FRAME_FLAG_START | FRAME_FLAG_END | FRAME_FLAG_ERROR,
-            message.as_bytes(),
-            dst,
-        )
+        Some(TcpCompletion::new(
+            TcpResponse::bytes(error.to_string()),
+            FrameResponseContext {
+                request_id,
+                opcode,
+                started: false,
+                error: true,
+            },
+        ))
     }
 }
 
@@ -259,10 +260,6 @@ mod tests {
             .decode(&mut buf)
             .expect("decode should succeed")
             .expect("head should decode");
-        let decoded = match decoded {
-            DecodedMessage::Request(decoded) => decoded,
-            DecodedMessage::OneWay(decoded) => match decoded.request {},
-        };
         assert_eq!(decoded.request.request_id, 7);
         assert_eq!(decoded.request.opcode, 42);
         assert_eq!(decoded.body_len, 5);

@@ -25,18 +25,16 @@ fn tcp_capability_namespace_is_available() {
     let _ = std::any::type_name::<nacelle::tcp::LocalSerialTcpServer<(), ()>>();
 
     #[allow(dead_code)]
-    fn serial_traits_are_public<P, H, LH, OH, LOH>()
+    fn serial_traits_are_public<P, H, LH>()
     where
         P: nacelle::tcp::Protocol,
         P::ConnectionState: Send,
         H: nacelle::tcp::SerialTcpHandler<P>,
         LH: nacelle::tcp::LocalSerialTcpHandler<P>,
-        OH: nacelle::tcp::SerialTcpOneWayHandler<P>,
-        LOH: nacelle::tcp::LocalSerialTcpOneWayHandler<P>,
     {
-        let _ = std::marker::PhantomData::<(H, LH, OH, LOH)>;
+        let _ = std::marker::PhantomData::<(H, LH)>;
         let _ = std::any::type_name::<nacelle::tcp::SerialTcpRequestContext<'static, P>>();
-        let _ = std::any::type_name::<nacelle::tcp::SerialTcpOneWayContext<'static, P>>();
+        let _ = std::any::type_name::<nacelle::tcp::TcpHandlerCompletion<P>>();
     }
 
     #[allow(dead_code)]
