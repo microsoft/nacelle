@@ -64,6 +64,21 @@ impl Drop for ResponseCompletionGuard {
     }
 }
 
+pub(super) struct GuardedResponseCompletion<Response, ResponseContext> {
+    guard: Option<ResponseCompletionGuard>,
+    completion: TcpCompletion<Response, ResponseContext>,
+}
+
+impl<Response, ResponseContext> GuardedResponseCompletion<Response, ResponseContext> {
+    pub(super) fn new(mut completion: TcpCompletion<Response, ResponseContext>) -> Self {
+        let guard = completion
+            .completion
+            .take()
+            .map(ResponseCompletionGuard::new);
+        Self { guard, completion }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ResponseDeliveryError {
     pub(super) error: NacelleError,
@@ -445,7 +460,7 @@ impl ResponseDelivery {
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn deliver_response<P, W, Observer>(
     protocol: &P,
-    mut completion: TcpCompletion<P::Response, P::ResponseContext>,
+    completion: GuardedResponseCompletion<P::Response, P::ResponseContext>,
     writer: &mut W,
     tcp_limits: &NacelleTcpLimits,
     delivery: &mut ResponseDelivery,
@@ -459,10 +474,7 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    let guard = completion
-        .completion
-        .take()
-        .map(ResponseCompletionGuard::new);
+    let GuardedResponseCompletion { guard, completion } = completion;
     // Isolate callback-bearing responses from prior coalesced responses.
     if guard.is_some()
         && delivery.has_pending()
@@ -721,7 +733,7 @@ where
         Some(response) => {
             deliver_response(
                 protocol,
-                response,
+                GuardedResponseCompletion::new(response),
                 writer,
                 tcp_limits,
                 delivery,

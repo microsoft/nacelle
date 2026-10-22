@@ -26,7 +26,7 @@ use super::metrics::{
     TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
-use super::response::{ResponseDelivery, deliver_response, write_error};
+use super::response::{GuardedResponseCompletion, ResponseDelivery, deliver_response, write_error};
 
 pub(super) trait ConnectionAccess<P>
 where
@@ -458,7 +458,7 @@ where
 
     match outcome {
         Ok(completion) => {
-            let response_bytes = if let Some(completion) = completion.into_response() {
+            let response_bytes = if let Some(completion) = completion {
                 match deliver_response::<P, W, Observer>(
                     protocol,
                     completion,
@@ -549,7 +549,7 @@ async fn execute_handler_with_metrics<P, D, Observer>(
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase_duration_metrics: bool,
-) -> Result<crate::protocol::TcpHandlerCompletion<P>, NacelleError>
+) -> Result<Option<GuardedResponseCompletion<P::Response, P::ResponseContext>>, NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
@@ -569,7 +569,11 @@ where
         record_tcp_error(telemetry, metrics_context, "handler", error);
     }
     finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
-    result
+    result.map(|completion| {
+        completion
+            .into_response()
+            .map(GuardedResponseCompletion::new)
+    })
 }
 
 async fn execute_handler<P, D>(

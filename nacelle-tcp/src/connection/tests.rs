@@ -3201,6 +3201,76 @@ async fn completion_item_runs_on_cancellation() {
 }
 
 #[tokio::test]
+async fn completion_item_runs_when_cancelled_during_request_body_drain() {
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_completed = Arc::new(tokio::sync::Notify::new());
+    let (mut client, server_io) = tokio::io::duplex(64);
+    let server_task = tokio::spawn(serve_stream_with_connection_meta(
+        server_io,
+        Arc::new(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }),
+        handler_fn({
+            let outcomes = outcomes.clone();
+            let calls = calls.clone();
+            let handler_completed = handler_completed.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let outcomes = outcomes.clone();
+                let calls = calls.clone();
+                let handler_completed = handler_completed.clone();
+                async move {
+                    let completion =
+                        context
+                            .respond(TcpResponse::bytes("ok"))
+                            .await?
+                            .map(move |tc| {
+                                tc.with_completion_item(move |outcome| {
+                                    calls.fetch_add(1, Ordering::SeqCst);
+                                    outcomes
+                                        .lock()
+                                        .expect("outcome recorder poisoned")
+                                        .push(capture_outcome(outcome));
+                                })
+                            });
+                    handler_completed.notify_one();
+                    Ok(completion)
+                }
+            }
+        }),
+        NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Streaming),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_request_body_bytes(16)),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client
+        .write_all(&[4, b'a'])
+        .await
+        .expect("partial request body should write");
+    tokio::time::timeout(Duration::from_millis(250), handler_completed.notified())
+        .await
+        .expect("handler should return before cancellation");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    server_task.abort();
+    let join_error = server_task
+        .await
+        .expect_err("connection task should be cancelled");
+    assert!(join_error.is_cancelled());
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        outcomes.lock().expect("outcome recorder poisoned").clone(),
+        vec![CapturedOutcome::Aborted {
+            reason: ResponseAbortReason::Cancelled,
+        }]
+    );
+}
+
+#[tokio::test]
 async fn handler_failure_does_not_run_a_completion_item() {
     let calls = Arc::new(AtomicUsize::new(0));
     let (mut client, server_io) = tokio::io::duplex(64);
