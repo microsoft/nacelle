@@ -361,6 +361,11 @@ where
     ) -> std::io::Result<thread::JoinHandle<Result<(), NacelleError>>>,
 {
     config.validate()?;
+    // Each worker below gets its own current-thread runtime, so the ambient
+    // Tokio handle reports a single worker. Declare the real process-wide
+    // worker count first, or listeners would diagnose this as a one-core
+    // deployment.
+    nacelle_core::runtime::declare_worker_topology(config.workers.len());
     let (startup_tx, startup_rx) = mpsc::channel();
     let mut threads = Vec::with_capacity(config.workers.len());
     let mut first_error = None;

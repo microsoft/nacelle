@@ -15,9 +15,14 @@ use rustls::sign::CertifiedKey;
 /// Reloadable Rustls server configuration.
 #[derive(Debug, Clone)]
 pub struct NacelleTlsConfig {
-    server_config: Arc<RwLock<Arc<ServerConfig>>>,
+    state: Arc<RwLock<TlsServerState>>,
     handshake_timeout: Duration,
-    allowed_server_names: Arc<RwLock<Option<Vec<String>>>>,
+}
+
+#[derive(Debug)]
+struct TlsServerState {
+    server_config: Arc<ServerConfig>,
+    allowed_server_names: Option<Vec<String>>,
 }
 
 /// Self-signed Rustls configuration generated for local testing.
@@ -43,9 +48,11 @@ impl NacelleTlsConfig {
     #[must_use]
     pub fn from_server_config_arc(server_config: Arc<ServerConfig>) -> Self {
         Self {
-            server_config: Arc::new(RwLock::new(server_config)),
+            state: Arc::new(RwLock::new(TlsServerState {
+                server_config,
+                allowed_server_names: None,
+            })),
             handshake_timeout: Duration::from_secs(10),
-            allowed_server_names: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -79,9 +86,11 @@ impl NacelleTlsConfig {
             Some(allowed_server_names.clone()),
         )?;
         Ok(Self {
-            server_config: Arc::new(RwLock::new(Arc::new(config))),
+            state: Arc::new(RwLock::new(TlsServerState {
+                server_config: Arc::new(config),
+                allowed_server_names: Some(allowed_server_names),
+            })),
             handshake_timeout: Duration::from_secs(10),
-            allowed_server_names: Arc::new(RwLock::new(Some(allowed_server_names))),
         })
     }
 
@@ -171,18 +180,17 @@ impl NacelleTlsConfig {
 
     /// Atomically replace the shared server configuration used by new handshakes.
     ///
+    /// The supplied configuration owns its certificate policy; this clears the
+    /// stored SNI allowlist used by subsequent certificate-only reloads.
+    ///
     /// # Panics
     ///
     /// Panics if an internal reload lock is poisoned.
     pub fn replace_server_config_arc(&self, server_config: Arc<ServerConfig>) {
-        *self
-            .server_config
-            .write()
-            .expect("TLS server config lock poisoned") = server_config;
-        *self
-            .allowed_server_names
-            .write()
-            .expect("TLS allowed server names lock poisoned") = None;
+        *self.state.write().expect("TLS server config lock poisoned") = TlsServerState {
+            server_config,
+            allowed_server_names: None,
+        };
     }
 
     /// Reload DER material while preserving the configured SNI allowlist.
@@ -199,13 +207,14 @@ impl NacelleTlsConfig {
         certificates: Vec<CertificateDer<'static>>,
         private_key: PrivateKeyDer<'static>,
     ) -> io::Result<()> {
-        let allowed = self.allowed_server_names();
-        let config = server_config_from_der(certificates, private_key, allowed.clone())?;
-        self.replace_server_config(config);
-        *self
-            .allowed_server_names
-            .write()
-            .expect("TLS allowed server names lock poisoned") = allowed;
+        let mut state = self.state.write().expect("TLS server config lock poisoned");
+        let config = server_config_from_der(
+            certificates,
+            private_key,
+            state.allowed_server_names.clone(),
+        )?;
+        state.server_config = Arc::new(config);
+        drop(state);
         Ok(())
     }
 
@@ -249,9 +258,10 @@ impl NacelleTlsConfig {
     /// Panics if the internal reload lock is poisoned.
     #[must_use]
     pub fn allowed_server_names(&self) -> Option<Vec<String>> {
-        self.allowed_server_names
+        self.state
             .read()
-            .expect("TLS allowed server names lock poisoned")
+            .expect("TLS server config lock poisoned")
+            .allowed_server_names
             .clone()
     }
 
@@ -263,9 +273,10 @@ impl NacelleTlsConfig {
     #[doc(hidden)]
     #[must_use]
     pub fn server_config(&self) -> Arc<ServerConfig> {
-        self.server_config
+        self.state
             .read()
             .expect("TLS server config lock poisoned")
+            .server_config
             .clone()
     }
 
@@ -437,5 +448,80 @@ mod tests {
             tls.allowed_server_names(),
             Some(vec!["localhost".to_string()])
         );
+    }
+
+    #[cfg(feature = "self-signed")]
+    fn assert_sni_policy(config: &Arc<ServerConfig>) {
+        for (name, enable_sni, accepted) in [
+            ("localhost", true, true),
+            ("outside.invalid", true, false),
+            ("localhost", false, false),
+        ] {
+            let mut client_config = rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth();
+            client_config.enable_sni = enable_sni;
+            let mut client = rustls::ClientConnection::new(
+                Arc::new(client_config),
+                rustls::pki_types::ServerName::try_from(name).expect("server name"),
+            )
+            .expect("client");
+            let mut hello = Vec::new();
+            client.write_tls(&mut hello).expect("client hello");
+            let mut server = rustls::ServerConnection::new(config.clone()).expect("server");
+            server.read_tls(&mut hello.as_slice()).expect("read hello");
+            assert_eq!(
+                server.process_new_packets().is_ok(),
+                accepted,
+                "{name}, SNI={enable_sni}"
+            );
+        }
+    }
+
+    #[cfg(feature = "self-signed")]
+    #[test]
+    fn concurrent_certificate_reloads_preserve_sni_policy() {
+        let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("certificate");
+        let tls = NacelleTlsConfig::from_pem_with_allowed_server_names(
+            generated.certificate_pem.as_bytes(),
+            generated.private_key_pem.as_bytes(),
+            ["localhost"],
+        )
+        .expect("config");
+        let original = tls.server_config();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let tls = &tls;
+                let generated = &generated;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..32 {
+                        tls.reload_from_pem(
+                            generated.certificate_pem.as_bytes(),
+                            generated.private_key_pem.as_bytes(),
+                        )
+                        .expect("reload");
+                        assert_eq!(
+                            tls.allowed_server_names(),
+                            Some(vec!["localhost".to_string()])
+                        );
+                    }
+                });
+            }
+        });
+        assert_sni_policy(&original);
+        assert_sni_policy(&tls.server_config());
+        let current = tls.server_config();
+        assert!(
+            tls.reload_from_der(
+                Vec::new(),
+                parse_pem_private_key(generated.private_key_pem.as_bytes()).expect("key")
+            )
+            .is_err()
+        );
+        assert!(Arc::ptr_eq(&current, &tls.server_config()));
+        assert_sni_policy(&tls.server_config());
     }
 }

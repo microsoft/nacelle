@@ -143,15 +143,29 @@ where
                 });
             }
 
-            let read = self
-                .reader
-                .read_buf(&mut self.buffer)
-                .await
-                .map_err(MessageReadError::Io)?;
-            if read == 0 {
-                self.eof = true;
-            }
+            self.read_more().await.map_err(MessageReadError::Io)?;
         }
+    }
+
+    /// Append one transport read to the input buffer without decoding it.
+    ///
+    /// Returns zero at EOF without polling the transport again on later calls.
+    /// Use [`Self::read_message`] to process buffered input and decoder EOF logic.
+    /// This operation is cancellation safe: cancelling a pending read does not
+    /// consume bytes. Callers must decode between reads to enforce input limits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the asynchronous byte transport fails.
+    pub async fn read_more(&mut self) -> io::Result<usize> {
+        if self.eof {
+            return Ok(0);
+        }
+        let read = self.reader.read_buf(&mut self.buffer).await?;
+        if read == 0 {
+            self.eof = true;
+        }
+        Ok(read)
     }
 
     /// Decode one message from currently buffered bytes without reading the transport.

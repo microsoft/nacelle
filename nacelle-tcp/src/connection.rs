@@ -411,9 +411,11 @@ where
         Ok(()) => shutdown_result,
         Err(error) => Err(error),
     };
-    if let Some(connection_metrics) = &connection_metrics {
-        telemetry.connection_closed(connection_metrics, tcp_close_reason(&result));
-    }
+    telemetry.connection_closed(
+        transport,
+        connection_metrics.as_ref(),
+        tcp_close_reason(&result),
+    );
     result
 }
 

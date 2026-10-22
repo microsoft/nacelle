@@ -47,6 +47,54 @@ async fn reader_reports_incomplete_eof() {
     ));
 }
 
+#[tokio::test]
+async fn reader_read_more_preserves_buffer_and_eof() {
+    let (mut client, server) = tokio::io::duplex(16);
+    let mut reader = MessageReader::new(server, LengthDelimitedDecoder::new(32));
+    client.write_all(&[0, 0, 0, 1, b'x']).await.expect("frame");
+
+    assert_eq!(reader.read_more().await.expect("prefetch"), 5);
+    assert_eq!(&reader.buffer()[..], &[0, 0, 0, 1, b'x']);
+    assert_eq!(
+        &reader.read_message().await.expect("read").expect("message")[..],
+        b"x"
+    );
+
+    client.write_all(&[0, 0]).await.expect("partial frame");
+    assert_eq!(reader.read_more().await.expect("partial prefetch"), 2);
+    client.shutdown().await.expect("shutdown");
+    assert_eq!(reader.read_more().await.expect("EOF"), 0);
+    assert_eq!(reader.read_more().await.expect("repeated EOF"), 0);
+    assert!(matches!(
+        reader.read_message().await,
+        Err(MessageReadError::UnexpectedEof { remaining: 2 })
+    ));
+}
+
+#[tokio::test]
+async fn reader_read_more_cancellation_preserves_input() {
+    let (mut client, server) = tokio::io::duplex(16);
+    let mut reader = MessageReader::new(server, LengthDelimitedDecoder::new(32));
+    {
+        let pending_read = reader.read_more();
+        tokio::pin!(pending_read);
+        std::future::poll_fn(|context| {
+            assert!(pending_read.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    assert!(reader.buffer().is_empty());
+    client.write_all(&[0, 0, 0, 1, b'x']).await.expect("frame");
+    assert_eq!(
+        &reader.read_message().await.expect("read").expect("message")[..],
+        b"x"
+    );
+    client.shutdown().await.expect("shutdown");
+    assert_eq!(reader.read_more().await.expect("EOF"), 0);
+    assert!(reader.read_message().await.expect("clean EOF").is_none());
+}
+
 #[derive(Debug, Default)]
 struct NoProgressDecoder;
 

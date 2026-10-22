@@ -7,10 +7,19 @@ use std::time::Duration;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct NacelleTcpLimits {
+    /// Deadline to decode a message once input is available, and for each
+    /// subsequent request-body read. Defaults to 30 seconds.
+    ///
+    /// Additional message bytes do not restart the decoding deadline.
+    /// Does not limit the idle wait for the first byte of the next message.
     pub read_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
     /// Deadline for final writer shutdown after a connection result is known.
     pub shutdown_timeout: Option<Duration>,
+    /// Deadline for the first byte when waiting for a message with an empty
+    /// input buffer, including the first message. Defaults to 120 seconds.
+    ///
+    /// Does not apply to in-progress messages, request bodies, or handlers.
     pub idle_timeout: Option<Duration>,
 }
 
@@ -26,11 +35,13 @@ impl Default for NacelleTcpLimits {
 }
 
 impl NacelleTcpLimits {
+    /// Set the active message and per-body-read deadline independently of idle waiting.
     pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
         self.read_timeout = Some(timeout);
         self
     }
 
+    /// Disable active read deadlines without changing the idle deadline.
     pub fn without_read_timeout(mut self) -> Self {
         self.read_timeout = None;
         self
@@ -57,11 +68,13 @@ impl NacelleTcpLimits {
         self
     }
 
+    /// Set the next-message first-byte deadline independently of active reads.
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle_timeout = Some(timeout);
         self
     }
 
+    /// Allow indefinite waiting for the next message without changing active read deadlines.
     pub fn without_idle_timeout(mut self) -> Self {
         self.idle_timeout = None;
         self

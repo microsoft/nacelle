@@ -18,8 +18,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
-pub use crate::policy::NacelleHttpPolicy;
 use crate::policy::validate_http_policy;
+pub use crate::policy::{NacelleForwardedHeader, NacelleHttpPolicy};
 use crate::rate_limit::forwarded_peer_ip;
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -391,14 +391,16 @@ where
         let server = Rc::new(self);
         let local_addr = listener.local_addr().ok();
         let mut connections = tokio::task::JoinSet::new();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let connection_permit = match server
@@ -422,6 +424,9 @@ where
                     connections.spawn_local(async move {
                         run_local_http_connection(server, stream, connection, connection_permit).await
                     });
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -451,14 +456,16 @@ where
         let local_addr = listener.local_addr().ok();
         let handshake_timeout = tls_config.handshake_timeout();
         let mut connections = tokio::task::JoinSet::new();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let connection_permit = match server
@@ -504,6 +511,9 @@ where
                         run_local_http_connection(server, stream, connection, connection_permit)
                             .await
                     });
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -745,14 +755,16 @@ where
         let server = Arc::new(self);
         let mut connections = tokio::task::JoinSet::new();
         let local_addr = listener.local_addr().ok();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
@@ -780,6 +792,9 @@ where
                         connection,
                         connection_permit,
                     ));
+                }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
                 }
             }
         }
@@ -880,14 +895,16 @@ where
         let handshake_timeout = tls_config.handshake_timeout();
         let mut connections = tokio::task::JoinSet::new();
         let local_addr = listener.local_addr().ok();
+        nacelle_core::runtime::report_runtime_topology(
+            "http",
+            server.runtime.telemetry.runtime_metrics_enabled(),
+        );
         loop {
+            // Reap finished connection tasks without competing with `accept()`.
+            reap_finished_http_connections(&mut connections);
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
-                joined = connections.join_next(), if !connections.is_empty() => {
-                    log_http_connection_result(joined);
-                    continue;
-                }
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
@@ -938,6 +955,9 @@ where
                         .await
                     });
                 }
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    log_http_connection_result(joined);
+                }
             }
         }
         server.runtime.telemetry.shutdown_event(
@@ -985,7 +1005,7 @@ where
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
         let uri = request.uri().clone();
-        let effective_peer_ip =
+        let (effective_peer_ip, peer_resolution_reason) =
             self.effective_peer_ip(dispatch.connection_info().peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
             self.telemetry
@@ -998,6 +1018,7 @@ where
                 request_bytes: 0,
                 elapsed: elapsed_since(request_started),
                 reason: Some(rejection.reason),
+                peer_resolution_reason,
             });
             return response_to_http(
                 HttpResponse::bytes(rejection.status, rejection.reason),
@@ -1020,6 +1041,7 @@ where
                     request_bytes: 0,
                     elapsed: elapsed_since(request_started),
                     reason: Some(reason),
+                    peer_resolution_reason,
                 });
                 return response_to_http(
                     HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
@@ -1051,6 +1073,7 @@ where
                 request_bytes: 0,
                 elapsed: elapsed_since(request_started),
                 reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
+                peer_resolution_reason,
             });
             return response_to_http(
                 HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
@@ -1075,6 +1098,7 @@ where
                     request_bytes: 0,
                     elapsed: elapsed_since(request_started),
                     reason: Some("in_flight_requests"),
+                    peer_resolution_reason,
                 });
                 return response_to_http(
                     HttpResponse::bytes(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
@@ -1135,6 +1159,7 @@ where
                         request_bytes,
                         elapsed: elapsed_since(request_started),
                         reason: None,
+                        peer_resolution_reason,
                     });
                 }
                 self.telemetry
@@ -1153,7 +1178,7 @@ where
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
                 let response = response_to_http(
-                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
@@ -1167,6 +1192,7 @@ where
                         request_bytes,
                         elapsed: elapsed_since(request_started),
                         reason: Some("handler"),
+                        peer_resolution_reason,
                     });
                 }
                 self.telemetry
@@ -1199,15 +1225,25 @@ where
         &self,
         socket_peer_ip: Option<IpAddr>,
         request: &Request<Incoming>,
-    ) -> Option<IpAddr> {
-        let socket_peer_ip = socket_peer_ip?;
+    ) -> (Option<IpAddr>, Option<&'static str>) {
+        let Some(socket_peer_ip) = socket_peer_ip else {
+            return (None, None);
+        };
         let Some(trusted_proxy_ips) = &self.http_policy.trusted_proxy_ips else {
-            return Some(socket_peer_ip);
+            return (Some(socket_peer_ip), None);
         };
         if !trusted_proxy_ips.contains(&socket_peer_ip) {
-            return Some(socket_peer_ip);
+            return (Some(socket_peer_ip), None);
         }
-        Some(forwarded_peer_ip(request).unwrap_or(socket_peer_ip))
+        let resolution = forwarded_peer_ip(
+            request.headers(),
+            self.http_policy.forwarded_header,
+            trusted_proxy_ips,
+        );
+        (
+            Some(resolution.peer_ip.unwrap_or(socket_peer_ip)),
+            resolution.malformed.then_some("forwarded_malformed"),
+        )
     }
 
     fn access_log(&self, log: HttpAccessLog<'_>) {
@@ -1224,6 +1260,7 @@ where
             request_bytes = log.request_bytes,
             elapsed_us = log.elapsed.as_micros() as u64,
             reason = log.reason,
+            peer_resolution_reason = log.peer_resolution_reason,
             "http access"
         );
     }
@@ -1245,6 +1282,7 @@ struct HttpAccessLog<'a> {
     request_bytes: usize,
     elapsed: Duration,
     reason: Option<&'static str>,
+    peer_resolution_reason: Option<&'static str>,
 }
 
 fn elapsed_since(started: Option<Instant>) -> Duration {
@@ -1287,7 +1325,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1302,7 +1340,13 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
-    }
+    };
+    server.runtime.telemetry.connection_closed(
+        NacelleTransport::new("http"),
+        None,
+        http_close_reason(&result),
+    );
+    result
 }
 
 async fn run_local_http_connection<H, F, Observer, I>(
@@ -1343,7 +1387,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1358,6 +1402,32 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
+    };
+    server.runtime.telemetry.connection_closed(
+        NacelleTransport::new("http"),
+        None,
+        http_close_reason(&result),
+    );
+    result
+}
+
+/// Low-cardinality close reason for an HTTP connection, mirroring the TCP
+/// transport's close-reason labels.
+fn http_close_reason(result: &Result<(), NacelleError>) -> &'static str {
+    match result {
+        Ok(()) => "eof",
+        Err(NacelleError::Timeout(_)) => "timeout",
+        Err(NacelleError::UnexpectedEof) => "unexpected_eof",
+        Err(NacelleError::ConnectionClosed) => "connection_closed",
+        Err(NacelleError::ResourceLimit(_)) => "resource_limit",
+        Err(NacelleError::Io(_)) => "io",
+        Err(NacelleError::Protocol(_)) => "protocol",
+        Err(NacelleError::Handler(_)) => "handler",
+        Err(NacelleError::Join(_)) => "join",
+        Err(NacelleError::InvalidFrame(_)) | Err(NacelleError::FrameTooLarge { .. }) => {
+            "invalid_frame"
+        }
+        Err(NacelleError::MissingProtocol) => "missing_protocol",
     }
 }
 
@@ -1493,6 +1563,28 @@ fn log_http_connection_result(
             tracing::warn!(target: "nacelle", transport = "http", error = %error, "connection task failed");
             HttpConnectionTaskOutcome::TaskFailed
         }
+    }
+}
+
+/// Maximum completions reaped before an accept loop polls `accept()` again.
+///
+/// Reaping a batch amortises the per-poll cost, but an unbounded drain would
+/// let one large burst of completions delay admission. This bounds that
+/// latency while keeping the batching benefit.
+const CONNECTION_REAP_BATCH: usize = 32;
+
+/// Reap up to [`CONNECTION_REAP_BATCH`] finished connection tasks.
+///
+/// Non-blocking: returns as soon as no completion is ready, so an idle loop
+/// falls through to `accept()` immediately.
+fn reap_finished_http_connections(
+    connections: &mut tokio::task::JoinSet<Result<(), NacelleError>>,
+) {
+    for _ in 0..CONNECTION_REAP_BATCH {
+        let Some(joined) = connections.try_join_next() else {
+            return;
+        };
+        log_http_connection_result(Some(joined));
     }
 }
 
@@ -1884,6 +1976,55 @@ mod tests {
                 && event.transport == Some(NacelleTransport::new("http"))
                 && event.count == "hello bytes".len() as u64
         }));
+        server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn http_connection_closed_event_is_recorded() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let sink = Arc::new(nacelle_core::NacelleInMemoryObserver::new());
+        let telemetry = NacelleTelemetry::new().with_observer(sink.clone());
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            context
+                .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                .await
+        }))
+        .with_telemetry(telemetry);
+        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request should write");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("response should read");
+        drop(client);
+
+        // The close event is emitted once the connection future resolves, which
+        // races with the client's read; poll briefly for it.
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(event) = sink.events().into_iter().find(|event| {
+                    event.kind == nacelle_core::NacelleTelemetryEventKind::ConnectionClosed
+                }) {
+                    return event;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("connection closed event should be recorded");
+        assert_eq!(closed.transport, Some(NacelleTransport::new("http")));
+        assert_eq!(closed.reason, Some("eof"));
         server_task.abort();
     }
 
@@ -2281,6 +2422,127 @@ mod tests {
 
     #[cfg(feature = "experimental-memory")]
     #[tokio::test]
+    async fn http_body_memory_limit_applies_to_chunked_and_declared_bodies() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default().with_max_memory_bytes(1),
+        );
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    match chunk {
+                        Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::MemoryBytes,
+                        )) => {
+                            return context
+                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
+                                .await;
+                        }
+                        other => {
+                            let _ = other?;
+                        }
+                    }
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            },
+        ))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        for wire in [
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabcdefgh"[..],
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n8\r\nabcdefgh\r\n0\r\n\r\n"[..],
+        ] {
+            let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr, wire)).await.expect("response deadline");
+            assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+            assert_eq!(runtime_state.memory_used_bytes(), 0);
+            assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        }
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
+    async fn http_chunked_body_clones_retain_memory_after_request_completion() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default().with_max_memory_bytes(4),
+        );
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let server = HyperServer::new(handler_fn(move |mut context: HttpRequestContext<()>| {
+            let sender = sender.clone();
+            async move {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    sender.send(chunk?).await.expect("retain chunk");
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            }
+        }))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        let response = one_shot_http(addr, b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n0\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let retained = receiver.recv().await.expect("retained chunk");
+        let cloned = retained.clone();
+        assert_eq!(runtime_state.memory_used_bytes(), 4);
+        assert!(runtime_state.allocate_memory(1).is_err());
+        drop(retained);
+        assert_eq!(runtime_state.memory_used_bytes(), 4);
+        drop(cloned);
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+        assert!(runtime_state.allocate_memory(4).is_ok());
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
+    async fn http_chunked_body_memory_wait_times_out_without_leaking() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let runtime_state = nacelle_core::NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default()
+                .with_max_memory_bytes(4)
+                .with_memory_allocation_timeout(Duration::from_millis(10)),
+        );
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                let mut retained = Vec::new();
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    match chunk {
+                        Ok(chunk) => retained.push(chunk),
+                        Err(NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)) => {
+                            assert_eq!(retained.iter().map(Bytes::len).sum::<usize>(), 4);
+                            return context
+                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                context.respond(HttpResponse::empty(StatusCode::OK)).await
+            },
+        ))
+        .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(async move { server.serve_listener(listener).await });
+        let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr,
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n",
+        )).await.expect("response deadline");
+        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+        assert_eq!(runtime_state.memory_used_bytes(), 0);
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        assert!(runtime_state.allocate_memory(4).is_ok());
+        task.abort();
+    }
+
+    #[cfg(feature = "experimental-memory")]
+    #[tokio::test]
     async fn http_content_length_body_reserves_memory_until_consumed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2306,13 +2568,7 @@ mod tests {
             .await
             .expect("client should connect");
         client
-            .write_all(
-                b"POST / HTTP/1.1\r\n\
-                  Host: localhost\r\n\
-                  Content-Length: 11\r\n\
-                  Connection: close\r\n\
-                  \r\n",
-            )
+            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
             .await
             .expect("headers should write");
         wait_for_memory(&runtime_state, 11).await;
@@ -2397,6 +2653,10 @@ mod tests {
     #[cfg(feature = "experimental-memory")]
     #[tokio::test]
     async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
+        for wire in [
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n"[..],
+            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nb\r\nhello world\r\n0\r\n\r\n"[..],
+        ] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
@@ -2420,13 +2680,7 @@ mod tests {
             .await
             .expect("client should connect");
         client
-            .write_all(
-                b"POST / HTTP/1.1\r\n\
-                  Host: localhost\r\n\
-                  Content-Length: 11\r\n\
-                  Connection: close\r\n\
-                  \r\n",
-            )
+            .write_all(wire)
             .await
             .expect("headers should write");
         let mut response = Vec::new();
@@ -2447,6 +2701,7 @@ mod tests {
         drop(recovered);
         assert_eq!(runtime_state.memory_used_bytes(), 0);
         server_task.abort();
+        }
     }
 
     #[tokio::test]
@@ -2494,7 +2749,8 @@ mod tests {
         .expect("response should read");
         let response = String::from_utf8(response).expect("response should be utf8");
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
-        assert!(response.contains("http_body_read"));
+        assert!(response.contains("internal server error"));
+        assert!(!response.contains("http_body_read"));
         server_task.abort();
     }
 
@@ -2579,7 +2835,8 @@ mod tests {
         let response = String::from_utf8(response).expect("response should be utf8");
 
         assert!(response.starts_with("HTTP/1.1 500 Internal Server Error"));
-        assert!(response.contains("handler error: boom"));
+        assert!(response.contains("internal server error"));
+        assert!(!response.contains("boom"));
         server_task.abort();
     }
 
@@ -2910,7 +3167,7 @@ mod tests {
 
         let first = one_shot_http(
             addr,
-            b"GET / HTTP/1.1\r\nHost: localhost\r\nForwarded: for=203.0.113.1\r\nConnection: close\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nForwarded: for=203.0.113.99\r\nX-Forwarded-For: 192.0.2.1, 203.0.113.1\r\nConnection: close\r\n\r\n",
         )
         .await;
         let second = one_shot_http(
@@ -2920,7 +3177,7 @@ mod tests {
         .await;
         let third = one_shot_http(
             addr,
-            b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 203.0.113.1\r\nConnection: close\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 192.0.2.2, 203.0.113.1\r\nConnection: close\r\n\r\n",
         )
         .await;
 

@@ -12,3 +12,14 @@ please review the latest guidance for Microsoft repositories at
 [https://aka.ms/SECURITY.md](https://aka.ms/SECURITY.md).
 
 <!-- END MICROSOFT SECURITY.MD BLOCK -->
+
+## Transport Security
+
+Configure proxy identity, body budgets, and HTTP error handling as described in
+the [HTTP hardening reference](docs/reference/http-hardening.md). Applications
+own authentication, authorization, and any diagnostics exposed to clients.
+
+Rustls builds require 0.23.45 or newer, which addresses RUSTSEC-2026-0285.
+The OpenSSL PEM helper requires TLS 1.2 or newer; custom TLS configurations own
+their policy. See [runtime limits](docs/topics/runtime-limits.md) for certificate
+reload and memory-accounting guarantees and limitations.

@@ -325,6 +325,20 @@ impl<Inner> RequiredCompletion<Inner> {
     pub fn into_inner(self) -> Inner {
         self.0
     }
+
+    /// Transform the wrapped transport completion, preserving the token.
+    ///
+    /// This never forges a completion: the caller must already hold a valid
+    /// [`RequiredCompletion`]. It only lets a transport-specific handler adjust
+    /// its own completion value, for example to attach a delivery completion
+    /// item, before returning the token to the runtime.
+    #[must_use = "the transformed completion token must be returned to the runtime"]
+    pub fn map<F>(self, transform: F) -> Self
+    where
+        F: FnOnce(Inner) -> Inner,
+    {
+        Self(transform(self.0))
+    }
 }
 
 impl<Inner> Respond for RequiredResponder<Inner>

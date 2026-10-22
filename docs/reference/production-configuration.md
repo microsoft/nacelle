@@ -10,11 +10,17 @@ experimental and not compiled by default. Enable `experimental-memory` and set
 feature is use at your own risk and may change or be removed in a future minor
 release.
 
+`NacelleLimits::without_max_connections()` disables the process-wide connection
+admission ceiling. Active connections are still counted for telemetry, and any
+configured per-peer connection or connection-open rate limits still apply. Use
+this only when another layer enforces an appropriate connection and memory
+boundary.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
-- Proxy-aware HTTP: configure `NacelleHttpPolicy::with_trusted_proxy_ips(...)` only with known proxy addresses before allowing `Forwarded` or `X-Forwarded-For` to affect per-peer request limits or request metadata.
+- Proxy-aware HTTP: trust only known proxy addresses and select the authoritative forwarding header; see [HTTP hardening](http-hardening.md). `X-Forwarded-For` is the default; `Forwarded` requires explicit selection.
 - Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
@@ -24,11 +30,21 @@ Recommended presets:
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
 
+The OpenSSL PEM helper uses Mozilla's v5 intermediate profile with a TLS 1.2
+minimum. TLS 1.3 is enabled when supported by the linked OpenSSL-compatible
+library. Custom acceptors own their own protocol policy.
+
 Experimental memory budget:
+
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
 
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =
@@ -47,6 +63,10 @@ Tune this with `with_memory_allocation_timeout(...)`, or call
 the same budget as the transports.
 
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
+HTTP chunked bodies charge each data chunk before handler delivery, retaining
+the charge through `Bytes` clones; whole-body aggregation must fit within the
+budget. See [runtime limits](../topics/runtime-limits.md) for memory and TLS
+reload semantics.
 `NacelleTcpConfig::streaming_body_memory_policy` defaults to
 `TcpStreamingBodyMemoryPolicy::DeclaredLength`, which reserves the declared body
 length before dispatch. `LiveChunks` instead charges each streaming chunk until
@@ -85,8 +105,18 @@ complete replacement; a growth attempt is rejected before encoding when that
 temporary allocation cannot be charged.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
-and idle timeouts. Shutdown uses its own deadline so finalization policy can be
-tuned independently of ordinary response delivery. The corresponding
+and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for
+the first byte of a message with an empty input buffer, including the first
+message on a connection. `read_timeout` defaults to 30 seconds and bounds
+completion of a decoded message once bytes are available. Buffered partial
+messages enter the read phase immediately; additional bytes do not restart its
+deadline. Subsequent request-body reads each use `read_timeout`, never
+`idle_timeout`. Idle expiry reports `NacelleTimeoutReason::Idle`; message and
+body read expiry report `TcpRead` and `RequestBodyRead`, respectively.
+
+Neither timeout is a fallback for the other. Idle time excludes handler execution
+and response delivery. Shutdown uses its own deadline so finalization policy can
+be tuned independently of ordinary response delivery. The corresponding
 `without_*_timeout()` builders make an explicitly unbounded policy possible.
 `NacelleHttpLimits` controls HTTP header read, request body read, response
 write, keep-alive, and max connection age behavior on `HyperServer`. Its

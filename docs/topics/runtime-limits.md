@@ -20,6 +20,10 @@ The important production habit is to size limits together. A high connection
 count with large read and response buffers is a memory budget decision, not just
 a concurrency decision.
 
+Call `NacelleLimits::without_max_connections()` to disable only the process-wide
+connection ceiling. Connection accounting and configured per-peer limits remain
+active.
+
 For configuration details:
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
@@ -41,11 +45,26 @@ corresponding HTTP `without_*_timeout()` or
 `without_max_connection_age()` builders. Keep bounded defaults for public-edge
 listeners unless another layer enforces an equivalent deadline.
 
+TCP idle and read deadlines are independent. The default 120-second idle deadline
+bounds waiting for the first byte of a message with an empty input buffer. Once
+bytes are available, the 30-second read deadline bounds decoding that message
+without resetting on additional bytes. Each subsequent request-body read also
+uses the read deadline. Idle time does not include active messages, bodies,
+handlers, or response delivery.
+
+In 0.3.2, this replaces the earlier read-or-idle fallback: silent connections now
+use the idle deadline rather than the read deadline. Set
+`with_idle_timeout(Duration::from_secs(30))` to retain a 30-second silent-connection
+limit. `without_idle_timeout()` now permits indefinite waiting for the next
+message while still bounding active reads. `without_read_timeout()` leaves idle
+waiting bounded but makes active message and body reads unbounded; the idle
+deadline no longer protects those reads.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
-- Proxy-aware HTTP: configure `NacelleHttpPolicy::with_trusted_proxy_ips(...)` only with known proxy addresses before allowing `Forwarded` or `X-Forwarded-For` to affect per-peer request limits or request metadata.
+- Proxy-aware HTTP: trust only known proxy addresses and select the authoritative forwarding header; see [HTTP hardening](../reference/http-hardening.md). `X-Forwarded-For` is the default; `Forwarded` requires explicit selection.
 - Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
@@ -54,9 +73,15 @@ Recommended presets:
 
 Experimental memory budget:
 
+This sizing formula requires a finite effective connection ceiling. Use the
+configured `max_connections` when it is nonzero. When `max_connections` is the
+zero sentinel for unlimited connections, substitute the finite connection
+boundary enforced by the proxy, process supervisor, container, or other
+external layer.
+
 ```text
 connection_budget =
-  max_connections * (read_buffer_capacity + response_buffer_capacity)
+  effective_connection_ceiling * (read_buffer_capacity + response_buffer_capacity)
 body_budget =
   concurrent_buffered_or_streaming_bodies * max_request_body_bytes
 total_budget =
@@ -90,6 +115,14 @@ admission, `allocate(...)` for FIFO waiting, or
 during shutdown.
 
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
+
+HTTP known-length bodies reserve their declared length. Chunked/unknown-length
+bodies reserve each data chunk before it enters the handler's queue; the charge
+remains until its last `Bytes` clone drops. Full-body aggregation must fit within
+the budget or later chunks can reach the allocation timeout while earlier
+chunks remain retained. Hyper read-ahead and shared backing allocations, TLS
+buffers, and socket buffers need separate headroom beyond these logical body
+charges. Cancellation releases pending waits and queued chunks.
 
 TCP streaming bodies use `TcpStreamingBodyMemoryPolicy::DeclaredLength` by
 default, preserving whole-body admission before handler dispatch. The opt-in
@@ -142,3 +175,13 @@ tls.reload_from_pem_files("next-cert.pem", "next-key.pem")?;
 
 Reloads affect new TLS handshakes. Existing connections continue with the
 configuration negotiated when they connected.
+
+Rustls certificate-only reloads serialize with other reloads/replacements and
+preserve the current SNI allowlist. Invalid material leaves the prior snapshot
+intact. Explicit `replace_server_config*` APIs install the supplied policy and
+clear the stored allowlist for future certificate-only reloads.
+
+`NacelleOpenSslConfig::from_pem_files` uses Mozilla's v5 intermediate profile
+and requires TLS 1.2 or newer. TLS 1.3 is enabled when supported by the linked
+OpenSSL-compatible library. Legacy protocol policy requires an explicitly
+configured acceptor through `from_acceptor`.

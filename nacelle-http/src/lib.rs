@@ -14,4 +14,6 @@ pub use pipeline::{
     HttpRequestContext, HttpResponder, HttpResponse, LocalHttpConnectionStateFactory,
     LocalHttpHandler, LocalHttpRequestContext, NoHttpConnectionState,
 };
-pub use server::{HyperServer, LocalHttpSharedState, LocalHyperServer, NacelleHttpPolicy};
+pub use server::{
+    HyperServer, LocalHttpSharedState, LocalHyperServer, NacelleForwardedHeader, NacelleHttpPolicy,
+};

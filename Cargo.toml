@@ -33,19 +33,19 @@ resolver = "2"
 [workspace.package]
 license = "MIT"
 repository = "https://github.com/microsoft/nacelle"
-homepage = "https://github.com/microsoft/nacelle"
-rust-version = "1.95"
+homepage = "https://microsoft.github.io/nacelle"
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Internal crates
-nacelle = { path = "nacelle", version = "0.3.0" }
-nacelle-codec = { path = "nacelle-codec", version = "0.3.0" }
-nacelle-core = { path = "nacelle-core", version = "0.3.0" }
-nacelle-openssl = { path = "nacelle-openssl", version = "0.3.0" }
-nacelle-rustls = { path = "nacelle-rustls", version = "0.3.0" }
-nacelle-tcp = { path = "nacelle-tcp", version = "0.3.0" }
-nacelle-http = { path = "nacelle-http", version = "0.3.0" }
-nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.0" }
+nacelle = { path = "nacelle", version = "0.3.2" }
+nacelle-codec = { path = "nacelle-codec", version = "0.3.2" }
+nacelle-core = { path = "nacelle-core", version = "0.3.2" }
+nacelle-openssl = { path = "nacelle-openssl", version = "0.3.2" }
+nacelle-rustls = { path = "nacelle-rustls", version = "0.3.2" }
+nacelle-tcp = { path = "nacelle-tcp", version = "0.3.2" }
+nacelle-http = { path = "nacelle-http", version = "0.3.2" }
+nacelle-stress-common = { path = "examples/nacelle-stress-common", version = "0.3.2" }
 nacelle-reference-protocol = { path = "examples/nacelle-reference-protocol", version = "0.0.0" }
 
 # External dependencies
@@ -64,10 +64,11 @@ mimalloc = "0.1.52"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
 openssl = "0.10.81"
+openssl-sys = "0.9.117"
 pem = "3.0.6"
 proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
 rcgen = "0.14.8"
-rustls = "0.23.41"
+rustls = "0.23.45"
 serde = "1.0.228"
 socket2 = "0.6.4"
 tokio = "1.52.3"
