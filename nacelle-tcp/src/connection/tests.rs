@@ -15,7 +15,8 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
+    NacelleTelemetryEventKind, NacelleTelemetryObserver,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -397,6 +398,59 @@ fn direct_stream_applies_disabled_metrics_before_runtime_permits() {
     assert_eq!(runtime_state.active_connections(), 0);
     assert_eq!(runtime_state.active_requests(), 0);
     assert!(snapshotter.snapshot().into_vec().is_empty());
+}
+
+#[test]
+fn request_failure_metrics_do_not_require_an_observer() {
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+
+    metrics::with_local_recorder(&recorder, || {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(serve_stream_with_connection_meta(
+                RecordingIo {
+                    input: vec![0],
+                    position: 0,
+                    writes: Arc::new(std::sync::Mutex::new(Vec::new())),
+                },
+                Arc::new(PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }),
+                handler_fn(|_context: TcpRequestContext<PhaseProtocol>| async move {
+                    Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+                }),
+                NacelleTcpConfig::default(),
+                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetricsConfig {
+                    started: false,
+                    completed: false,
+                    in_flight: false,
+                    duration_ms: false,
+                    byte_counts: false,
+                }),
+                NacelleRuntimeState::default(),
+                NacelleConnectionMeta::tcp(None, None),
+            ));
+
+        assert!(matches!(
+            result,
+            Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
+        ));
+    });
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    for name in ["server.request.failed", "server.request.timed_out"] {
+        assert!(
+            snapshot
+                .iter()
+                .any(|(key, _, _, _)| key.key().name() == name),
+            "missing metric {name}"
+        );
+    }
 }
 
 #[tokio::test]

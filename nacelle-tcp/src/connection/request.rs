@@ -278,7 +278,7 @@ where
 {
     let request = decoded.request;
     let detailed_request_metrics = telemetry_plan.request_metrics;
-    let core_request_events = telemetry_plan.observer;
+    let core_request_events = telemetry_plan.request_events;
     let request_started = telemetry_plan
         .request_duration
         .then(std::time::Instant::now);

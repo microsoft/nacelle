@@ -12,7 +12,7 @@ pub(super) struct TcpTelemetryPlan {
     pub(super) request_metrics: bool,
     pub(super) request_duration: bool,
     pub(super) phase_duration: bool,
-    pub(super) observer: bool,
+    pub(super) request_events: bool,
 }
 
 impl TcpTelemetryPlan {
@@ -24,7 +24,7 @@ impl TcpTelemetryPlan {
             request_metrics: telemetry.request_metrics_enabled(),
             request_duration: telemetry.request_duration_metrics_enabled(),
             phase_duration: telemetry.phase_duration_metrics_enabled(),
-            observer: telemetry.observer_enabled(),
+            request_events: telemetry.request_events_enabled(),
         }
     }
 }
@@ -235,7 +235,7 @@ mod tests {
         assert!(plan.request_metrics);
         assert!(!plan.request_duration);
         assert!(!plan.phase_duration);
-        assert!(!plan.observer);
+        assert!(plan.request_events);
         const {
             assert!(!<Arc<NoopObserver> as NacelleTelemetryObserver>::ENABLED);
         }
@@ -251,7 +251,7 @@ mod tests {
         assert!(!plan.request_metrics);
         assert!(!plan.request_duration);
         assert!(!plan.phase_duration);
-        assert!(plan.observer);
+        assert!(plan.request_events);
         assert!(!telemetry.context_metrics_enabled());
     }
 
