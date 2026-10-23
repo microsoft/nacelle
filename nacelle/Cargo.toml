@@ -14,6 +14,7 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = ["tcp"]
 tcp = ["dep:nacelle-tcp"]
+tcp-policies = ["tcp", "nacelle-tcp/policies"]
 buffer-rotation = ["nacelle-tcp?/buffer-rotation"]
 error-hints = ["nacelle-core/error-hints"]
 experimental-openssl-detection = ["tcp", "openssl", "nacelle-tcp/experimental-openssl-detection"]
@@ -42,4 +43,4 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 [package.metadata.docs.rs]
 all-features = false
 no-default-features = true
-features = ["buffer-rotation", "error-hints", "experimental-thread-per-core", "http", "phase-timing", "rustls", "tcp", "tls-self-signed"]
+features = ["buffer-rotation", "error-hints", "experimental-thread-per-core", "http", "phase-timing", "rustls", "tcp", "tcp-policies", "tls-self-signed"]

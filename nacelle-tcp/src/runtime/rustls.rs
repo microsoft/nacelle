@@ -117,6 +117,12 @@ where
             let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
             async move {
                 let _connection_permit = connection_permit;
+                #[cfg(feature = "policies")]
+                let connection = connection.with_listener(server.listener_label());
+                #[cfg(feature = "policies")]
+                let _policy_permit =
+                    crate::policy::accept(server.protocol(), &connection, server.telemetry())
+                        .await?;
                 let stream =
                     match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
                         Ok(Ok(stream)) => stream,

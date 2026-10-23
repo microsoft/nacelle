@@ -18,6 +18,10 @@ cargo test -p nacelle-tcp --features experimental-openssl-detection --all-target
 cargo clippy -p nacelle-tcp --features experimental-openssl-detection --all-targets -- -D warnings
 cargo test -p nacelle-tcp --features tls-self-signed --all-targets
 cargo clippy -p nacelle-tcp --features tls-self-signed --all-targets -- -D warnings
+cargo test -p nacelle-tcp --features policies,tls-self-signed --all-targets
+cargo clippy -p nacelle-tcp --features policies,tls-self-signed --all-targets -- -D warnings
+cargo test -p nacelle-tcp --features policies,experimental-openssl-detection --all-targets
+cargo clippy -p nacelle-tcp --features policies,experimental-openssl-detection --all-targets -- -D warnings
 cargo test -p nacelle-http --features tls-self-signed --all-targets
 cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings
 cargo test -p nacelle-reference-protocol --all-targets
@@ -41,6 +45,8 @@ cargo test -p nacelle --no-default-features --features http,tls-self-signed --al
 cargo test -p nacelle --features tls-self-signed --all-targets
 cargo clippy -p nacelle --features http,tls-self-signed --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --all-targets
+cargo test -p nacelle --no-default-features --features tcp-policies --all-targets
+cargo clippy -p nacelle --no-default-features --features tcp-policies --all-targets -- -D warnings
 cargo test -p nacelle-stress-test --all-targets
 cargo test -p nacelle-stress-test --no-default-features --all-targets
 cargo test -p nacelle-stress-server --all-targets

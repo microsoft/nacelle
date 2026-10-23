@@ -266,6 +266,11 @@ where
                 let detection_timeout = detection_options.timeout;
                 connections.spawn(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let connection = connection.with_listener(server.listener_label());
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {
@@ -601,6 +606,9 @@ where
                 let detection_timeout = detection_options.timeout;
                 connections.spawn(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {

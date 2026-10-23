@@ -4,6 +4,8 @@ pub mod config;
 pub mod connection;
 pub mod limits;
 pub mod options;
+#[cfg(feature = "policies")]
+pub mod policy;
 pub mod protocol;
 pub mod runtime;
 mod serial_server;
@@ -17,6 +19,8 @@ pub use options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 pub use options::NacelleUnixSocketOptions;
 pub use options::{NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions};
+#[cfg(feature = "policies")]
+pub use policy::{TcpLifecyclePolicy, WithTcpPolicy};
 pub use protocol::{
     DecodedRequest, FrameBuffer, LocalSerialTcpHandler, LocalTcpHandler, Protocol,
     ResponseAbortReason, ResponseCompletionCallback, ResponseDeliveryOutcome,

@@ -3,7 +3,7 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tcp-policies,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 

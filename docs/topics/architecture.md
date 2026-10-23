@@ -127,6 +127,16 @@ shared lifecycle/limit enforcement in core.
 
 ## Runtime State
 
+The optional TCP lifecycle policy layer wraps a concrete `Protocol` with an
+application-owned `TcpLifecyclePolicy`. Typed, statically dispatched hooks run
+at accepted-socket, transport-ready, pre-head, decoded-head, and body-complete
+boundaries. The transport owns hook placement and permit lifetimes, while the
+application owns admission decisions and capacity. `tcp-policies` on the facade
+(`policies` on `nacelle-tcp`) compiles this layer in; it is absent by default.
+This is a staged migration: existing runtime limits remain active, HTTP is
+unchanged, and body reads are not yet demand-driven. See
+[TCP lifecycle policies](../reference/tcp-policies.md).
+
 `NacelleRuntimeState` owns shared budgets and counters. Connection, request, and
 streaming-task limits are non-blocking atomic bounded counters.
 

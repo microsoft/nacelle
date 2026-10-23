@@ -162,6 +162,14 @@ pub(super) struct MessageReadFailure {
 }
 
 impl MessageReadFailure {
+    #[cfg(feature = "policies")]
+    pub(super) const fn policy(error: NacelleError) -> Self {
+        Self {
+            error,
+            can_respond: true,
+        }
+    }
+
     pub(super) fn transport(error: NacelleError) -> Self {
         let can_respond = matches!(error, NacelleError::Timeout(_));
         Self { error, can_respond }

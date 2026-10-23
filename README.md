@@ -133,6 +133,8 @@ protocol.
 - One typed application dependency root shared across registered listeners.
 - Streaming request and response bodies.
 - Custom TCP protocol support over TCP and Unix domain sockets.
+- Opt-in application-owned [TCP lifecycle admission policies](docs/reference/tcp-policies.md)
+  through the `tcp-policies` feature, retaining existing limits during migration.
 - Serial plain TCP, OpenSSL, experimental optional OpenSSL, and Unix socket handlers with
     exclusive mutable connection state and no async mutex on the connection
     path.

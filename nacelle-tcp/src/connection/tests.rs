@@ -33,6 +33,8 @@ use super::{
     serve_stream_with_connection_meta,
 };
 
+#[cfg(feature = "policies")]
+mod policies;
 mod unified;
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;

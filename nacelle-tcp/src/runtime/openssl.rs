@@ -275,6 +275,12 @@ where
             let acceptor = tls_config.acceptor();
             async move {
                 let _connection_permit = connection_permit;
+                #[cfg(feature = "policies")]
+                let connection = connection.with_listener(server.listener_label());
+                #[cfg(feature = "policies")]
+                let _policy_permit =
+                    crate::policy::accept(server.protocol(), &connection, server.telemetry())
+                        .await?;
                 let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                 let mut stream =
                     tokio_openssl::SslStream::new(ssl, stream).map_err(NacelleError::protocol)?;
@@ -574,6 +580,9 @@ where
                 let acceptor = tls_config.acceptor();
                 connections.spawn(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                     let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                         .map_err(NacelleError::protocol)?;

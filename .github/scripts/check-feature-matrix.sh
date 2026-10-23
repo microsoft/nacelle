@@ -22,19 +22,19 @@ cargo "${command}" -p nacelle-core \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-tcp \
-    --features buffer-rotation,phase-timing,rustls,tls-self-signed \
+    --features buffer-rotation,phase-timing,policies,rustls,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-tcp \
-    --features buffer-rotation,experimental-openssl-detection,openssl-vendored,phase-timing \
+    --features buffer-rotation,experimental-openssl-detection,openssl-vendored,phase-timing,policies \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,error-hints,experimental-thread-per-core,fuzzing,http,phase-timing,rustls,tcp,tls-self-signed \
+    --features bench,buffer-rotation,error-hints,experimental-thread-per-core,fuzzing,http,phase-timing,rustls,tcp,tcp-policies,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,tcp \
+    --features bench,buffer-rotation,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,tcp,tcp-policies \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-examples \

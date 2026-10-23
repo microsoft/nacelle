@@ -27,6 +27,8 @@
 //! cargo run -p nacelle-examples --bin direct_tcp
 //! ```
 
+#[cfg(feature = "policies")]
+use std::future::Future;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -36,6 +38,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
+#[cfg(feature = "policies")]
+use crate::policy::TcpLifecyclePolicy;
 use crate::protocol::{
     LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedProtocol, TcpHandler,
 };
@@ -217,6 +221,21 @@ where
     W: AsyncWrite + Unpin,
 {
     telemetry.register_runtime_state(runtime_state.clone());
+    #[cfg(feature = "policies")]
+    let _transport_policy_permit = protocol
+        .policy()
+        .transport_ready(&connection)
+        .await
+        .inspect_err(|error| {
+            crate::policy::record_error(
+                protocol.deref(),
+                &connection,
+                &telemetry,
+                "policy_transport_ready",
+                error,
+            );
+            telemetry.connection_rejected(connection.transport, "policy");
+        })?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
     let connection_info = ConnectionInfo::from(&connection);
@@ -246,12 +265,43 @@ where
     }
     telemetry.connection_opened(transport);
 
+    #[cfg(feature = "policies")]
+    let mut request_policy_permit = None;
     let result: Result<(), NacelleError> = async {
         'conn: loop {
             #[cfg(feature = "buffer-rotation")]
             request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
-            let read_result = read_message_with_timeout(&mut request_reader, &tcp_limits).await;
+            let read_result = {
+                #[cfg(feature = "policies")]
+                let admission = request_policy_permit.is_none().then(|| {
+                    protocol.policy().before_request(
+                        handler.info(&connection_context),
+                        handler.state(&connection_context),
+                    )
+                });
+                async {
+                    #[cfg(feature = "policies")]
+                    if let Some(admission) = admission {
+                        request_policy_permit = Some(
+                            admission
+                                .await
+                                .inspect_err(|error| {
+                                    crate::policy::record_error(
+                                        protocol.deref(),
+                                        &connection,
+                                        &telemetry,
+                                        "policy_before_request",
+                                        error,
+                                    );
+                                })
+                                .map_err(framing::MessageReadFailure::policy)?,
+                        );
+                    }
+                    read_message_with_timeout(&mut request_reader, &tcp_limits).await
+                }
+                .await
+            };
             let decoded = match read_result {
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,
@@ -303,12 +353,73 @@ where
                     &mut connection_context,
                     connection_metrics.as_ref(),
                     telemetry_plan,
+                    #[cfg(feature = "policies")]
+                    request_policy_permit.as_ref().is_some_and(Option::is_some),
                 )
                 .await?;
-                decoded = match request_reader.decode_buffered() {
+                #[cfg(feature = "policies")]
+                drop(request_policy_permit.take());
+                #[cfg(feature = "policies")]
+                let mut can_respond = true;
+                let buffered_result = {
+                    #[cfg(feature = "policies")]
+                    let admission = (!request_reader.buffer().is_empty()).then(|| {
+                        protocol.policy().before_request(
+                            handler.info(&connection_context),
+                            handler.state(&connection_context),
+                        )
+                    });
+                    async {
+                        #[cfg(feature = "policies")]
+                        if let Some(admission) = admission {
+                            tokio::pin!(admission);
+                            let result = std::future::poll_fn(|cx| {
+                                std::task::Poll::Ready(admission.as_mut().poll(cx))
+                            })
+                            .await;
+                            let result = match result {
+                                std::task::Poll::Ready(result) => result,
+                                std::task::Poll::Pending => {
+                                    // Admission must not strand the previous response.
+                                    if let Err(error) = response_delivery
+                                        .flush(
+                                            &mut writer,
+                                            &tcp_limits,
+                                            &telemetry,
+                                            connection_metrics.as_ref(),
+                                            telemetry_plan.phase_duration,
+                                        )
+                                        .await
+                                    {
+                                        can_respond = false;
+                                        return Err(error.error);
+                                    }
+                                    admission.await
+                                }
+                            };
+                            request_policy_permit = Some(result.inspect_err(|error| {
+                                crate::policy::record_error(
+                                    protocol.deref(),
+                                    &connection,
+                                    &telemetry,
+                                    "policy_before_request",
+                                    error,
+                                );
+                            })?);
+                        }
+                        request_reader
+                            .decode_buffered()
+                            .map_err(map_message_read_error)
+                    }
+                    .await
+                };
+                decoded = match buffered_result {
                     Ok(decoded) => decoded,
                     Err(error) => {
-                        let error = map_message_read_error(error);
+                        #[cfg(feature = "policies")]
+                        if !can_respond {
+                            return Err(error);
+                        }
                         if let Err(delivery_error) = write_error::<P, W, Observer>(
                             &mut writer,
                             protocol.deref(),

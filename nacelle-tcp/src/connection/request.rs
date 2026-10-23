@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
+#[cfg(feature = "policies")]
+use crate::policy::TcpLifecyclePolicy;
 use crate::protocol::{
     DecodedRequest, LocalSerialTcpHandler, LocalTcpHandler, Protocol, SerialTcpHandler,
     SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpRequest, TcpResponder,
@@ -260,6 +262,7 @@ pub(super) async fn run_request<P, D, R, W, Observer>(
     connection_context: &mut D::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
     telemetry_plan: TcpTelemetryPlan,
+    #[cfg(feature = "policies")] policy_delivery_barrier: bool,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
@@ -285,7 +288,27 @@ where
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
     let mut _request_permit = None;
+    #[cfg(feature = "policies")]
+    let mut _head_policy_permit = None;
+    #[cfg(feature = "policies")]
+    let mut _body_policy_permit = None;
     let outcome = async {
+        #[cfg(feature = "policies")]
+        {
+            _head_policy_permit =
+                protocol
+                    .policy()
+                    .request_head(
+                        &request,
+                        decoded.body_len,
+                        handler.info(connection_context),
+                        handler.state(connection_context),
+                    )
+                    .await
+                    .inspect_err(|error| {
+                        record_tcp_error(telemetry, metrics_context, "policy_request_head", error);
+                    })?;
+        }
         if decoded.body_len > max_request_body_bytes {
             let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
             record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
@@ -309,6 +332,22 @@ where
                 "request_body_read",
                 body_started,
             );
+            #[cfg(feature = "policies")]
+            {
+                _body_policy_permit =
+                    protocol
+                        .policy()
+                        .body_complete(connection, decoded.body_len)
+                        .await
+                        .inspect_err(|error| {
+                            record_tcp_error(
+                                telemetry,
+                                metrics_context,
+                                "policy_body_complete",
+                                error,
+                            );
+                        })?;
+            }
             execute_handler_with_metrics(
                 handler,
                 request,
@@ -341,6 +380,22 @@ where
             );
             match body_result {
                 Ok(body) => {
+                    #[cfg(feature = "policies")]
+                    {
+                        _body_policy_permit =
+                            protocol
+                                .policy()
+                                .body_complete(connection, decoded.body_len)
+                                .await
+                                .inspect_err(|error| {
+                                    record_tcp_error(
+                                        telemetry,
+                                        metrics_context,
+                                        "policy_body_complete",
+                                        error,
+                                    );
+                                })?;
+                    }
                     execute_handler_with_metrics(
                         handler,
                         request,
@@ -376,14 +431,34 @@ where
                 metrics_context,
                 telemetry_plan.phase_duration,
             );
-            let pump_future = pump_request_body(
-                reader,
-                read_buf,
-                decoded.body_len,
-                body_tx,
-                config,
-                tcp_limits,
-            );
+            let pump_future = async {
+                pump_request_body(
+                    reader,
+                    read_buf,
+                    decoded.body_len,
+                    body_tx,
+                    config,
+                    tcp_limits,
+                )
+                .await?;
+                #[cfg(feature = "policies")]
+                {
+                    protocol
+                        .policy()
+                        .body_complete(connection, decoded.body_len)
+                        .await
+                        .inspect_err(|error| {
+                            record_tcp_error(
+                                telemetry,
+                                metrics_context,
+                                "policy_body_complete",
+                                error,
+                            );
+                        })
+                }
+                #[cfg(not(feature = "policies"))]
+                Ok::<(), NacelleError>(())
+            };
             tokio::pin!(handler_future);
             tokio::pin!(pump_future);
 
@@ -391,7 +466,13 @@ where
                 biased;
                 pump_result = &mut pump_future => {
                     match pump_result {
-                        Ok(()) => handler_future.await,
+                        Ok(_permit) => {
+                            #[cfg(feature = "policies")]
+                            {
+                                _body_policy_permit = _permit;
+                            }
+                            handler_future.await
+                        }
                         Err(error) => {
                             record_tcp_error(
                                 telemetry,
@@ -417,6 +498,11 @@ where
                             if let Err(error) = &pump_result {
                                 record_tcp_error(telemetry, metrics_context, "request_body_read", error);
                             }
+                            #[cfg(feature = "policies")]
+                            {
+                                _body_policy_permit = pump_result?;
+                            }
+                            #[cfg(not(feature = "policies"))]
                             pump_result?;
                             Ok(completion)
                         }
@@ -453,6 +539,24 @@ where
             } else {
                 0
             };
+            // Application leases must not be released with response bytes queued.
+            #[cfg(feature = "policies")]
+            if (policy_delivery_barrier
+                || _head_policy_permit.is_some()
+                || _body_policy_permit.is_some())
+                && let Err(error) = delivery
+                    .flush(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+            {
+                request_metrics.complete("error", error.delivered_bytes);
+                return Err(error.error);
+            }
             record_core_request_completed(
                 telemetry,
                 core_request_events,

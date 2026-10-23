@@ -76,6 +76,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     serve_local_stream_without_connection_limit(
                         stream,
                         server.protocol(),
@@ -152,6 +155,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     serve_local_serial_stream_without_connection_limit(
                         stream,
                         server.protocol(),
@@ -232,6 +238,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     let stream = match tokio::time::timeout(
                         handshake_timeout,
                         acceptor.accept(stream),
@@ -329,6 +338,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                     let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                         .map_err(NacelleError::protocol)?;
@@ -431,6 +443,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                     let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                         .map_err(NacelleError::protocol)?;
@@ -534,6 +549,9 @@ where
                 let server = server.clone();
                 connections.spawn_local(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {

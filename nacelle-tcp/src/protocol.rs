@@ -525,6 +525,24 @@ pub trait Protocol: Send + Sync + 'static {
     type ResponseContext: Send + 'static;
     type ErrorContext: Send + 'static;
 
+    /// Lifecycle admission policy; the default is a no-op.
+    #[cfg(feature = "policies")]
+    fn policy(
+        &self,
+    ) -> &impl crate::policy::TcpLifecyclePolicy<Self::Request, Self::ConnectionState> {
+        &()
+    }
+
+    /// Attach an application-owned, statically dispatched lifecycle policy.
+    #[cfg(feature = "policies")]
+    fn with_policy<Policy>(self, policy: Policy) -> crate::policy::WithTcpPolicy<Self, Policy>
+    where
+        Self: Sized,
+        Policy: crate::policy::TcpLifecyclePolicy<Self::Request, Self::ConnectionState>,
+    {
+        crate::policy::WithTcpPolicy::new(self, policy)
+    }
+
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }

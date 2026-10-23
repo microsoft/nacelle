@@ -230,6 +230,11 @@ where
                 let server = server.clone();
                 connections.spawn(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let connection = connection.with_listener(server.listener_label());
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                     server.serve_io_without_connection_limit(stream, connection).await
                 });
             }
@@ -483,6 +488,9 @@ where
                 let server = server.clone();
                 connections.spawn(async move {
                     let _connection_permit = connection_permit;
+                    #[cfg(feature = "policies")]
+                    let _policy_permit =
+                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                     server
                         .serve_io_without_connection_limit(stream, connection)
                         .await

@@ -1,0 +1,738 @@
+use super::*;
+use crate::policy::{TcpLifecyclePolicy, WithTcpPolicy};
+use tokio::sync::{Notify, Semaphore};
+
+#[derive(Default)]
+struct PolicyState {
+    events: std::sync::Mutex<Vec<&'static str>>,
+    active: AtomicUsize,
+    changed: Notify,
+    tls_ready: AtomicBool,
+}
+
+impl PolicyState {
+    async fn wait_for(&self, stage: &'static str, count: usize) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let changed = self.changed.notified();
+                if self
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|event| **event == stage)
+                    .count()
+                    >= count
+                {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await
+        .expect("policy checkpoint should be reached");
+    }
+}
+
+struct Lease(Arc<PolicyState>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecordingPolicy {
+    state: Arc<PolicyState>,
+    reject: Option<&'static str>,
+    gate: Option<(&'static str, Arc<Semaphore>)>,
+}
+
+impl RecordingPolicy {
+    async fn enter(&self, stage: &'static str) -> Result<Option<Lease>, NacelleError> {
+        self.state.events.lock().unwrap().push(stage);
+        self.state.changed.notify_waiters();
+        if self.reject == Some(stage) {
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Other(stage),
+            ));
+        }
+        if let Some((gated_stage, gate)) = &self.gate
+            && *gated_stage == stage
+        {
+            gate.acquire()
+                .await
+                .expect("test gate should remain open")
+                .forget();
+        }
+        self.state.active.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(Lease(self.state.clone())))
+    }
+}
+
+impl<Request, State> TcpLifecyclePolicy<Request, State> for RecordingPolicy {
+    type Permit = Lease;
+
+    fn accepted(
+        &self,
+        connection: &NacelleConnectionMeta,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Permit>, NacelleError>> + Send {
+        assert_eq!(&*connection.listener, "policy-test");
+        assert!(connection.tls.is_none());
+        self.enter("accepted")
+    }
+
+    fn transport_ready(
+        &self,
+        connection: &NacelleConnectionMeta,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Permit>, NacelleError>> + Send {
+        self.state
+            .tls_ready
+            .store(connection.tls.is_some(), Ordering::SeqCst);
+        self.enter("ready")
+    }
+
+    fn before_request(
+        &self,
+        _connection: &ConnectionInfo,
+        _state: &State,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Permit>, NacelleError>> + Send {
+        self.enter("before")
+    }
+
+    fn request_head(
+        &self,
+        _request: &Request,
+        _body_len: usize,
+        _connection: &ConnectionInfo,
+        _state: &State,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Permit>, NacelleError>> + Send {
+        self.enter("head")
+    }
+
+    fn body_complete(
+        &self,
+        _connection: &NacelleConnectionMeta,
+        _body_len: usize,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Permit>, NacelleError>> + Send {
+        self.enter("body")
+    }
+}
+
+type PolicyProtocol = WithTcpPolicy<PhaseProtocol, RecordingPolicy>;
+
+fn protocol(policy: RecordingPolicy) -> PolicyProtocol {
+    PhaseProtocol {
+        authenticated: true,
+        request_wire_bytes: None,
+        encoder_writes_then_errors: false,
+    }
+    .with_policy(policy)
+}
+
+struct ObservedIo<IO> {
+    inner: IO,
+    read_bytes: Arc<AtomicUsize>,
+    state: Arc<PolicyState>,
+    write_leases: Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+impl<IO: AsyncRead + Unpin> AsyncRead for ObservedIo<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+        self.read_bytes
+            .fetch_add(buffer.filled().len() - before, Ordering::SeqCst);
+        result
+    }
+}
+
+impl<IO: AsyncWrite + Unpin> AsyncWrite for ObservedIo<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.write_leases
+            .lock()
+            .unwrap()
+            .push(self.state.active.load(Ordering::SeqCst));
+        Pin::new(&mut self.inner).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[tokio::test]
+async fn lifecycle_order_and_permits_cover_coalesced_response_delivery() {
+    let policy = RecordingPolicy::default();
+    let state = policy.state.clone();
+    let write_leases = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let io = ObservedIo {
+        inner: RecordingIo {
+            input: vec![2, b'a', b'b', 0],
+            position: 0,
+            writes: writes.clone(),
+        },
+        read_bytes: Arc::new(AtomicUsize::new(0)),
+        state: state.clone(),
+        write_leases: write_leases.clone(),
+    };
+    serve_stream_with_connection_meta(
+        io,
+        Arc::new(protocol(policy)),
+        handler_fn(
+            |mut context: TcpRequestContext<PolicyProtocol>| async move {
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    chunk?;
+                }
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ),
+        NacelleTcpConfig::default()
+            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    )
+    .await
+    .expect("connection should complete");
+    assert_eq!(
+        *state.events.lock().unwrap(),
+        [
+            "ready", "before", "head", "body", "before", "head", "body", "before"
+        ]
+    );
+    assert_eq!(*write_leases.lock().unwrap(), [4, 4]);
+    assert_eq!(*writes.lock().unwrap(), [b"ok".to_vec(), b"ok".to_vec()]);
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+struct SelectivePolicy {
+    state: Arc<PolicyState>,
+    connection_only: bool,
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for SelectivePolicy {
+    type Permit = Lease;
+
+    async fn transport_ready(
+        &self,
+        _connection: &NacelleConnectionMeta,
+    ) -> Result<Option<Lease>, NacelleError> {
+        Ok(self.connection_only.then(|| {
+            self.state.active.fetch_add(1, Ordering::SeqCst);
+            Lease(self.state.clone())
+        }))
+    }
+
+    async fn before_request(
+        &self,
+        _connection: &ConnectionInfo,
+        _state: &AuthState,
+    ) -> Result<Option<Lease>, NacelleError> {
+        Ok((!self.connection_only).then(|| {
+            self.state.active.fetch_add(1, Ordering::SeqCst);
+            Lease(self.state.clone())
+        }))
+    }
+}
+
+#[tokio::test]
+async fn only_acquired_request_permits_require_delivery_barriers() {
+    type SelectiveProtocol = WithTcpPolicy<PhaseProtocol, SelectivePolicy>;
+    for connection_only in [false, true] {
+        let state = Arc::new(PolicyState::default());
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let write_leases = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let protocol = PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        }
+        .with_policy(SelectivePolicy {
+            state: state.clone(),
+            connection_only,
+        });
+        serve_stream_with_connection_meta(
+            ObservedIo {
+                inner: RecordingIo {
+                    input: vec![0, 0],
+                    position: 0,
+                    writes: writes.clone(),
+                },
+                read_bytes: Default::default(),
+                state: state.clone(),
+                write_leases: write_leases.clone(),
+            },
+            Arc::new(protocol),
+            handler_fn(|context: TcpRequestContext<SelectiveProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            }),
+            NacelleTcpConfig::default()
+                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *writes.lock().unwrap(),
+            if connection_only {
+                vec![b"okok".to_vec()]
+            } else {
+                vec![b"ok".to_vec(), b"ok".to_vec()]
+            },
+        );
+        assert!(
+            write_leases
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|leases| *leases == 1)
+        );
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn response_encoding_failure_releases_all_policy_permits() {
+    let policy = RecordingPolicy::default();
+    let state = policy.state.clone();
+    let protocol = PhaseProtocol {
+        authenticated: true,
+        request_wire_bytes: None,
+        encoder_writes_then_errors: true,
+    }
+    .with_policy(policy);
+    let result = serve_stream_with_connection_meta(
+        RecordingIo {
+            input: vec![0],
+            position: 0,
+            writes: Default::default(),
+        },
+        Arc::new(protocol),
+        handler_fn(|context: TcpRequestContext<PolicyProtocol>| async move {
+            context.respond(TcpResponse::bytes("ok")).await
+        }),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(NacelleError::InvalidFrame("test response encoder"))
+    ));
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn lifecycle_rejection_uses_existing_error_delivery_and_releases_permits() {
+    for stage in ["ready", "before", "head", "body"] {
+        let policy = RecordingPolicy {
+            reject: Some(stage),
+            ..Default::default()
+        };
+        let state = policy.state.clone();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let result = serve_stream_with_connection_meta(
+            RecordingIo {
+                input: vec![0],
+                position: 0,
+                writes: writes.clone(),
+            },
+            Arc::new(protocol(policy)),
+            handler_fn({
+                let calls = calls.clone();
+                move |context: TcpRequestContext<PolicyProtocol>| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async move { Ok(context.complete()) }
+                }
+            }),
+            NacelleTcpConfig::default(),
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .await;
+        assert!(matches!(result, Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::Other(reason)
+        )) if reason == stage));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(writes.lock().unwrap().is_empty(), stage == "ready");
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn policy_wait_blocks_reads_and_cancellation_releases_connection_permit() {
+    let gate = Arc::new(Semaphore::new(0));
+    let policy = RecordingPolicy {
+        gate: Some(("before", gate)),
+        ..Default::default()
+    };
+    let state = policy.state.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (mut client, server) = tokio::io::duplex(64);
+    client.write_all(&[1, b'a']).await.unwrap();
+    let task = tokio::spawn(serve_stream_with_connection_meta(
+        ObservedIo {
+            inner: server,
+            read_bytes: reads.clone(),
+            state: state.clone(),
+            write_leases: Default::default(),
+        },
+        Arc::new(protocol(policy)),
+        handler_fn(
+            |context: TcpRequestContext<PolicyProtocol>| async move { Ok(context.complete()) },
+        ),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+    state.wait_for("before", 1).await;
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert_eq!(state.active.load(Ordering::SeqCst), 1);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn head_policy_wait_prevents_further_body_reads_in_both_modes() {
+    for mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+        let gate = Arc::new(Semaphore::new(0));
+        let policy = RecordingPolicy {
+            gate: Some(("head", gate.clone())),
+            ..Default::default()
+        };
+        let state = policy.state.clone();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let (mut client, server) = tokio::io::duplex(64);
+        let task = tokio::spawn(serve_stream_with_connection_meta(
+            ObservedIo {
+                inner: server,
+                read_bytes: reads.clone(),
+                state: state.clone(),
+                write_leases: Default::default(),
+            },
+            Arc::new(protocol(policy)),
+            handler_fn(
+                |mut context: TcpRequestContext<PolicyProtocol>| async move {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                        body.extend_from_slice(&chunk?);
+                    }
+                    assert_eq!(body, b"abcd");
+                    context.respond(TcpResponse::bytes("ok")).await
+                },
+            ),
+            NacelleTcpConfig::default().with_request_body_mode(mode),
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        ));
+        client.write_all(&[4]).await.unwrap();
+        state.wait_for("head", 1).await;
+        client.write_all(b"abcd").await.unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        gate.add_permits(1);
+        let mut response = [0; 2];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&response, b"ok");
+        client.shutdown().await.unwrap();
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            state
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|s| **s == "body")
+                .count(),
+            1
+        );
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+    }
+}
+
+struct WaitForSecondRequest {
+    calls: AtomicUsize,
+    entered: Arc<Notify>,
+    gate: Arc<Semaphore>,
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for WaitForSecondRequest {
+    type Permit = ();
+
+    async fn before_request(
+        &self,
+        _connection: &ConnectionInfo,
+        _state: &AuthState,
+    ) -> Result<Option<()>, NacelleError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.entered.notify_one();
+            self.gate.acquire().await.unwrap().forget();
+        }
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn waiting_for_pipelined_admission_flushes_previous_response() {
+    let entered = Arc::new(Notify::new());
+    let gate = Arc::new(Semaphore::new(0));
+    let policy = WaitForSecondRequest {
+        calls: AtomicUsize::new(0),
+        entered: entered.clone(),
+        gate: gate.clone(),
+    };
+    type GatedProtocol = WithTcpPolicy<PhaseProtocol, WaitForSecondRequest>;
+    let protocol = PhaseProtocol {
+        authenticated: true,
+        request_wire_bytes: None,
+        encoder_writes_then_errors: false,
+    }
+    .with_policy(policy);
+    let (mut client, server) = tokio::io::duplex(64);
+    client.write_all(&[0, 0]).await.unwrap();
+    let task = tokio::spawn(serve_stream_with_connection_meta(
+        server,
+        Arc::new(protocol),
+        handler_fn(|context: TcpRequestContext<GatedProtocol>| async move {
+            context.respond(TcpResponse::bytes("ok")).await
+        }),
+        NacelleTcpConfig::default()
+            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    let mut response = [0; 2];
+    tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&response, b"ok");
+    gate.add_permits(1);
+    client.read_exact(&mut response).await.unwrap();
+    client.shutdown().await.unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn accepted_policy_rejects_without_entering_transport_or_request_pipeline() {
+    let policy = RecordingPolicy {
+        reject: Some("accepted"),
+        ..Default::default()
+    };
+    let state = policy.state.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown, token) = NacelleShutdown::pair();
+    let server = TcpServer::<PolicyProtocol>::builder()
+        .protocol(protocol(policy))
+        .handler(handler_fn(
+            |context: TcpRequestContext<PolicyProtocol>| async move { Ok(context.complete()) },
+        ))
+        .listener_label("policy-test")
+        .build()
+        .unwrap();
+    let task = tokio::spawn(crate::runtime::serve_tcp_listener_with_shutdown_deadline(
+        Arc::new(server),
+        listener,
+        token,
+        NacelleDrainDeadline::new(Duration::from_secs(1)),
+    ));
+    let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+    state.wait_for("accepted", 1).await;
+    assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
+    shutdown.shutdown();
+    task.await.unwrap().unwrap();
+    assert_eq!(*state.events.lock().unwrap(), ["accepted"]);
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn failed_streaming_body_does_not_visit_body_complete() {
+    let policy = RecordingPolicy::default();
+    let state = policy.state.clone();
+    let (mut client, server) = tokio::io::duplex(128);
+    let task = tokio::spawn(serve_stream_with_connection_meta(
+        server,
+        Arc::new(protocol(policy)),
+        handler_fn(
+            |mut context: TcpRequestContext<PolicyProtocol>| async move {
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    chunk?;
+                }
+                Ok(context.complete())
+            },
+        ),
+        NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Streaming),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+    client.write_all(&[4]).await.unwrap();
+    state.wait_for("head", 1).await;
+    client.shutdown().await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
+    assert_eq!(*state.events.lock().unwrap(), ["ready", "before", "head"]);
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+struct LocalPolicyHandler;
+
+impl LocalSerialTcpHandler<WithTcpPolicy<LocalOnlyProtocol, RecordingPolicy>>
+    for LocalPolicyHandler
+{
+    async fn call<'connection>(
+        &'connection self,
+        context: SerialTcpRequestContext<
+            'connection,
+            WithTcpPolicy<LocalOnlyProtocol, RecordingPolicy>,
+        >,
+    ) -> Result<
+        crate::protocol::TcpHandlerCompletion<WithTcpPolicy<LocalOnlyProtocol, RecordingPolicy>>,
+        NacelleError,
+    > {
+        let state = context.connection().state.clone();
+        let count = state.get();
+        tokio::task::yield_now().await;
+        state.set(count + 1);
+        context.respond(TcpResponse::bytes(count.to_string())).await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policies_preserve_worker_local_non_send_serial_state() {
+    let policy = RecordingPolicy::default();
+    let state = policy.state.clone();
+    let server =
+        LocalSerialTcpServer::new(LocalOnlyProtocol.with_policy(policy), LocalPolicyHandler);
+    let (mut client, io) = tokio::io::duplex(64);
+    let send = async {
+        client.write_all(&[0, 0]).await.unwrap();
+        let mut response = [0; 2];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"01");
+        client.shutdown().await.unwrap();
+    };
+    let (result, ()) = tokio::join!(server.serve_io(io), send);
+    result.unwrap();
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        state
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| **s == "head")
+            .count(),
+        2
+    );
+}
+
+#[cfg(feature = "tls-self-signed")]
+#[tokio::test]
+async fn tls_policies_run_before_handshake_and_after_negotiated_metadata() {
+    for reject in ["accepted", "ready"] {
+        let generated = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+        let certificate =
+            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
+                .unwrap()
+                .remove(0);
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        ));
+        let policy = RecordingPolicy {
+            reject: Some(reject),
+            ..Default::default()
+        };
+        let state = policy.state.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, token) = NacelleShutdown::pair();
+        let server = TcpServer::<PolicyProtocol>::builder()
+            .protocol(protocol(policy))
+            .handler(handler_fn(
+                |context: TcpRequestContext<PolicyProtocol>| async move { Ok(context.complete()) },
+            ))
+            .listener_label("policy-test")
+            .build()
+            .unwrap();
+        let task = tokio::spawn(
+            crate::runtime::serve_tcp_tls_listener_with_shutdown_deadline(
+                Arc::new(server),
+                listener,
+                generated.tls_config,
+                token,
+                NacelleDrainDeadline::new(Duration::from_secs(1)),
+            ),
+        );
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        if reject == "accepted" {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), client.read(&mut [0]))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+            assert!(!state.tls_ready.load(Ordering::SeqCst));
+        } else {
+            let _tls = tokio::time::timeout(
+                Duration::from_secs(2),
+                connector.connect("localhost".try_into().unwrap(), client),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            state.wait_for("ready", 1).await;
+            assert!(state.tls_ready.load(Ordering::SeqCst));
+        }
+        shutdown.shutdown();
+        task.await.unwrap().unwrap();
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *state.events.lock().unwrap(),
+            if reject == "accepted" {
+                vec!["accepted"]
+            } else {
+                vec!["accepted", "ready"]
+            }
+        );
+    }
+}

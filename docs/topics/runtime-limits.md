@@ -3,6 +3,12 @@
 Runtime limits are enforced through `NacelleRuntimeState`. They are intended to
 make overload predictable rather than perfectly invisible.
 
+Applications can additionally opt into
+[TCP lifecycle policies](../reference/tcp-policies.md) to own admission and
+capacity waits at explicit TCP boundaries. This first migration area does not
+disable or replace existing budgets, deadlines, or HTTP policy; disabling the
+new policy feature leaves the controls documented here active.
+
 Key budgets include:
 
 - active connections

@@ -176,6 +176,11 @@ the core required/no-response capability primitives are unchanged.
 
 ## Limits
 
+The opt-in [TCP lifecycle policy hooks](tcp-policies.md) allow
+application-owned admission before TLS, before request-head decoding, after
+head decoding, and after body input completes. They retain the same typed
+handler pathway and do not yet replace the limits below or change body reading.
+
 The server enforces `NacelleTcpConfig::max_frame_len` against `frame_len`.
 Buffer sizes and request-body chunking are configured through
 `NacelleTcpConfig`.
