@@ -16,4 +16,5 @@ blanket advisory, license, or duplicate-version exception.
 
 `serde_yaml` and `unsafe-libyaml` should not appear in the dependency tree.
 
-
+Record advisory-specific fixes and verification in
+[Dependency security resolutions](../reference/dependency-security.md).
