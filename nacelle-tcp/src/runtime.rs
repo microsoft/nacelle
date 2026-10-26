@@ -59,6 +59,8 @@ mod unix;
 
 #[cfg(all(test, feature = "openssl"))]
 mod openssl_tests;
+#[cfg(all(test, feature = "openssl", feature = "policies"))]
+pub(crate) use openssl_tests::test_open_ssl_config;
 #[cfg(all(test, feature = "tls-self-signed"))]
 mod rustls_tests;
 

@@ -175,6 +175,333 @@ impl<IO: AsyncWrite + Unpin> AsyncWrite for ObservedIo<IO> {
 }
 
 #[tokio::test]
+async fn fragmented_head_retains_before_request_permit_without_readmission() {
+    type FragmentedProtocol = WithTcpPolicy<MixedProtocol, RecordingPolicy>;
+    let policy = RecordingPolicy::default();
+    let state = policy.state.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let write_leases = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (mut client, io) = tokio::io::duplex(64);
+    let task = tokio::spawn(serve_stream_with_connection_meta(
+        ObservedIo {
+            inner: io,
+            read_bytes: reads.clone(),
+            state: state.clone(),
+            write_leases: write_leases.clone(),
+        },
+        Arc::new(MixedProtocol.with_policy(policy)),
+        handler_fn(
+            |context: TcpRequestContext<FragmentedProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ),
+        NacelleTcpConfig::default(),
+        NacelleTelemetry::default(),
+        NacelleRuntimeState::default(),
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+
+    client.write_all(&[2]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while reads.load(Ordering::SeqCst) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the incomplete head should be read");
+    assert_eq!(*state.events.lock().unwrap(), ["ready", "before"]);
+    assert_eq!(state.active.load(Ordering::SeqCst), 2);
+    assert!(!task.is_finished());
+
+    client.write_all(&[0]).await.unwrap();
+    let mut response = [0; 2];
+    tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&response, b"ok");
+    client.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        *state.events.lock().unwrap(),
+        ["ready", "before", "head", "body", "before"]
+    );
+    assert_eq!(*write_leases.lock().unwrap(), [4]);
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn listener_drain_deadline_cancels_policy_waits_and_releases_permits() {
+    for (acquired, stage) in ["accepted", "ready", "before", "head", "body"]
+        .into_iter()
+        .enumerate()
+    {
+        let gate = Arc::new(Semaphore::new(0));
+        let policy = RecordingPolicy {
+            gate: Some((stage, gate.clone())),
+            ..Default::default()
+        };
+        let state = policy.state.clone();
+        let runtime_state = NacelleRuntimeState::default();
+        let observer = NacelleInMemoryObserver::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, token) = NacelleShutdown::pair();
+        let server = TcpServer::<PolicyProtocol>::builder()
+            .protocol(protocol(policy))
+            .handler(handler_fn(
+                |_context: TcpRequestContext<PolicyProtocol>| async move {
+                    panic!("the policy wait must prevent handler dispatch")
+                },
+            ))
+            .listener_label("policy-test")
+            .build()
+            .unwrap()
+            .with_runtime_state(runtime_state.clone())
+            .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()));
+        let task = tokio::spawn(crate::runtime::serve_tcp_listener_with_shutdown_deadline(
+            Arc::new(server),
+            listener,
+            token,
+            NacelleDrainDeadline::new(Duration::ZERO),
+        ));
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        if matches!(stage, "head" | "body") {
+            client.write_all(&[0]).await.unwrap();
+        }
+        state.wait_for(stage, 1).await;
+        assert_eq!(state.active.load(Ordering::SeqCst), acquired);
+        assert_eq!(runtime_state.active_connections(), 1);
+
+        shutdown.shutdown();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("the listener should abort waits at the drain deadline")
+            .unwrap()
+            .unwrap();
+        assert_eq!(gate.available_permits(), 0);
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime_state.active_connections(), 0);
+        assert_eq!(runtime_state.active_requests(), 0);
+        for kind in [
+            NacelleTelemetryEventKind::DrainTimedOut,
+            NacelleTelemetryEventKind::ConnectionsAborted,
+        ] {
+            assert!(observer.events().iter().any(|event| event.kind == kind));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_policies_preserve_hook_order_and_release_permits_after_rejection() {
+    static NEXT_SOCKET: AtomicUsize = AtomicUsize::new(0);
+    for reject in [Some("accepted"), Some("ready"), Some("head"), None] {
+        let socket = std::env::temp_dir().join(format!(
+            "nacelle-policy-{}-{}.sock",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
+        ));
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let policy = RecordingPolicy {
+            reject,
+            ..Default::default()
+        };
+        let state = policy.state.clone();
+        let runtime_state = NacelleRuntimeState::default();
+        let (shutdown, token) = NacelleShutdown::pair();
+        let server = TcpServer::<PolicyProtocol>::builder()
+            .protocol(protocol(policy))
+            .handler(handler_fn(
+                |context: TcpRequestContext<PolicyProtocol>| async move {
+                    context.respond(TcpResponse::bytes("ok")).await
+                },
+            ))
+            .listener_label("policy-test")
+            .build()
+            .unwrap()
+            .with_runtime_state(runtime_state.clone());
+        let task = tokio::spawn(crate::runtime::serve_unix_listener_with_shutdown_deadline(
+            Arc::new(server),
+            listener,
+            Some(socket.clone()),
+            token,
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ));
+        let mut client = tokio::net::UnixStream::connect(&socket).await.unwrap();
+        if matches!(reject, Some("head") | None) {
+            client.write_all(&[0]).await.unwrap();
+            client.shutdown().await.unwrap();
+        }
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        let expected_response = match reject {
+            Some("head") => NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("head"))
+                .to_string()
+                .into_bytes(),
+            Some(_) => Vec::new(),
+            None => b"ok".to_vec(),
+        };
+        assert_eq!(response, expected_response);
+        shutdown.shutdown();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(socket).unwrap();
+        let expected_events: &[&str] = match reject {
+            Some("accepted") => &["accepted"],
+            Some("ready") => &["accepted", "ready"],
+            Some("head") => &["accepted", "ready", "before", "head"],
+            _ => &["accepted", "ready", "before", "head", "body", "before"],
+        };
+        assert_eq!(*state.events.lock().unwrap(), expected_events);
+        assert!(!state.tls_ready.load(Ordering::SeqCst));
+        assert_eq!(state.active.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime_state.active_connections(), 0);
+        assert_eq!(runtime_state.active_requests(), 0);
+    }
+}
+
+#[cfg(feature = "openssl")]
+#[tokio::test]
+async fn openssl_policies_cover_handshake_order_plaintext_detection_and_cleanup() {
+    #[cfg(not(feature = "experimental-openssl-detection"))]
+    let modes = ["required"];
+    #[cfg(feature = "experimental-openssl-detection")]
+    let modes = ["required", "optional_tls", "optional_plain"];
+
+    for mode in modes {
+        let config = crate::runtime::test_open_ssl_config();
+        for reject in [Some("accepted"), Some("ready"), None] {
+            let policy = RecordingPolicy {
+                reject,
+                ..Default::default()
+            };
+            let state = policy.state.clone();
+            let runtime_state = NacelleRuntimeState::default();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (shutdown, token) = NacelleShutdown::pair();
+            let server = Arc::new(
+                TcpServer::<PolicyProtocol>::builder()
+                    .protocol(protocol(policy))
+                    .handler(handler_fn(
+                        |context: TcpRequestContext<PolicyProtocol>| async move {
+                            context.respond(TcpResponse::bytes("ok")).await
+                        },
+                    ))
+                    .listener_label("policy-test")
+                    .build()
+                    .unwrap()
+                    .with_runtime_state(runtime_state.clone()),
+            );
+            let config = config.clone();
+            let task = tokio::spawn(async move {
+                #[cfg(feature = "experimental-openssl-detection")]
+                if mode != "required" {
+                    return crate::runtime::serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
+                        server,
+                        listener,
+                        config,
+                        crate::NacelleTcpOptions::default(),
+                        crate::NacelleTlsDetectionOptions::default(),
+                        token,
+                        NacelleDrainDeadline::new(Duration::ZERO),
+                    )
+                    .await;
+                }
+                crate::runtime::serve_tcp_openssl_listener_with_shutdown_deadline(
+                    server,
+                    listener,
+                    config,
+                    token,
+                    NacelleDrainDeadline::new(Duration::ZERO),
+                )
+                .await
+            });
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            if reject == Some("accepted") {
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(2), client.read(&mut [0]))
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    0
+                );
+            } else if mode == "optional_plain" {
+                client.write_all(&[0]).await.unwrap();
+                state.wait_for("ready", 1).await;
+                if reject.is_none() {
+                    let mut response = [0; 2];
+                    tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(&response, b"ok");
+                }
+            } else {
+                let mut connector =
+                    openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
+                connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+                let ssl = connector
+                    .build()
+                    .configure()
+                    .unwrap()
+                    .verify_hostname(false)
+                    .into_ssl("localhost")
+                    .unwrap();
+                let mut client = tokio_openssl::SslStream::new(ssl, client).unwrap();
+                tokio::time::timeout(Duration::from_secs(2), Pin::new(&mut client).connect())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                state.wait_for("ready", 1).await;
+                if reject.is_none() {
+                    client.write_all(&[0]).await.unwrap();
+                    let mut response = [0; 2];
+                    tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(&response, b"ok");
+                }
+            }
+            if reject.is_none() {
+                state.wait_for("before", 2).await;
+            }
+            shutdown.shutdown();
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let expected_events: &[&str] = match reject {
+                Some("accepted") => &["accepted"],
+                Some(_) => &["accepted", "ready"],
+                None => &["accepted", "ready", "before", "head", "body", "before"],
+            };
+            assert_eq!(*state.events.lock().unwrap(), expected_events);
+            assert_eq!(
+                state.tls_ready.load(Ordering::SeqCst),
+                reject != Some("accepted") && mode != "optional_plain"
+            );
+            assert_eq!(state.active.load(Ordering::SeqCst), 0);
+            assert_eq!(runtime_state.active_connections(), 0);
+            assert_eq!(runtime_state.active_requests(), 0);
+        }
+    }
+}
+
+#[tokio::test]
 async fn lifecycle_order_and_permits_cover_coalesced_response_delivery() {
     let policy = RecordingPolicy::default();
     let state = policy.state.clone();

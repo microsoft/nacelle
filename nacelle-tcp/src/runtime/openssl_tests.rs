@@ -577,7 +577,7 @@ async fn local_serial_optional_openssl_accepts_tls_request() {
         .await;
 }
 
-fn test_open_ssl_config() -> NacelleOpenSslConfig {
+pub(crate) fn test_open_ssl_config() -> NacelleOpenSslConfig {
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
     use openssl::hash::MessageDigest;
