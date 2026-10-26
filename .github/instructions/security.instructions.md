@@ -12,3 +12,4 @@ description: "Use when changing or reviewing HTTP hardening, TLS, trust boundari
 - Use low-cardinality telemetry and stable reason values for rejection, timeout, rate-limit, and policy events. Never emit secrets or unbounded peer-controlled values as labels.
 - Preserve provider separation: negotiated TLS metadata belongs in `nacelle-core`, Rustls serves HTTP and TCP, and OpenSSL support is TCP-specific. Rustls and OpenSSL are mutually exclusive compile-time backends.
 - Update `SECURITY.md`, `docs/reference/http-hardening.md`, or `docs/how-to/harden-http.md` when security guarantees or operator guidance changes.
+- When addressing a published dependency advisory, update `docs/reference/dependency-security.md` with the affected and fixed versions, remediation, and verification. Keep advisory-specific resolution notes there rather than in the general security-scanning guide; manifests and the lockfile remain authoritative.

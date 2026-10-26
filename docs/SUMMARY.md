@@ -29,6 +29,7 @@
 - [Reference protocol](reference/protocol.md)
 - [Codec primitives](reference/nacelle-codec.md)
 - [HTTP hardening reference](reference/http-hardening.md)
+- [Dependency security resolutions](reference/dependency-security.md)
 - [Production configuration reference](reference/production-configuration.md)
 - [Versioning and support](reference/versioning.md)
 - [API stability](reference/api-stability.md)
