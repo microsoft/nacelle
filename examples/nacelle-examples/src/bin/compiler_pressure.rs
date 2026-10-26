@@ -123,7 +123,7 @@ fn verify_future_sizes(sizes: &FutureSizes) -> Result<(), NacelleError> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), NacelleError> {
     let sizes = representative_future_sizes().await?;
-    println!("representative serving future sizes: {sizes:?}");
+    println!("representative serving future sizes computed");
     verify_future_sizes(&sizes)
 }
 
