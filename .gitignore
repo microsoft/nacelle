@@ -29,3 +29,6 @@ artifacts
 *.secret
 docs/internal
 .github/plans/
+
+# Generated Reports
+.reports/
