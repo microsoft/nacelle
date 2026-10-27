@@ -765,10 +765,9 @@ mod tests {
                     .expect("listener");
                 let addr = listener.local_addr().expect("address");
                 let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
-                let certificate =
-                    nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-                        .unwrap_or_else(|_| panic!("certificate should parse"))
-                        .remove(0);
+                let certificate = crate::runtime::rustls_tests::test_certificate(
+                    generated.certificate_pem.as_bytes(),
+                );
                 let mut roots = rustls::RootCertStore::empty();
                 roots.add(certificate).expect("root");
                 let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(
