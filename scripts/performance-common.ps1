@@ -57,6 +57,28 @@ function Resolve-NacelleGitReference {
     }
 }
 
+function Test-NacelleCargoFeature {
+    param(
+        [Parameter(Mandatory)][string] $ManifestPath,
+        [Parameter(Mandatory)][string] $Feature
+    )
+
+    $inFeatures = $false
+    foreach ($line in Get-Content $ManifestPath) {
+        if ($line -match '^\s*\[features\]\s*$') {
+            $inFeatures = $true
+            continue
+        }
+        if ($inFeatures -and $line -match '^\s*\[') {
+            return $false
+        }
+        if ($inFeatures -and $line -match "^\s*$([regex]::Escape($Feature))\s*=") {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Get-NacellePerformanceBenchmarks {
     param(
         [Parameter(Mandatory)][string[]] $Suite,
@@ -72,9 +94,14 @@ function Get-NacellePerformanceBenchmarks {
     }
 
     if (Test-Path (Join-Path $Workspace "examples/nacelle-examples/benches/critical_paths.rs")) {
+        $manifest = Join-Path $Workspace "examples/nacelle-examples/Cargo.toml"
+        $features = @("bench", "tcp")
+        if (Test-NacelleCargoFeature -ManifestPath $manifest -Feature "experimental-memory") {
+            $features += "experimental-memory"
+        }
         $available += [pscustomobject]@{
             Name      = "critical-paths"
-            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp")
+            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", ($features -join " "))
         }
     }
     elseif (Test-Path (Join-Path $Workspace "nacelle/benches/critical_paths.rs")) {
@@ -85,9 +112,14 @@ function Get-NacellePerformanceBenchmarks {
     }
 
     if (Test-Path (Join-Path $Workspace "nacelle-tcp/benches/telemetry_paths.rs")) {
+        $manifest = Join-Path $Workspace "nacelle-tcp/Cargo.toml"
+        $features = @("buffer-rotation", "phase-timing", "rustls", "tls-self-signed")
+        if (Test-NacelleCargoFeature -ManifestPath $manifest -Feature "experimental-memory") {
+            $features += "experimental-memory"
+        }
         $available += [pscustomobject]@{
             Name      = "telemetry"
-            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--features", "buffer-rotation phase-timing rustls tls-self-signed")
+            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--features", ($features -join " "))
         }
     }
 
