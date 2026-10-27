@@ -1640,6 +1640,42 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "tls-self-signed")]
+    fn test_certificate(pem: &[u8]) -> rustls::pki_types::CertificateDer<'static> {
+        let parsed = nacelle_rustls::parse_pem_certificates(pem);
+        let certificates = match parsed {
+            Ok(certificates) => certificates,
+            Err(_) => panic!("test certificate should parse"),
+        };
+        match certificates.into_iter().next() {
+            Some(certificate) => certificate,
+            None => panic!("test certificate should be present"),
+        }
+    }
+
+    #[cfg(all(feature = "tls-self-signed", panic = "unwind"))]
+    #[test]
+    fn test_certificate_failure_does_not_include_parser_details() {
+        for pem in [
+            b"".as_slice(),
+            b"-----BEGIN CERTIFICATE-----\nSENSITIVE_TEST_INPUT!\n-----END CERTIFICATE-----",
+        ] {
+            let outcome = std::panic::catch_unwind(|| test_certificate(pem));
+            let payload = match outcome {
+                Err(payload) => payload,
+                Ok(_) => panic!("invalid test certificate should fail"),
+            };
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+            assert!(
+                message == Some("test certificate should parse"),
+                "certificate failure must contain only the fixed diagnostic"
+            );
+        }
+    }
+
+    #[cfg(feature = "tls-self-signed")]
     #[tokio::test(flavor = "current_thread")]
     async fn local_https_self_signed_server_accepts_request() {
         let local = tokio::task::LocalSet::new();
@@ -1650,10 +1686,7 @@ mod tests {
                     .expect("listener");
                 let addr = listener.local_addr().expect("address");
                 let generated = NacelleTlsConfig::self_signed(["localhost"]).expect("TLS config");
-                let certificate =
-                    nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-                        .unwrap_or_else(|_| panic!("certificate should parse"))
-                        .remove(0);
+                let certificate = test_certificate(generated.certificate_pem.as_bytes());
                 let mut roots = rustls::RootCertStore::empty();
                 roots.add(certificate).expect("root");
                 let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(
@@ -2849,10 +2882,7 @@ mod tests {
         let addr = listener.local_addr().expect("listener should have addr");
         let generated =
             nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed tls");
-        let certificate =
-            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-                .unwrap_or_else(|_| panic!("certificate should parse"))
-                .remove(0);
+        let certificate = test_certificate(generated.certificate_pem.as_bytes());
         let mut roots = rustls::RootCertStore::empty();
         roots.add(certificate).expect("root cert should add");
         let client_config = rustls::ClientConfig::builder()
@@ -2928,10 +2958,7 @@ mod tests {
             ["localhost"],
         )
         .expect("SNI allowlist config should build");
-        let certificate =
-            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-                .unwrap_or_else(|_| panic!("certificate should parse"))
-                .remove(0);
+        let certificate = test_certificate(generated.certificate_pem.as_bytes());
         let mut roots = rustls::RootCertStore::empty();
         roots.add(certificate).expect("root cert should add");
         let client_config = rustls::ClientConfig::builder()
