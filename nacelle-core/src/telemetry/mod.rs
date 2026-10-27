@@ -24,12 +24,6 @@ fn register_metric_descriptions() {
         metrics::Unit::Bytes,
         "Response body size"
     );
-    #[cfg(feature = "experimental-memory")]
-    metrics::describe_gauge!(
-        "server.memory.usage",
-        metrics::Unit::Bytes,
-        "Runtime memory usage"
-    );
 }
 
 #[derive(Clone)]
@@ -47,7 +41,7 @@ pub struct NacelleTelemetryConfig {
     pub connection_metrics: bool,
     /// Request counters, gauges, byte counts, and duration histograms.
     pub request_metrics: NacelleRequestMetricsConfig,
-    /// Runtime permit, memory, shutdown, and abort metrics.
+    /// Runtime permit, shutdown, and abort metrics.
     pub runtime_metrics: bool,
     /// Rejection, timeout, request-failure, and operation-error counters.
     pub error_metrics: bool,
@@ -355,7 +349,7 @@ where
         self
     }
 
-    /// Enable or disable runtime permit, memory, shutdown, and abort metrics.
+    /// Enable or disable runtime permit, shutdown, and abort metrics.
     pub fn with_runtime_metrics(mut self, enabled: bool) -> Self {
         self.config.runtime_metrics = enabled;
         self
@@ -1107,16 +1101,6 @@ mod tests {
                 Duration::from_millis(500),
                 &crate::error::NacelleError::Timeout(crate::error::NacelleTimeoutReason::Handler),
             );
-            #[cfg(feature = "experimental-memory")]
-            {
-                let runtime_state = crate::limits::NacelleRuntimeState::new(
-                    crate::limits::NacelleLimits::default().with_max_memory_bytes(16),
-                );
-                telemetry.register_runtime_state(runtime_state.clone());
-                let _allocation = runtime_state
-                    .allocate_memory(1)
-                    .expect("memory allocation should succeed");
-            }
         });
 
         let snapshot = snapshotter.snapshot().into_vec();
@@ -1152,17 +1136,6 @@ mod tests {
         assert_eq!(units["server.request.duration"], Some(&Unit::Seconds));
         assert_eq!(units["server.request.body.size"], Some(&Unit::Bytes));
         assert_eq!(units["server.response.body.size"], Some(&Unit::Bytes));
-        #[cfg(feature = "experimental-memory")]
-        assert_eq!(
-            snapshot
-                .iter()
-                .find(|(key, _, _, value)| {
-                    key.key().name() == "server.memory.usage"
-                        && matches!(value, DebugValue::Gauge(_))
-                })
-                .and_then(|(_, unit, _, _)| unit.as_ref()),
-            Some(&Unit::Bytes)
-        );
     }
 
     #[test]

@@ -22,12 +22,11 @@ mode, configuration, workload, and client revision.
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 The `runtime_limits` benchmark group covers connection/request permit
-acquire/drop and memory allocation overhead. Watch it closely after changes to
-`NacelleRuntimeState`.
+acquire/drop overhead. Watch it closely after changes to `NacelleRuntimeState`.
 
 ## Successful-path ownership and dispatch
 
@@ -48,23 +47,14 @@ Retained costs are scoped by ownership:
 - Request/handler/read/write timeouts use concrete futures. The HTTP response
 	write deadline retains a boxed `Sleep` only after connection-level
 	backpressure because Hyper requires its I/O wrapper to remain `Unpin`.
-- With `experimental-memory`, memory-wait queue allocation and its boxed timeout
-	occur only under contention; the available-capacity path is atomic and
-	allocation-free.
 - Enabled per-peer request and connection-open rate limits use fixed-capacity,
   lock-free tables. Admission probes a bounded number of atomic slots and
   rejects a newly observed peer when the configured table is full; it does not
   take a per-request mutex or sweep every tracked peer.
 - Type-erased protocol/handler errors are constructed only on error paths.
-- TCP response coalescing is opt-in. It queues only complete bounded frames,
-	retains overflow memory guards until flush, and restores socket backpressure
-	at thresholds, streaming waits, and socket-read boundaries. Overflow grows
-	geometrically through an old-plus-replacement memory-accounted transaction.
-- With `experimental-memory`, TCP streaming body accounting reserves the
-	declared body length by default.
-  `TcpStreamingBodyMemoryPolicy::LiveChunks` is opt-in and performs one shared
-  memory-budget acquire/release per chunk so accounting follows queued chunks
-  and application-owned `Bytes` clones.
+- TCP response coalescing is opt-in. It queues only complete bounded frames and
+	restores socket backpressure at thresholds, streaming waits, and socket-read
+	boundaries.
 - App listener installers and worker thread closures erase startup-only closure
 	types; they are not involved in request dispatch.
 - Optional tracing, Hyper, Tokio, TLS providers, allocators, and metrics
@@ -74,7 +64,7 @@ TCP computes effective telemetry modes once per connection and constructs one
 `NacelleMetricsContext` containing cached facade handles. Without an installed
 recorder, metric writes through those handles are no-ops. Connection/request
 permits update cached runtime gauges at their existing state transitions.
-Memory accounting does the same only with `experimental-memory`. Diagnostic TCP phase timers are compiled only with
+Diagnostic TCP phase timers are compiled only with
 the non-default `phase-timing` feature and remain runtime-disabled until
 explicitly enabled on `NacelleTelemetry`.
 
@@ -107,14 +97,12 @@ separately:
 
 ```bash
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml
-./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp-low-memory.toml
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp-tls.toml
 ```
 
 The `examples/run-stress-test.sh` and `examples/run-stress-test.ps1` helpers
 apply root `config.toml` first, then the selected profile, and choose the
-matching client mode automatically. They also enable `experimental-memory`
-when either effective config contains `max_memory_bytes`.
+matching client mode automatically.
 
 Guardrails:
 

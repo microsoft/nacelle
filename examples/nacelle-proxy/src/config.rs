@@ -51,8 +51,6 @@ pub(crate) struct ProxyStartupConfiguration {
     pub(crate) max_connections: usize,
     pub(crate) max_in_flight_requests: usize,
     pub(crate) max_connections_per_peer: usize,
-    #[cfg(feature = "experimental-memory")]
-    pub(crate) max_memory_bytes: usize,
     pub(crate) max_request_body_bytes: usize,
     pub(crate) max_response_body_bytes: usize,
     pub(crate) handler_timeout: Duration,
@@ -81,9 +79,6 @@ pub(crate) struct ProxyFileConfiguration {
     max_in_flight_requests: usize,
     #[serde(default = "default_max_connections_per_peer")]
     max_connections_per_peer: usize,
-    #[cfg(feature = "experimental-memory")]
-    #[serde(default = "default_max_memory_bytes")]
-    max_memory_bytes: usize,
     #[serde(default = "default_handler_timeout_ms")]
     handler_timeout_ms: u64,
 }
@@ -123,8 +118,6 @@ impl ConfigurationSnapshot {
                 max_connections: 64,
                 max_in_flight_requests: 32,
                 max_connections_per_peer: 16,
-                #[cfg(feature = "experimental-memory")]
-                max_memory_bytes: 128 * 1024 * 1024,
                 handler_timeout_ms: 60_000,
             },
             certificate: None,
@@ -149,8 +142,6 @@ impl ProxyFileConfiguration {
             max_connections: self.max_connections,
             max_in_flight_requests: self.max_in_flight_requests,
             max_connections_per_peer: self.max_connections_per_peer,
-            #[cfg(feature = "experimental-memory")]
-            max_memory_bytes: self.max_memory_bytes,
             max_request_body_bytes: self.max_request_body_bytes,
             max_response_body_bytes: self.max_response_body_bytes,
             handler_timeout: Duration::from_millis(self.handler_timeout_ms),
@@ -189,26 +180,12 @@ impl ProxyFileConfiguration {
                 "proxy resource limits and handler timeout must be greater than zero",
             ));
         }
-        #[cfg(feature = "experimental-memory")]
-        if self.max_memory_bytes == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "max_memory_bytes must be greater than zero",
-            ));
-        }
         if self.max_in_flight_requests > self.max_connections
             || self.max_connections_per_peer > self.max_connections
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "request and per-peer connection limits cannot exceed max_connections",
-            ));
-        }
-        #[cfg(feature = "experimental-memory")]
-        if self.max_request_body_bytes > self.max_memory_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "max_request_body_bytes cannot exceed max_memory_bytes",
             ));
         }
         if self.certificate_path.is_some() != self.private_key_path.is_some() {
@@ -314,11 +291,6 @@ const fn default_max_connections_per_peer() -> usize {
     16
 }
 
-#[cfg(feature = "experimental-memory")]
-const fn default_max_memory_bytes() -> usize {
-    128 * 1024 * 1024
-}
-
 const fn default_handler_timeout_ms() -> u64 {
     60_000
 }
@@ -342,9 +314,8 @@ backend_addr = "127.0.0.1:8080"
         assert!(error.to_string().contains("unknown field"));
     }
 
-    #[cfg(not(feature = "experimental-memory"))]
     #[test]
-    fn rejects_memory_limit_without_experimental_feature() {
+    fn rejects_removed_memory_limit() {
         let source = format!("{MINIMAL_CONFIGURATION}max_memory_bytes = 1024\n");
 
         let error = toml::from_str::<ProxyFileConfiguration>(&source)
@@ -366,8 +337,6 @@ backend_addr = "127.0.0.1:8080"
         assert_eq!(startup.max_connections, 64);
         assert_eq!(startup.max_in_flight_requests, 32);
         assert_eq!(startup.max_connections_per_peer, 16);
-        #[cfg(feature = "experimental-memory")]
-        assert_eq!(startup.max_memory_bytes, 128 * 1024 * 1024);
         assert_eq!(startup.max_request_body_bytes, 1024 * 1024);
     }
 

@@ -15,8 +15,6 @@ pub mod telemetry;
 pub use error::{BoxError, NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
 pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
-#[cfg(feature = "experimental-memory")]
-pub use limits::{NacelleMemoryAllocation, NacelleMemoryBudget};
 pub use peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };

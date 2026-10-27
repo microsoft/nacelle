@@ -19,7 +19,6 @@ Stable enough for prototype integrations:
 
 Experimental:
 
-- runtime memory accounting behind `experimental-memory`
 - Linux thread-per-core execution behind `experimental-thread-per-core`
 - plaintext/OpenSSL detection behind `experimental-openssl-detection`
 - stress tooling config

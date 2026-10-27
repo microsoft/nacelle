@@ -14,7 +14,6 @@ categories = ["asynchronous", "network-programming"]
 
 [features]
 default = ["tls-self-signed", "mimalloc-allocator"]
-experimental-memory = ["nacelle/experimental-memory"]
 rustls = ["nacelle/rustls", "dep:tokio-rustls"]
 tls-self-signed = ["rustls", "nacelle/tls-self-signed"]
 phase-timing = ["nacelle/phase-timing"]

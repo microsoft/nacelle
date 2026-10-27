@@ -74,7 +74,7 @@ function Get-NacellePerformanceBenchmarks {
     if (Test-Path (Join-Path $Workspace "examples/nacelle-examples/benches/critical_paths.rs")) {
         $available += [pscustomobject]@{
             Name      = "critical-paths"
-            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp experimental-memory")
+            Arguments = @("bench", "-p", "nacelle-examples", "--bench", "critical_paths", "--features", "bench tcp")
         }
     }
     elseif (Test-Path (Join-Path $Workspace "nacelle/benches/critical_paths.rs")) {
@@ -87,7 +87,7 @@ function Get-NacellePerformanceBenchmarks {
     if (Test-Path (Join-Path $Workspace "nacelle-tcp/benches/telemetry_paths.rs")) {
         $available += [pscustomobject]@{
             Name      = "telemetry"
-            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--features", "buffer-rotation experimental-memory phase-timing rustls tls-self-signed")
+            Arguments = @("bench", "-p", "nacelle-tcp", "--bench", "telemetry_paths", "--features", "buffer-rotation phase-timing rustls tls-self-signed")
         }
     }
 

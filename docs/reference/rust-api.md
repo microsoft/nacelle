@@ -3,7 +3,7 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
@@ -57,14 +57,14 @@ they do not change request semantics.
   handlers are task failures and may trigger host/app supervision; panic-abort
   builds terminate instead of unwinding.
 - **Limits:** `NacelleRuntimeState` supplies process-wide connection, per-peer,
-  request, streaming-task, body-size, and optional memory limits. TCP and HTTP
+  request, streaming-task, and body-size limits. TCP and HTTP
   server configurations add transport timeouts, frame/header policy, and edge
   limits. Listener overloads do not bypass these limits. Functions whose names
   contain `without_connection_limit` are advanced direct-I/O building blocks
   and require the caller to hold the connection permit.
 - **Features:** plain TCP and Unix serving require `tcp`; HTTP/1 requires
   `http`; Rustls listeners require `rustls`; required OpenSSL listeners require
-  `openssl`. `experimental-openssl-detection`, `experimental-memory`, and
+  `openssl`. `experimental-openssl-detection` and
   `experimental-thread-per-core` remain outside the supported `0.3` contract.
   Unix-domain listeners are available only on Unix targets.
 
@@ -120,16 +120,13 @@ Start with these public entry points:
   runtime builder instead.
 - `nacelle::runtime::ThreadPerCoreLimits::Global` for exact process-wide counters, or
   `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
-  mode enforces one shared hard memory ceiling across all workers when
-  `experimental-memory` is enabled.
+  mode keeps those counters worker-local.
 - `nacelle::runtime::WorkerContext::offload_blocking(...)` for explicit blocking work whose
   completion is awaited back on the originating local worker.
 - `nacelle::tcp::Protocol` for TCP wire-format adapters.
 - `nacelle::tcp::{TcpServer, LocalTcpServer}` for `Arc`-backed connection
   state, or `SerialTcpServer` / `LocalSerialTcpServer` for exclusive mutable
   state lent to one serial handler at a time.
-- With `experimental-memory`, `nacelle::tcp::TcpStreamingBodyMemoryPolicy` to
-  retain declared-length admission or account only live streaming chunks.
 - `NacelleApp` and `NacelleHost` serial listener methods for plain TCP,
   required OpenSSL, optional OpenSSL, and Unix sockets. Optional plaintext/
   OpenSSL methods require `experimental-openssl-detection`, which implies the
@@ -155,11 +152,6 @@ Start with these public entry points:
   The reason enums are non-exhaustive and their `as_str()` methods expose stable
   low-cardinality labels. Use `Other(&'static str)` only for application-owned
   static reason vocabularies.
-- With `experimental-memory`,
-  `nacelle::core::{NacelleMemoryBudget, NacelleMemoryAllocation}` and
-  `NacelleRuntimeState::memory_budget()` for shared application/transport
-  memory budget allocations. Owned allocation guards can release retained
-  capacity with `NacelleMemoryAllocation::shrink_to(...)`.
 - `nacelle::tcp::TcpServer`, `nacelle::http::HyperServer`, `nacelle::runtime::NacelleHost`, and
   `nacelle::advanced::runtime` when a service needs lower-level listener control.
 

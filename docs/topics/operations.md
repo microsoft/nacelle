@@ -56,7 +56,6 @@ Expected shutdown telemetry:
 - `server.connection.active`
 - `server.request.active`
 - `server.streaming_task.active`
-- `server.memory.usage`
 - `server.connection.accepted`
 - `server.connection.closed`
 - `server.request.started`
@@ -169,7 +168,6 @@ rather than embedded in the metric name:
 | `server.connection.active` | Gauge | Current active connections. Listener-labeled series provide transport-level detail; unlabeled series represent runtime permit usage. |
 | `server.request.active` | Gauge | Current active requests. Protocol-labeled series provide request-level detail; unlabeled series represent runtime permit usage. |
 | `server.streaming_task.active` | Gauge | Current runtime streaming body tasks. |
-| `server.memory.usage` | Gauge (`By`) | Current bytes allocated by runtime memory accounting; emitted only with `experimental-memory`. |
 | `server.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
 | `server.connection.closed` | Counter | Closed connections, labeled with close reason where available. |
 | `server.connection.rejected` | Counter | Connections rejected before acceptance. |
@@ -186,5 +184,5 @@ rather than embedded in the metric name:
 Run microbenchmarks before and after hot-path changes:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```

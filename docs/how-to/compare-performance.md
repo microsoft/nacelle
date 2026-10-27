@@ -30,27 +30,27 @@ that context is not a comparable baseline.
 Suggested local benchmark:
 
 ```bash
-cargo bench -p nacelle-examples --features "bench tcp experimental-memory"
+cargo bench -p nacelle-examples --features "bench tcp"
 ```
 
 For the codec/TCP integration specifically, run both Criterion targets:
 
 ```bash
 cargo bench -p nacelle-codec --bench framed_comparison --all-features
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp experimental-memory"
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp"
 ```
 
 The telemetry group can be run independently:
 
 ```bash
-cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp experimental-memory" -- telemetry --noplot
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- telemetry --noplot
 ```
 
 The TCP crate also measures one complete connection plus one request through the
 metrics facade, with independent phase-timing coverage:
 
 ```bash
-cargo bench -p nacelle-tcp --bench telemetry_paths --features "buffer-rotation experimental-memory phase-timing rustls tls-self-signed" -- --noplot
+cargo bench -p nacelle-tcp --bench telemetry_paths --features "buffer-rotation phase-timing rustls tls-self-signed" -- --noplot
 ```
 
 Response delivery policies have a separate end-to-end benchmark:
@@ -361,9 +361,8 @@ Both builds used the same WSL2 host/toolchain and all TCP features:
 The optimized path did not construct `NacelleMetricsContext` or metric attribute
 arrays when metrics are disabled, and request/phase mode checks are cached in a
 copyable per-connection plan. Connection/request permits remain active because
-they enforce runtime limits and expose operational state. Memory accounting
-also remains active when the benchmark includes `experimental-memory`;
-disabling telemetry does not disable either safety policy.
+they enforce runtime limits and expose operational state. Disabling telemetry
+does not disable those safety policies.
 
 On the same local WSL2 host, 64 already-buffered one-byte requests producing
 32-byte responses measured. The first two rows use a 2 KiB base response
@@ -400,7 +399,7 @@ base connection allocation and do not exercise overflow growth.
 Run them with:
 
 ```bash
-cargo bench -p nacelle-tcp --bench response_delivery --features "buffer-rotation experimental-memory phase-timing rustls tls-self-signed"
+cargo bench -p nacelle-tcp --bench response_delivery --features "buffer-rotation phase-timing rustls tls-self-signed"
 ```
 
 A local confidence run based on commit `9be59a0` with a modified worktree used
@@ -455,14 +454,12 @@ separately:
 
 ```bash
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml
-./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp-low-memory.toml
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp-tls.toml
 ```
 
 The `examples/run-stress-test.sh` and `examples/run-stress-test.ps1` helpers
 apply root `config.toml` first, then the selected profile, and choose the
-matching client mode automatically. They also enable `experimental-memory`
-when either effective config contains `max_memory_bytes`.
+matching client mode automatically.
 
 Guardrails:
 

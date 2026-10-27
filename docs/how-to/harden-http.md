@@ -78,11 +78,9 @@ Internal handler errors return a generic `500` response. Construct a sanitized
 `HttpResponse` explicitly for client-facing application errors. Protect
 server-side diagnostics and avoid secrets in query strings logged by access logs.
 
-With `experimental-memory`, unknown-length/chunked bodies are charged per chunk
-before delivery to the handler; retained `Bytes` clones keep those charges.
-Allow enough budget for handlers that aggregate entire bodies, and leave separate
-headroom for Hyper read-ahead and TLS/socket buffers. See
-[runtime limits](../topics/runtime-limits.md) for accounting and wait behavior.
+Allow enough memory for handlers that aggregate entire bodies, and leave
+separate headroom for Hyper read-ahead and TLS/socket buffers. See [runtime
+limits](../topics/runtime-limits.md) for sizing guidance.
 
 For internet-facing deployments, a reverse proxy or load balancer can still own coarse traffic filtering and certificate automation. Nacelle now also enforces application-level body, request, connection, per-peer connection/request/connection-open-rate, timeout, TLS handshake, security header, and optional Host/header/method/URI limits in-process.
 

@@ -17,11 +17,8 @@ use crate::policy::{NacelleHttpPolicy, apply_security_headers};
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleBody;
-#[cfg(feature = "experimental-memory")]
-use nacelle_core::request::TrackedBodySender as RequestBodySender;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
 
-#[cfg(not(feature = "experimental-memory"))]
 type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 
 pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
@@ -40,9 +37,6 @@ where
     let (tx, body) = if incoming_body_is_empty(body_len_hint) {
         (None, NacelleBody::empty())
     } else {
-        #[cfg(feature = "experimental-memory")]
-        let (tx, body) = NacelleBody::tracked_channel(8, body_len_hint.unwrap_or_default());
-        #[cfg(not(feature = "experimental-memory"))]
         let (tx, body) = NacelleBody::channel_with_remaining(8, body_len_hint.unwrap_or_default());
         (Some(tx), body)
     };
@@ -75,8 +69,6 @@ async fn pump_incoming_body<Observer>(
 ) where
     Observer: NacelleTelemetryObserver,
 {
-    #[cfg(feature = "experimental-memory")]
-    let mut tx = tx;
     if let Some(body_len_hint) = body_len_hint
         && body_len_hint > runtime_state.limits().max_request_body_bytes
     {
@@ -86,23 +78,6 @@ async fn pump_incoming_body<Observer>(
             )))
             .await;
         return;
-    }
-    #[cfg(feature = "experimental-memory")]
-    if let Some(bytes) = body_len_hint {
-        match runtime_state
-            .allocate_memory_with_timeout(bytes, runtime_state.limits().memory_allocation_timeout)
-            .await
-        {
-            Ok(allocation) => {
-                if tx.send_memory_allocation(allocation).await.is_err() {
-                    return;
-                }
-            }
-            Err(error) => {
-                let _ = tx.send(Err(error)).await;
-                return;
-            }
-        }
     }
     let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
         Ok(permit) => permit,
@@ -157,24 +132,6 @@ async fn pump_incoming_body<Observer>(
                     body_bytes = next;
                     request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
                     let data = data.clone();
-                    #[cfg(feature = "experimental-memory")]
-                    let data = if body_len_hint.is_none() {
-                        match runtime_state
-                            .allocate_memory_with_timeout(
-                                data.len(),
-                                runtime_state.limits().memory_allocation_timeout,
-                            )
-                            .await
-                        {
-                            Ok(allocation) => NacelleBody::accounted_chunk(data, allocation),
-                            Err(error) => {
-                                let _ = tx.send(Err(error)).await;
-                                break;
-                            }
-                        }
-                    } else {
-                        data
-                    };
                     if tx.send(Ok(data)).await.is_err() {
                         break;
                     }

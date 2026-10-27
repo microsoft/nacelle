@@ -113,9 +113,7 @@ does not configure the caller-owned shared Tokio runtime.
 
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
-request, streaming, and per-peer capacities in configured worker order while
-retaining a single shared FIFO hard memory ceiling when `experimental-memory`
-is enabled.
+request, streaming, and per-peer capacities in configured worker order.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
 must not scale with worker count. `LocalTcpRuntimeConfig::with_state(...)` and
@@ -130,9 +128,7 @@ shared lifecycle/limit enforcement in core.
 ## Runtime State
 
 `NacelleRuntimeState` owns shared budgets and counters. Connection, request, and
-streaming-task limits are non-blocking atomic bounded counters. With the
-non-default `experimental-memory` feature, memory uses a checked allocation
-guard that releases on drop.
+streaming-task limits are non-blocking atomic bounded counters.
 
 This keeps the common request path allocation-light while still enforcing
 bounded defaults.
@@ -145,18 +141,10 @@ bounded defaults.
 - buffered chunks for decoded TCP bodies already in memory
 - streaming channel for request/response bodies that move asynchronously
 
-With `experimental-memory`, TCP streaming request bodies reserve their declared
-length by default. Set
-`TcpStreamingBodyMemoryPolicy::LiveChunks` to reserve each chunk before it is
-detached from read-ahead or allocated for a socket read. The charge then follows
-the chunk through the body channel and any application-owned `Bytes` clones.
-HTTP request bodies reserve `Content-Length` when Hyper exposes a bounded size hint.
-Unknown-length HTTP bodies instead charge each data chunk before handler delivery,
-with ownership-bound guards retaining the charge through application clones.
 TCP protocols can override `Protocol::max_request_body_bytes(...)` to choose a
 phase-aware body limit from the decoded head, immutable connection metadata,
 and concrete connection state immediately after head decoding and before
-body-specific allocation or additional body reads.
+additional body reads.
 
 ## Shutdown
 
@@ -177,10 +165,8 @@ Telemetry is deliberately low-cardinality. Reasons are static strings such as
 `connections`, `request_body_bytes`, or `http_body_read`.
 
 Nacelle emits through the backend-neutral `metrics` facade and does not own an
-exporter. With `experimental-memory`, runtime state and shared memory budgets
-cache a memory gauge handle and update it at existing acquire/release
-transitions. `NacelleTelemetry` owns lifecycle,
-request, phase, error, and byte metrics for all transports. Transports that can
+exporter. `NacelleTelemetry` owns lifecycle, request, phase, error, and byte
+metrics for all transports. Transports that can
 provide extra low-cardinality detail attach a `NacelleMetricsContext` with
 listener, protocol, transport, and TLS labels. Applications must install their
 recorder before constructing these values so cached handles bind to it; without
