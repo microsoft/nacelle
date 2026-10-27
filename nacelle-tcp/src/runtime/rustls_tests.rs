@@ -101,7 +101,7 @@ async fn tcp_tls_self_signed_server_accepts_request() {
     let generated =
         nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed tls");
     let certificate = nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-        .expect("certificate should parse")
+        .unwrap_or_else(|_| panic!("certificate should parse"))
         .remove(0);
     let mut roots = rustls::RootCertStore::empty();
     roots.add(certificate).expect("root cert should add");
