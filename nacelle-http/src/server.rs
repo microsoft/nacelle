@@ -1652,7 +1652,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tls-self-signed")]
+    #[cfg(all(feature = "tls-self-signed", panic = "unwind"))]
     #[test]
     fn test_certificate_failure_does_not_include_parser_details() {
         for pem in [
@@ -1664,8 +1664,12 @@ mod tests {
                 Err(payload) => payload,
                 Ok(_) => panic!("invalid test certificate should fail"),
             };
+            let message = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
             assert!(
-                payload.downcast_ref::<&str>() == Some(&"test certificate should parse"),
+                message == Some("test certificate should parse"),
                 "certificate failure must contain only the fixed diagnostic"
             );
         }
