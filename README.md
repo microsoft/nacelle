@@ -122,6 +122,10 @@ cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
 
+The HTTPS echo example logs a certificate-generation status message, not the
+certificate PEM. For a local-only smoke test, use `curl --insecure` against its
+HTTPS address; do not disable certificate verification in production.
+
 The TCP `echo` example echoes opcode `1`, drains opcode `2` and completes
 silently, and returns a protocol-encoded error for unknown opcodes. This is
 example-specific application policy, not a rule imposed by the reference

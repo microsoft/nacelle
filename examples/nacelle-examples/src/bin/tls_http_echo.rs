@@ -17,7 +17,7 @@ async fn main() -> Result<(), NacelleError> {
     let generated = NacelleTlsConfig::self_signed(["localhost", "127.0.0.1"])
         .map_err(NacelleError::protocol)?;
     println!("nacelle HTTPS echo server listening on {addr}");
-    println!("self-signed certificate:\n{}", generated.certificate_pem);
+    println!("self-signed certificate generated for local testing");
 
     let server = HyperServer::new(handler_fn(
         |mut context: HttpRequestContext<()>| async move {
