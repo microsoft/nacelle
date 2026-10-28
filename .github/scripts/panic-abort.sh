@@ -6,5 +6,7 @@ rustup toolchain install "${toolchain}" --component miri
 cargo +"${toolchain}" miri setup
 
 set -ex
+# Rustdoc builds doctests separately and must use the same panic strategy.
 RUSTUP_TOOLCHAIN="${toolchain}" RUSTFLAGS="$RUSTFLAGS -Cpanic=abort -Zpanic-abort-tests" \
+	RUSTDOCFLAGS="$RUSTDOCFLAGS -Cpanic=abort -Zpanic-abort-tests" \
 	.github/scripts/check-feature-matrix.sh test
