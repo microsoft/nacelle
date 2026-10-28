@@ -9,8 +9,6 @@ pub mod runtime;
 mod serial_server;
 pub mod server;
 
-#[cfg(feature = "experimental-memory")]
-pub use config::TcpStreamingBodyMemoryPolicy;
 pub use config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 pub use connection::{serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;

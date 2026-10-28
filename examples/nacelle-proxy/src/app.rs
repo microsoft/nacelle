@@ -106,8 +106,6 @@ impl ProxyApp {
             .with_max_request_body_bytes(startup.max_request_body_bytes)
             .with_max_response_body_bytes(startup.max_response_body_bytes)
             .with_handler_timeout(startup.handler_timeout);
-        #[cfg(feature = "experimental-memory")]
-        let limits = limits.with_max_memory_bytes(startup.max_memory_bytes);
         let app = NacelleApp::new()
             .with_limits(limits)
             .with_shutdown(shutdown.clone())

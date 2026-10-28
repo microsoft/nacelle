@@ -208,8 +208,6 @@ struct StressMetricsConsole {
     active_connection_delta: i64,
     active_requests: i64,
     active_streaming_tasks: i64,
-    #[cfg(feature = "experimental-memory")]
-    memory_used_bytes: i64,
 }
 
 impl StressMetricsConsole {
@@ -226,8 +224,6 @@ impl StressMetricsConsole {
             active_connection_delta: 0,
             active_requests: 0,
             active_streaming_tasks: 0,
-            #[cfg(feature = "experimental-memory")]
-            memory_used_bytes: 0,
         })
     }
 }
@@ -238,8 +234,6 @@ struct StressMetricsSnapshot {
     active_connection_delta: i64,
     active_requests: u64,
     active_streaming_tasks: u64,
-    #[cfg(feature = "experimental-memory")]
-    memory_used_bytes: u64,
     accepted_connections: u64,
     closed_connections: u64,
     started_requests: u64,
@@ -320,10 +314,6 @@ impl StressMetricsConsole {
                             self.active_streaming_tasks =
                                 self.active_streaming_tasks.saturating_add(delta);
                         }
-                        #[cfg(feature = "experimental-memory")]
-                        "server.memory.usage" => {
-                            self.memory_used_bytes = self.memory_used_bytes.saturating_add(delta);
-                        }
                         _ => {}
                     }
                 }
@@ -362,10 +352,6 @@ impl StressMetricsConsole {
         snapshot.active_connection_delta = self.active_connection_delta;
         snapshot.active_requests = self.active_requests.max(0) as u64;
         snapshot.active_streaming_tasks = self.active_streaming_tasks.max(0) as u64;
-        #[cfg(feature = "experimental-memory")]
-        {
-            snapshot.memory_used_bytes = self.memory_used_bytes.max(0) as u64;
-        }
         snapshot
     }
 }
@@ -436,13 +422,6 @@ fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressB
     } else {
         println!("  bytes        byte_metrics=off");
     }
-    #[cfg(feature = "experimental-memory")]
-    println!(
-        "  runtime      streaming_tasks_active={} memory_used={}",
-        snapshot.active_streaming_tasks,
-        format_bytes(snapshot.memory_used_bytes),
-    );
-    #[cfg(not(feature = "experimental-memory"))]
     println!(
         "  runtime      streaming_tasks_active={}",
         snapshot.active_streaming_tasks,

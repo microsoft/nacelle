@@ -5,8 +5,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
-#[cfg(feature = "experimental-memory")]
-use crate::config::TcpStreamingBodyMemoryPolicy;
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
@@ -240,14 +238,8 @@ where
     }
 }
 
-fn use_buffered_body(config: &NacelleTcpConfig, body_len: usize, buffered_len: usize) -> bool {
-    if body_len > buffered_len || config.request_body_mode == TcpRequestBodyMode::Buffered {
-        return body_len <= buffered_len;
-    }
-    #[cfg(feature = "experimental-memory")]
-    return config.streaming_body_memory_policy == TcpStreamingBodyMemoryPolicy::DeclaredLength;
-    #[cfg(not(feature = "experimental-memory"))]
-    true
+fn use_buffered_body(body_len: usize, buffered_len: usize) -> bool {
+    body_len <= buffered_len
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -306,7 +298,7 @@ where
                 return Err(error);
             }
         });
-        let use_buffered_body = use_buffered_body(config, decoded.body_len, read_buf.len());
+        let use_buffered_body = use_buffered_body(decoded.body_len, read_buf.len());
         if use_buffered_body {
             let body_started = start_tcp_phase(telemetry_plan.phase_duration);
             let body =
@@ -335,7 +327,6 @@ where
                 reader,
                 read_buf,
                 decoded.body_len,
-                runtime_state,
                 tcp_limits,
             )
             .await
@@ -372,24 +363,6 @@ where
                     .inspect_err(|error| {
                         record_tcp_error(telemetry, metrics_context, "streaming_task", error)
                     })?;
-            #[cfg(feature = "experimental-memory")]
-            let _streaming_body_allocation = if config.streaming_body_memory_policy
-                == TcpStreamingBodyMemoryPolicy::DeclaredLength
-            {
-                Some(
-                    runtime_state
-                        .allocate_memory_with_timeout(
-                            decoded.body_len,
-                            runtime_state.limits().memory_allocation_timeout,
-                        )
-                        .await
-                        .inspect_err(|error| {
-                            record_tcp_error(telemetry, metrics_context, "streaming_memory", error)
-                        })?,
-                )
-            } else {
-                None
-            };
             let (body_tx, body_rx) = mpsc::channel(config.request_body_channel_capacity);
             let body = NacelleBody::new(body_rx, decoded.body_len);
             let handler_future = execute_handler_with_metrics(
@@ -409,7 +382,6 @@ where
                 decoded.body_len,
                 body_tx,
                 config,
-                runtime_state,
                 tcp_limits,
             );
             tokio::pin!(handler_future);

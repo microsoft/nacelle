@@ -154,8 +154,6 @@ fn assert_released(runtime_state: &NacelleRuntimeState) {
     assert_eq!(runtime_state.active_connections(), 0);
     assert_eq!(runtime_state.active_requests(), 0);
     assert_eq!(runtime_state.active_streaming_tasks(), 0);
-    #[cfg(feature = "experimental-memory")]
-    assert_eq!(runtime_state.memory_used_bytes(), 0);
 }
 
 async fn exchange<H>(
@@ -523,15 +521,8 @@ async fn explicit_none_error_response_closes_without_encoding_any_bytes() {
 }
 
 async fn late_body_failure_after_silent_completion(close_request: bool) {
-    let configs = [
-        NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Streaming),
-        #[cfg(feature = "experimental-memory")]
-        NacelleTcpConfig::default()
-            .with_request_body_mode(TcpRequestBodyMode::Streaming)
-            .with_streaming_body_memory_policy(
-                crate::config::TcpStreamingBodyMemoryPolicy::LiveChunks,
-            ),
-    ];
+    let configs =
+        [NacelleTcpConfig::default().with_request_body_mode(TcpRequestBodyMode::Streaming)];
     for config in configs {
         let protocol = CustomProtocol::default();
         let runtime_state = NacelleRuntimeState::default();
@@ -646,74 +637,6 @@ async fn streaming_admission_failure_encodes_error_before_handler_dispatch() {
             .acquire_streaming_task()
             .expect("streaming capacity should recover"),
     );
-}
-
-#[cfg(feature = "experimental-memory")]
-#[tokio::test(start_paused = true)]
-async fn request_memory_pressure_encodes_error_and_releases_all_allocations() {
-    use crate::config::TcpStreamingBodyMemoryPolicy;
-
-    for (mode, memory_policy, handler_runs) in [
-        (
-            TcpRequestBodyMode::Buffered,
-            TcpStreamingBodyMemoryPolicy::DeclaredLength,
-            false,
-        ),
-        (
-            TcpRequestBodyMode::Streaming,
-            TcpStreamingBodyMemoryPolicy::DeclaredLength,
-            false,
-        ),
-        (
-            TcpRequestBodyMode::Streaming,
-            TcpStreamingBodyMemoryPolicy::LiveChunks,
-            true,
-        ),
-    ] {
-        let protocol = CustomProtocol::default();
-        let config = NacelleTcpConfig::default()
-            .with_read_buffer_capacity(1024)
-            .with_response_buffer_capacity(1024)
-            .with_request_body_mode(mode)
-            .with_streaming_body_memory_policy(memory_policy);
-        let runtime_state = NacelleRuntimeState::new(
-            NacelleLimits::default()
-                .with_max_memory_bytes(
-                    config.read_buffer_capacity + config.response_buffer_capacity,
-                )
-                .with_memory_allocation_timeout(Duration::from_millis(20)),
-        );
-        let called = Arc::new(AtomicBool::new(false));
-        let (result, wire) = exchange(
-            protocol.clone(),
-            handler_fn({
-                let called = called.clone();
-                move |context: TcpRequestContext<CustomProtocol>| {
-                    let called = called.clone();
-                    async move {
-                        let completion = context.complete();
-                        called.store(true, Ordering::SeqCst);
-                        Ok(completion)
-                    }
-                }
-            }),
-            b"A\x02",
-            config,
-            NacelleTcpLimits::default(),
-            runtime_state.clone(),
-        )
-        .await;
-
-        assert!(matches!(
-            result,
-            Err(NacelleError::Timeout(
-                NacelleTimeoutReason::MemoryAllocation
-            ))
-        ));
-        assert_eq!(called.load(Ordering::SeqCst), handler_runs);
-        assert_error_wire(&protocol, Some(b'A'), &wire, b"[Acustom:memory_allocation]");
-        assert_released(&runtime_state);
-    }
 }
 
 #[tokio::test]

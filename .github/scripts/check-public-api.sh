@@ -36,6 +36,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
+check_core_removals() {
+    local report="$1"
+    awk '
+        NR == 1 && $0 != "Removed items from the public API" {
+            print "unexpected public API report header: " $0 > "/dev/stderr"
+            invalid = 1
+            exit
+        }
+        /^Changed items in the public API$/ { found_changed = 1; exit }
+        /^-pub nacelle_core::(error::)?(NacelleResourceLimitReason::(MemoryBytes|MemoryLimitMismatch)|NacelleTimeoutReason::MemoryAllocation)$/ {
+            next
+        }
+        NR == 1 || /^=+$/ || /^$/ || /^\(none\)$/ { next }
+        {
+            print "unaccepted public API removal: " $0 > "/dev/stderr"
+            invalid = 1
+        }
+        END {
+            if (!found_changed) {
+                print "incomplete public API removal report" > "/dev/stderr"
+                invalid = 1
+            }
+            exit invalid
+        }
+    ' "$report"
+}
+
 compare() {
     local artifact="$1"
     local package="$2"
@@ -53,23 +80,29 @@ compare() {
         diff "${baseline_commit}..${candidate_commit}"
         --color never
         --deny changed
-        --deny removed
     )
+    # These three experimental-memory variants were exposed without a feature gate.
+    if [[ "$package" != "nacelle-core" ]]; then
+        args+=(--deny removed)
+    fi
 
     echo "==> $artifact"
     cargo "${args[@]}" > "$output_directory/$artifact.diff"
+    if [[ "$package" == "nacelle-core" ]]; then
+        check_core_removals "$output_directory/$artifact.diff"
+    fi
 }
 
 compare nacelle-codec nacelle-codec true ""
-compare nacelle-core-rustls nacelle-core false "error-hints,experimental-memory,phase-timing,rustls"
-compare nacelle-core-openssl nacelle-core false "error-hints,experimental-memory,openssl,phase-timing"
+compare nacelle-core-rustls nacelle-core false "error-hints,phase-timing,rustls"
+compare nacelle-core-openssl nacelle-core false "error-hints,openssl,phase-timing"
 compare nacelle-openssl nacelle-openssl true "vendored"
 compare nacelle-rustls nacelle-rustls true "self-signed"
-compare nacelle-tcp-rustls nacelle-tcp false "buffer-rotation,experimental-memory,phase-timing,rustls,tls-self-signed"
-compare nacelle-tcp-openssl nacelle-tcp false "buffer-rotation,experimental-memory,experimental-openssl-detection,openssl,phase-timing"
-compare nacelle-http nacelle-http true "experimental-memory,tls-self-signed"
-compare nacelle-rustls-facade nacelle false "buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed"
-compare nacelle-openssl-facade nacelle false "buffer-rotation,error-hints,experimental-memory,experimental-openssl-detection,experimental-thread-per-core,http,openssl,phase-timing,tcp"
+compare nacelle-tcp-rustls nacelle-tcp false "buffer-rotation,phase-timing,rustls,tls-self-signed"
+compare nacelle-tcp-openssl nacelle-tcp false "buffer-rotation,experimental-openssl-detection,openssl,phase-timing"
+compare nacelle-http nacelle-http true "tls-self-signed"
+compare nacelle-rustls-facade nacelle false "buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed"
+compare nacelle-openssl-facade nacelle false "buffer-rotation,error-hints,experimental-openssl-detection,experimental-thread-per-core,http,openssl,phase-timing,tcp"
 
 if [[ "$(git rev-parse HEAD)" != "$starting_commit" ]]; then
     echo "cargo-public-api did not restore the starting commit" >&2

@@ -54,8 +54,6 @@ mod response;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "experimental-memory")]
-use framing::allocate_connection_buffers;
 use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
 use io::shutdown_with_timeout;
@@ -219,8 +217,6 @@ where
     W: AsyncWrite + Unpin,
 {
     telemetry.register_runtime_state(runtime_state.clone());
-    #[cfg(feature = "experimental-memory")]
-    let _buffer_allocation = allocate_connection_buffers(&config, &runtime_state)?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
     let connection_info = ConnectionInfo::from(&connection);

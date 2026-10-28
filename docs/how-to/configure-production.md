@@ -4,11 +4,7 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Runtime memory accounting is
-experimental and not compiled by default. Enable `experimental-memory` and set
-`max_memory_bytes` only after measuring the limiter for your service. This
-feature is use at your own risk and may change or be removed in a future minor
-release.
+and transport timeouts are bounded by default.
 
 `NacelleLimits::without_max_connections()` disables the process-wide connection
 admission ceiling. Active connections are still counted for telemetry, and any
@@ -30,7 +26,7 @@ Recommended presets:
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
 
-Experimental memory budget:
+Memory sizing:
 
 This sizing formula requires a finite effective connection ceiling. Use the
 configured `max_connections` when it is nonzero. When `max_connections` is the
@@ -47,16 +43,9 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-The APIs in this section require the non-default `experimental-memory` feature.
-Set `NacelleLimits::with_max_memory_bytes(...)` when you want Nacelle to enforce
-the calculated budget. Without the feature, Nacelle still enforces
-connection/request/body limits and transport-owned timeouts but leaves memory
-governance to the application, runtime, process supervisor, or container.
-When the memory budget is full, request body allocations wait in FIFO order and
-time out after `NacelleLimits::memory_allocation_timeout` (`5s` by default).
-Tune this with `with_memory_allocation_timeout(...)`, or call
-`NacelleRuntimeState::memory_budget()` when application code needs to allocate from
-the same budget as the transports.
+Nacelle leaves memory governance to the application, runtime, process
+supervisor, or container. Use the calculated budget to select those external
+limits and to tune connection, body, and concurrency limits together.
 
 TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
 
@@ -80,11 +69,8 @@ IPv6-only mode for APIs that need explicit family behavior.
 bursts. Coalescing preserves complete-frame order and flushes before waiting for
 more socket input; streaming responses flush before awaiting the next body
 chunk. Larger thresholds can delay earlier responses until a threshold or batch
-boundary and apply the write timeout to the complete queued batch. Growth above
-`response_buffer_capacity` is memory-accounted transactionally with
-`experimental-memory`: the budget must temporarily cover both the current batch
-allocation and its complete replacement. Size the base buffer near a measured
-batch size when using larger thresholds.
+boundary and apply the write timeout to the complete queued batch. Size the base
+buffer near a measured batch size when using larger thresholds.
 
 Use `NacelleTcpLimits` for TCP socket read, socket write, final writer shutdown,
 and idle timeouts. `idle_timeout` (120 seconds by default) bounds waiting for the

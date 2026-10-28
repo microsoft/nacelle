@@ -19,7 +19,7 @@ pub struct DecodedRequest<Req> {
     pub body_len: usize,
 }
 
-/// Bounded response-frame encoder backed by runtime-accounted storage.
+/// Bounded response-frame encoder over borrowed [`BytesMut`] storage.
 pub struct FrameBuffer<'buffer> {
     inner: &'buffer mut BytesMut,
     start_len: usize,

@@ -7,11 +7,7 @@ use std::task::{Context, Poll};
 #[cfg(feature = "phase-timing")]
 use tokio::io::{AsyncRead, ReadBuf};
 
-#[cfg(feature = "experimental-memory")]
-use crate::config::NacelleTcpConfig;
 use nacelle_core::error::NacelleError;
-#[cfg(feature = "experimental-memory")]
-use nacelle_core::limits::{NacelleMemoryAllocation, NacelleRuntimeState};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::metrics::{finish_tcp_phase, start_tcp_phase};
@@ -77,17 +73,6 @@ where
         }
         result
     }
-}
-
-#[cfg(feature = "experimental-memory")]
-pub(super) fn allocate_connection_buffers(
-    config: &NacelleTcpConfig,
-    runtime_state: &NacelleRuntimeState,
-) -> Result<NacelleMemoryAllocation, NacelleError> {
-    let bytes = config
-        .read_buffer_capacity
-        .saturating_add(config.response_buffer_capacity);
-    runtime_state.allocate_memory(bytes)
 }
 
 pub(super) struct InstrumentedDecoder<'a, D, Observer: NacelleTelemetryObserver> {

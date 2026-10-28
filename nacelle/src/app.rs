@@ -48,8 +48,8 @@ type ListenerInstaller<Observer, AppState> =
 ///   listeners stop accepting, drain active connections for the configured
 ///   timeout, and then abort remaining connection tasks. Dropping the `run`
 ///   future cancels supervision without guaranteeing that drain sequence.
-/// - Process-wide connection, per-peer, request, streaming-task, body-size,
-///   and optional memory limits come from [`NacelleRuntimeState`]. Concrete TCP
+/// - Process-wide connection, per-peer, request, streaming-task, and body-size
+///   limits come from [`NacelleRuntimeState`]. Concrete TCP
 ///   and HTTP servers retain their transport limits and policy.
 /// - Plain TCP and Unix listeners require `tcp`; HTTP/1 requires `http`;
 ///   Rustls listeners require `rustls`; and OpenSSL listeners require

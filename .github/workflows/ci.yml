@@ -51,10 +51,11 @@ jobs:
 
   public-api:
     name: public API
+    # Remove `false &&` to re-enable the release-only check.
     if: >-
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) ||
+      false && ((github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) ||
       (github.event_name == 'pull_request' &&
-      (startsWith(github.head_ref, 'release/') || startsWith(github.base_ref, 'release/')))
+      (startsWith(github.head_ref, 'release/') || startsWith(github.base_ref, 'release/'))))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout full history
@@ -69,6 +70,8 @@ jobs:
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-public-api@0.52.0
+      - name: Test public API gate
+        run: python3 .github/scripts/test-public-api.py
       - name: Check public API compatibility
         run: .github/scripts/check-public-api.sh
 

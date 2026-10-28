@@ -31,8 +31,8 @@ integrations, but the public API is still allowed to change before `1.0`.
 The typed pipeline contracts, runtime limits, host/app builders, and telemetry
 observer contract are the most stable parts of the API. Transport metadata and
 listener options are retained as non-exhaustive APIs. Stress-tool configuration,
-experimental OpenSSL detection, experimental memory accounting, and
-experimental thread-per-core execution are still moving.
+experimental OpenSSL detection, and experimental thread-per-core execution are
+still moving.
 
 Authentication and compression are not implemented in Nacelle. Keep those in
 your application, protocol layer, or edge proxy.
@@ -106,12 +106,6 @@ cargo run -p nacelle-examples --bin app_core -- 127.0.0.1:8080 127.0.0.1:8081
 # HTTP echo
 cargo run -p nacelle-examples --no-default-features --features http --bin http_echo -- 127.0.0.1:8080
 
-# HTTP memory budget guard demo
-cargo run -p nacelle-examples --no-default-features --features http,experimental-memory --bin memory_guard
-
-# TCP memory budget guard demo with the reference protocol
-cargo run -p nacelle-examples --features experimental-memory --bin tcp_memory_guard
-
 # HTTPS echo with an ephemeral self-signed certificate
 cargo run -p nacelle-examples --no-default-features --features http,tls-self-signed --bin tls_http_echo -- 127.0.0.1:8443
 
@@ -167,9 +161,6 @@ nacelle = { version = "0.3", features = ["http"] }
 # TCP diagnostic phase histograms; still requires runtime activation
 nacelle = { version = "0.3", features = ["phase-timing"] }
 
-# Experimental runtime memory accounting and admission
-nacelle = { version = "0.3", features = ["experimental-memory"] }
-
 # Experimental Linux thread-per-core runtime with TCP
 nacelle = { version = "0.3", features = ["tcp", "experimental-thread-per-core"] }
 
@@ -196,7 +187,6 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
-| `experimental-memory` | Compile runtime memory accounting, admission, ownership tracking, and related telemetry. Disabled by default. |
 | `experimental-thread-per-core` | Compile the explicit Linux thread-per-core runtime and worker-local listener APIs. Disabled by default. |
 | `experimental-openssl-detection` | Compile plaintext/OpenSSL detection and mixed-mode listener APIs. Implies `tcp` and `openssl`; disabled by default. |
 
@@ -269,10 +259,8 @@ proxy IPs, Host/method/URI/header limits, access logging, and per-peer caps. For
 high connection counts, tune TCP read and response buffer capacities before
 raising `max_connections`.
 
-Nacelle does not compile runtime memory accounting by default. Enable the
-non-default `experimental-memory` feature and set
-`NacelleLimits::with_max_memory_bytes(...)` only for a measured deployment or
-test profile. Keep a process or container limit as the hard memory boundary.
+Use process or container limits as the hard memory boundary. Size connection
+buffers, body limits, and concurrency limits together for the deployment.
 
 Self-signed certificates are intended for local tests and auto-deploy flows, not
 as a public-edge certificate strategy.
@@ -351,7 +339,7 @@ mdbook build
 Generate Rust API docs:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 

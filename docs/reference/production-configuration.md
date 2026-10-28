@@ -4,11 +4,7 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Runtime memory accounting is
-experimental and not compiled by default. Enable `experimental-memory` and set
-`max_memory_bytes` only after measuring the limiter for your service. This
-feature is use at your own risk and may change or be removed in a future minor
-release.
+and transport timeouts are bounded by default.
 
 `NacelleLimits::without_max_connections()` disables the process-wide connection
 admission ceiling. Active connections are still counted for telemetry, and any
@@ -34,7 +30,7 @@ The OpenSSL PEM helper uses Mozilla's v5 intermediate profile with a TLS 1.2
 minimum. TLS 1.3 is enabled when supported by the linked OpenSSL-compatible
 library. Custom acceptors own their own protocol policy.
 
-Experimental memory budget:
+Memory sizing:
 
 This sizing formula requires a finite effective connection ceiling. Use the
 configured `max_connections` when it is nonzero. When `max_connections` is the
@@ -51,29 +47,16 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-The APIs in this section require the non-default `experimental-memory` feature.
-Set `NacelleLimits::with_max_memory_bytes(...)` when you want Nacelle to enforce
-the calculated budget. Without the feature, Nacelle still enforces
-connection/request/body limits and transport-owned timeouts but leaves memory
-governance to the application, runtime, process supervisor, or container.
-When the memory budget is full, request body allocations wait in FIFO order and
-time out after `NacelleLimits::memory_allocation_timeout` (`5s` by default).
-Tune this with `with_memory_allocation_timeout(...)`, or call
-`NacelleRuntimeState::memory_budget()` when application code needs to allocate from
-the same budget as the transports.
+Nacelle leaves memory governance to the application, runtime, process
+supervisor, or container. Use the calculated budget to select those external
+limits and to tune connection, body, and concurrency limits together.
 
-TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
-HTTP chunked bodies charge each data chunk before handler delivery, retaining
-the charge through `Bytes` clones; whole-body aggregation must fit within the
-budget. See [runtime limits](../topics/runtime-limits.md) for memory and TLS
-reload semantics.
-`NacelleTcpConfig::streaming_body_memory_policy` defaults to
-`TcpStreamingBodyMemoryPolicy::DeclaredLength`, which reserves the declared body
-length before dispatch. `LiveChunks` instead charges each streaming chunk until
-its final application-owned `Bytes` clone drops. This can admit a body larger
-than currently available budget, but retained chunks apply backpressure to later
-reads. Keep `request_body_chunk_size` within available budget and do not use
-`LiveChunks` for full-body aggregation unless the budget can hold that body.
+TCP processes requests sequentially per connection.
+`request_body_channel_capacity` controls the queued streaming chunks between
+the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's
+body queue, so leave extra headroom when enabling large request bodies. See
+[runtime limits](../topics/runtime-limits.md) for memory sizing and TLS reload
+semantics.
 
 For TCP protocols, `NacelleLimits::max_request_body_bytes` is the default body
 limit. Override
@@ -97,12 +80,7 @@ threshold is reached or crossed. Read-boundary flushes include the underlying
 `AsyncWrite`, and clean connection teardown performs a writer shutdown bounded
 by `NacelleTcpLimits::shutdown_timeout`; terminal error paths make the same
 bounded attempt. This delivers buffered TLS records and permits a TLS
-`close_notify`. Pending capacity above the connection's base response buffer
-remains charged to runtime memory until flush or failure cleanup when
-`experimental-memory` is enabled. In that mode, geometric growth is
-transactional and requires memory headroom for both the old buffer and its
-complete replacement; a growth attempt is rejected before encoding when that
-temporary allocation cannot be charged.
+`close_notify`.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
 and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for

@@ -145,7 +145,7 @@ pub struct ThreadPerCoreConfig {
 pub enum ThreadPerCoreLimits {
     /// Existing process-wide runtime state shared by workers.
     Global(NacelleRuntimeState),
-    /// Worker-local counters and, when enabled, one shared memory ceiling.
+    /// Worker-local counters.
     Worker(Vec<NacelleRuntimeState>),
 }
 
@@ -159,9 +159,7 @@ impl ThreadPerCoreLimits {
     ///
     /// Finite connection, request, streaming, and per-peer capacities are split
     /// by quotient and remainder in configured worker order. Body limits and
-    /// timeout policy remain identical on every worker. With the
-    /// `experimental-memory` feature, memory is not partitioned: all states
-    /// share one hard process-wide ceiling.
+    /// timeout policy remain identical on every worker.
     pub fn worker(limits: NacelleLimits, worker_count: usize) -> Result<Self, NacelleError> {
         if worker_count == 0 {
             return Err(NacelleError::ResourceLimit(
@@ -1294,8 +1292,6 @@ mod tests {
             .with_max_connections(5)
             .with_max_in_flight_requests(7)
             .with_max_streaming_tasks(4);
-        #[cfg(feature = "experimental-memory")]
-        let limits = limits.with_max_memory_bytes(10);
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("worker limits should build");
         let first = policy
             .state_for(Worker {
@@ -1322,22 +1318,6 @@ mod tests {
         assert_eq!(first.active_requests(), 1);
         assert_eq!(second.active_requests(), 1);
 
-        #[cfg(feature = "experimental-memory")]
-        let first_memory = {
-            let first_memory = first.allocate_memory(6).expect("first memory allocation");
-            assert!(matches!(
-                second.allocate_memory(5),
-                Err(NacelleError::ResourceLimit(
-                    NacelleResourceLimitReason::MemoryBytes
-                ))
-            ));
-            assert_eq!(first.memory_used_bytes(), 6);
-            assert_eq!(second.memory_used_bytes(), 6);
-            first_memory
-        };
-
-        #[cfg(feature = "experimental-memory")]
-        drop(first_memory);
         drop(first_request);
         drop(second_request);
     }

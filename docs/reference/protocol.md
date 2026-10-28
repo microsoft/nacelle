@@ -93,8 +93,7 @@ their handler and `error_response` hook.
 The TCP runtime encodes and writes each streaming response chunk before polling
 the next one, so socket backpressure bounds response production. It stages only
 one bounded frame at a time and writes an explicit end frame after a streaming
-body reaches EOF. With `experimental-memory`, it also accounts staging growth
-against the runtime memory budget.
+body reaches EOF.
 
 `ResponseWritePolicy::Immediate` writes each completed frame immediately.
 `CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
@@ -134,19 +133,19 @@ internal error text to untrusted peers.
 Malformed heads, oversized frames, framing-progress violations, incomplete-head
 EOF, idle timeout, and message-read timeout are offered without a request error
 context. Once a head is decoded, body-limit rejection, request/streaming
-admission failures, body-memory failures, body-read failures, handler errors,
-and handler timeouts are offered with the context captured by `error_context`.
+admission failures, body-read failures, handler errors, and handler timeouts are
+offered with the context captured by `error_context`.
 This includes failures while draining the body after a handler completes
 silently or prepares a response. A streaming body-read failure cancels a still
 running handler.
 
-Responses retain the configured body/memory limits, write policy, and write
+Responses retain the configured body limits, write policy, and write
 deadlines. They are best-effort: resource exhaustion can prevent delivery.
-Connection admission, initial connection-buffer allocation, and TLS handshake
-failures occur before this hook is available. Initial socket read I/O failures
-and failures during response encoding, streaming, writing, flushing, or shutdown
-do not initiate a new error response. In particular, a partially delivered
-response is never followed by an automatic replacement response, and an
+Connection admission and TLS handshake failures occur before this hook is
+available. Initial socket read I/O failures and failures during response
+encoding, streaming, writing, flushing, or shutdown do not initiate a new error
+response. In particular, a partially delivered response is never followed by
+an automatic replacement response, and an
 error-response delivery failure never recursively invokes the hook.
 
 The connection closes after a terminal failure, even if its custom response is
@@ -199,9 +198,7 @@ TCP request handling is sequential per connection. Pipelined frames can sit
 in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
-handler, and declared streaming body bytes are allocated against the memory
-budget until the streaming request finishes when `experimental-memory` is
-enabled.
+handler.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers

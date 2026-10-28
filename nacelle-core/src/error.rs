@@ -14,10 +14,6 @@ pub enum NacelleResourceLimitReason {
     ConnectionRateLimitTableCapacity,
     /// Concurrent in-flight request capacity.
     InFlightRequests,
-    /// Experimental process-wide memory budget.
-    MemoryBytes,
-    /// Partitioned runtime states disagree on the process memory limit.
-    MemoryLimitMismatch,
     /// Per-peer connection-open rate.
     PeerConnectionRate,
     /// Peer-rate limiter state is unavailable.
@@ -63,8 +59,6 @@ impl NacelleResourceLimitReason {
             Self::Connections => "connections",
             Self::ConnectionRateLimitTableCapacity => "connection_rate_limit_table_capacity",
             Self::InFlightRequests => "in_flight_requests",
-            Self::MemoryBytes => "memory_bytes",
-            Self::MemoryLimitMismatch => "memory_limit_mismatch",
             Self::PeerConnectionRate => "peer_connection_rate",
             Self::PeerConnectionRateTable => "peer_connection_rate_table",
             Self::PeerConnectionRateTableFull => "peer_connection_rate_table_full",
@@ -109,8 +103,6 @@ pub enum NacelleTimeoutReason {
     HttpMaxConnectionAge,
     /// Idle connection activity.
     Idle,
-    /// Experimental memory-budget allocation wait.
-    MemoryAllocation,
     /// TCP request-body read.
     RequestBodyRead,
     /// Graceful shutdown drain.
@@ -143,7 +135,6 @@ impl NacelleTimeoutReason {
             Self::HttpHeaders => "http_headers",
             Self::HttpMaxConnectionAge => "http_max_connection_age",
             Self::Idle => "idle",
-            Self::MemoryAllocation => "memory_allocation",
             Self::RequestBodyRead => "request_body_read",
             Self::ShutdownDrain => "shutdown_drain",
             Self::TcpFinalWrite => "tcp_final_write",
@@ -225,10 +216,6 @@ impl NacelleError {
             }
             Self::ResourceLimit(NacelleResourceLimitReason::StreamingTasks) => {
                 Some("raise NacelleLimits::max_streaming_tasks or use buffered request bodies")
-            }
-            #[cfg(feature = "experimental-memory")]
-            Self::ResourceLimit(NacelleResourceLimitReason::MemoryBytes) => {
-                Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
             }
             Self::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes) => {
                 Some("raise NacelleLimits::max_request_body_bytes or lower client payload sizes")
@@ -396,17 +383,6 @@ mod tests {
         for (reason, expected) in cases {
             assert_eq!(NacelleError::Timeout(reason).hint(), Some(expected));
         }
-    }
-
-    #[cfg(all(feature = "error-hints", feature = "experimental-memory"))]
-    #[test]
-    fn memory_limit_uses_allocator_resource_name_for_hint() {
-        let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::MemoryBytes);
-
-        assert_eq!(
-            error.hint(),
-            Some("raise NacelleLimits::max_memory_bytes or lower buffer/body sizes")
-        );
     }
 
     #[cfg(feature = "error-hints")]

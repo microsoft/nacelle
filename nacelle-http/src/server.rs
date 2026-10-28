@@ -2453,201 +2453,18 @@ mod tests {
         server_task.abort();
     }
 
-    #[cfg(feature = "experimental-memory")]
-    #[tokio::test]
-    async fn http_body_memory_limit_applies_to_chunked_and_declared_bodies() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let runtime_state = nacelle_core::NacelleRuntimeState::new(
-            nacelle_core::NacelleLimits::default().with_max_memory_bytes(1),
-        );
-        let server = HyperServer::new(handler_fn(
-            |mut context: HttpRequestContext<()>| async move {
-                while let Some(chunk) = context.request_mut().next_body_chunk().await {
-                    match chunk {
-                        Err(NacelleError::ResourceLimit(
-                            NacelleResourceLimitReason::MemoryBytes,
-                        )) => {
-                            return context
-                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
-                                .await;
-                        }
-                        other => {
-                            let _ = other?;
-                        }
-                    }
-                }
-                context.respond(HttpResponse::empty(StatusCode::OK)).await
-            },
-        ))
-        .with_runtime_state(runtime_state.clone());
-        let task = tokio::spawn(async move { server.serve_listener(listener).await });
-        for wire in [
-            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\nConnection: close\r\n\r\nabcdefgh"[..],
-            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n8\r\nabcdefgh\r\n0\r\n\r\n"[..],
-        ] {
-            let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr, wire)).await.expect("response deadline");
-            assert!(response.starts_with("HTTP/1.1 503"), "{response}");
-            assert_eq!(runtime_state.memory_used_bytes(), 0);
-            assert_eq!(runtime_state.active_streaming_tasks(), 0);
-        }
-        task.abort();
-    }
-
-    #[cfg(feature = "experimental-memory")]
-    #[tokio::test]
-    async fn http_chunked_body_clones_retain_memory_after_request_completion() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let runtime_state = nacelle_core::NacelleRuntimeState::new(
-            nacelle_core::NacelleLimits::default().with_max_memory_bytes(4),
-        );
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-        let server = HyperServer::new(handler_fn(move |mut context: HttpRequestContext<()>| {
-            let sender = sender.clone();
-            async move {
-                while let Some(chunk) = context.request_mut().next_body_chunk().await {
-                    sender.send(chunk?).await.expect("retain chunk");
-                }
-                context.respond(HttpResponse::empty(StatusCode::OK)).await
-            }
-        }))
-        .with_runtime_state(runtime_state.clone());
-        let task = tokio::spawn(async move { server.serve_listener(listener).await });
-        let response = one_shot_http(addr, b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n0\r\n\r\n").await;
-        assert!(response.starts_with("HTTP/1.1 200"));
-        let retained = receiver.recv().await.expect("retained chunk");
-        let cloned = retained.clone();
-        assert_eq!(runtime_state.memory_used_bytes(), 4);
-        assert!(runtime_state.allocate_memory(1).is_err());
-        drop(retained);
-        assert_eq!(runtime_state.memory_used_bytes(), 4);
-        drop(cloned);
-        assert_eq!(runtime_state.memory_used_bytes(), 0);
-        assert!(runtime_state.allocate_memory(4).is_ok());
-        task.abort();
-    }
-
-    #[cfg(feature = "experimental-memory")]
-    #[tokio::test]
-    async fn http_chunked_body_memory_wait_times_out_without_leaking() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let runtime_state = nacelle_core::NacelleRuntimeState::new(
-            nacelle_core::NacelleLimits::default()
-                .with_max_memory_bytes(4)
-                .with_memory_allocation_timeout(Duration::from_millis(10)),
-        );
-        let server = HyperServer::new(handler_fn(
-            |mut context: HttpRequestContext<()>| async move {
-                let mut retained = Vec::new();
-                while let Some(chunk) = context.request_mut().next_body_chunk().await {
-                    match chunk {
-                        Ok(chunk) => retained.push(chunk),
-                        Err(NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)) => {
-                            assert_eq!(retained.iter().map(Bytes::len).sum::<usize>(), 4);
-                            return context
-                                .respond(HttpResponse::empty(StatusCode::SERVICE_UNAVAILABLE))
-                                .await;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                context.respond(HttpResponse::empty(StatusCode::OK)).await
-            },
-        ))
-        .with_runtime_state(runtime_state.clone());
-        let task = tokio::spawn(async move { server.serve_listener(listener).await });
-        let response = tokio::time::timeout(Duration::from_secs(1), one_shot_http(addr,
-            b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n",
-        )).await.expect("response deadline");
-        assert!(response.starts_with("HTTP/1.1 503"), "{response}");
-        assert_eq!(runtime_state.memory_used_bytes(), 0);
-        assert_eq!(runtime_state.active_streaming_tasks(), 0);
-        assert!(runtime_state.allocate_memory(4).is_ok());
-        task.abort();
-    }
-
-    #[cfg(feature = "experimental-memory")]
-    #[tokio::test]
-    async fn http_content_length_body_reserves_memory_until_consumed() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
-            nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(1024 * 1024),
-        );
-        let server = HyperServer::new(handler_fn(
-            move |mut context: HttpRequestContext<()>| async move {
-                while let Some(chunk) = context.request_mut().next_body_chunk().await {
-                    let _ = chunk?;
-                }
-                context
-                    .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
-                    .await
-            },
-        ))
-        .with_runtime_state(runtime_state.clone());
-        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
-
-        let mut client = tokio::net::TcpStream::connect(addr)
-            .await
-            .expect("client should connect");
-        client
-            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("headers should write");
-        wait_for_memory(&runtime_state, 11).await;
-        client
-            .write_all(b"hello world")
-            .await
-            .expect("body should write");
-
-        let mut response = Vec::new();
-        client
-            .read_to_end(&mut response)
-            .await
-            .expect("response should read");
-
-        wait_for_memory(&runtime_state, 0).await;
-        server_task.abort();
-    }
-
     #[tokio::test]
     async fn http_early_response_cancels_body_pump_and_releases_resources() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
-        #[cfg(feature = "experimental-memory")]
-        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
-            nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(1024),
-        );
-        #[cfg(not(feature = "experimental-memory"))]
         let runtime_state = nacelle_core::limits::NacelleRuntimeState::default();
-        #[cfg(feature = "experimental-memory")]
-        let handler_state = runtime_state.clone();
-        let server = HyperServer::new(handler_fn(move |context: HttpRequestContext<()>| {
-            #[cfg(feature = "experimental-memory")]
-            let handler_state = handler_state.clone();
-            async move {
-                #[cfg(feature = "experimental-memory")]
-                while handler_state.memory_used_bytes() != 11 {
-                    tokio::task::yield_now().await;
-                }
-                #[cfg(not(feature = "experimental-memory"))]
-                tokio::task::yield_now().await;
-                context
-                    .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
-                    .await
-            }
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            tokio::task::yield_now().await;
+            context
+                .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
+                .await
         }))
         .with_runtime_state(runtime_state.clone());
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
@@ -2676,65 +2493,9 @@ mod tests {
         .expect("response should read");
 
         assert!(response.starts_with(b"HTTP/1.1 200 OK"));
-        #[cfg(feature = "experimental-memory")]
-        wait_for_memory(&runtime_state, 0).await;
         assert_eq!(runtime_state.active_streaming_tasks(), 0);
         assert_eq!(runtime_state.active_requests(), 0);
         server_task.abort();
-    }
-
-    #[cfg(feature = "experimental-memory")]
-    #[tokio::test]
-    async fn http_early_response_cancels_memory_waiter_without_leaking_budget() {
-        for wire in [
-            &b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\nConnection: close\r\n\r\n"[..],
-            &b"POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\nb\r\nhello world\r\n0\r\n\r\n"[..],
-        ] {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
-            nacelle_core::limits::NacelleLimits::default().with_max_memory_bytes(11),
-        );
-        let held = runtime_state
-            .allocate_memory(11)
-            .expect("test should fill the memory budget");
-        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
-            tokio::task::yield_now().await;
-            context
-                .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
-                .await
-        }))
-        .with_runtime_state(runtime_state.clone());
-        let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
-
-        let mut client = tokio::net::TcpStream::connect(addr)
-            .await
-            .expect("client should connect");
-        client
-            .write_all(wire)
-            .await
-            .expect("headers should write");
-        let mut response = Vec::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            client.read_to_end(&mut response),
-        )
-        .await
-        .expect("early response should complete before timeout")
-        .expect("response should read");
-        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
-
-        drop(held);
-        wait_for_memory(&runtime_state, 0).await;
-        let recovered = runtime_state
-            .allocate_memory(11)
-            .expect("cancelled body waiter should leave the budget reusable");
-        drop(recovered);
-        assert_eq!(runtime_state.memory_used_bytes(), 0);
-        server_task.abort();
-        }
     }
 
     #[tokio::test]
@@ -3274,23 +3035,6 @@ mod tests {
         panic!(
             "active connections did not reach {expected}; observed {}",
             runtime_state.active_connections()
-        );
-    }
-
-    #[cfg(feature = "experimental-memory")]
-    async fn wait_for_memory(
-        runtime_state: &nacelle_core::limits::NacelleRuntimeState,
-        expected: usize,
-    ) {
-        for _ in 0..100 {
-            if runtime_state.memory_used_bytes() == expected {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
-        panic!(
-            "memory did not reach {expected}; observed {}",
-            runtime_state.memory_used_bytes()
         );
     }
 

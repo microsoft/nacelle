@@ -80,15 +80,9 @@ the wrapped error's diagnostic text. Return an explicit sanitized `HttpResponse`
 for application errors intended for clients. Failure telemetry still receives
 the original error; protect diagnostic logs and observers accordingly.
 
-With `experimental-memory` and a finite memory budget, known-length bodies
-reserve their declared length. Unknown-length/chunked bodies reserve each data
-chunk before enqueueing it for the handler. Charges follow queued and retained
-`Bytes` clones until the last clone drops. Admission waits honor
-`memory_allocation_timeout` and are cancelled when the request is dropped.
-Leave headroom for Hyper's read-ahead, shared backing allocations, and TLS/socket
-buffers: the body budget is not a process-RSS ceiling. Handlers aggregating a
-whole chunked body need enough budget to retain that body without blocking their
-own subsequent chunks.
+Leave headroom for Hyper's read-ahead, shared backing allocations, and
+TLS/socket buffers. Handlers aggregating a whole chunked body need enough
+process or container memory to retain that body.
 
 Rustls certificate-only reloads preserve the configured SNI allowlist, including
 concurrent reloads. Invalid replacement material leaves the previous snapshot

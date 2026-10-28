@@ -9,7 +9,6 @@ Key budgets include:
 - in-flight requests
 - streaming body tasks
 - optional per-peer connections
-- experimental runtime memory budget allocations
 - request and response body size
 - core handler timeout
 - TCP read, write, final shutdown, and idle timeouts through `NacelleTcpLimits`
@@ -30,12 +29,7 @@ Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 `NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Runtime memory budgeting is
-compiled only with the non-default `experimental-memory` feature. Without that
-feature, memory fields, allocation APIs, transport accounting, ownership
-tracking, waiters, and the memory gauge are absent.
-The feature is use at your own risk and may change or be removed in a future
-minor release.
+and transport timeouts are bounded by default.
 
 Optional deadlines can be disabled without direct field mutation. Use
 `NacelleLimits::without_handler_timeout()`, the TCP
@@ -71,7 +65,7 @@ Recommended presets:
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
 - High concurrency: reduce TCP buffer capacities before raising `max_connections`, and tune `NacelleTcpLimits` separately from shared resource budgets.
 
-Experimental memory budget:
+Memory sizing:
 
 This sizing formula requires a finite effective connection ceiling. Use the
 configured `max_connections` when it is nonzero. When `max_connections` is the
@@ -88,51 +82,14 @@ total_budget =
   connection_budget + body_budget + handler/backend/runtime headroom
 ```
 
-Enable `experimental-memory`, then set
-`NacelleLimits::with_max_memory_bytes(...)` to activate enforcement. With the
-feature enabled, its default `max_memory_bytes` is `usize::MAX`, so accounting
-does not reject allocations until an explicit finite limit is configured.
-Nacelle allocates from that budget for connection buffers and buffered or
-streaming request bodies. The limiter accounts for Nacelle-managed allocations,
-not total process RSS, so keep process or container memory limits in place.
-Request body allocations wait in FIFO order when the budget is full. The default
-wait limit is `NacelleLimits::memory_allocation_timeout == Some(5s)`, and can
-be tuned with `with_memory_allocation_timeout(...)` or disabled with
-`without_memory_allocation_timeout()`. A timed-out waiter returns
-`NacelleError::Timeout(NacelleTimeoutReason::MemoryAllocation)`.
+Nacelle does not attempt to account for total process memory. Keep a process or
+container memory limit in place and use the sizing formula above when selecting
+connection, body, and concurrency limits.
 
-The memory budget is an accounting guard, not a buffer allocator: it grants a
-`NacelleMemoryAllocation` that tracks bytes the transport or application intends to
-hold elsewhere, and releases those bytes when the guard is dropped.
-When Nacelle associates an allocation with `NacelleBody`, chunks extracted from
-the body retain the allocation through their underlying `Bytes` ownership.
-Dropping or consuming the body does not release the charge while an extracted
-chunk or any clone of that chunk remains live.
-Applications can allocate from the same budget through
-`NacelleRuntimeState::memory_budget()`. Use `try_allocate(...)` for immediate
-admission, `allocate(...)` for FIFO waiting, or
-`allocate_with_timeout_and_shutdown(...)` when app work should stop waiting
-during shutdown.
-
-TCP processes requests sequentially per connection. `request_body_channel_capacity` controls the queued streaming chunks between the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's body queue, so leave extra headroom when enabling large request bodies.
-
-HTTP known-length bodies reserve their declared length. Chunked/unknown-length
-bodies reserve each data chunk before it enters the handler's queue; the charge
-remains until its last `Bytes` clone drops. Full-body aggregation must fit within
-the budget or later chunks can reach the allocation timeout while earlier
-chunks remain retained. Hyper read-ahead and shared backing allocations, TLS
-buffers, and socket buffers need separate headroom beyond these logical body
-charges. Cancellation releases pending waits and queued chunks.
-
-TCP streaming bodies use `TcpStreamingBodyMemoryPolicy::DeclaredLength` by
-default, preserving whole-body admission before handler dispatch. The opt-in
-`LiveChunks` policy admits bodies larger than the currently available memory
-budget when each chunk fits: it charges chunks being read, queued, or retained
-by the handler and releases each charge after the final `Bytes` clone drops.
-`request_body_chunk_size` sets the allocation granularity. A handler that keeps
-earlier chunks while awaiting the rest of a body can exhaust its own memory
-budget and reach `memory_allocation_timeout`; use declared-length accounting or
-enough body headroom for handlers that aggregate complete payloads.
+TCP processes requests sequentially per connection.
+`request_body_channel_capacity` controls the queued streaming chunks between
+the socket reader and handler. HTTP uses Hyper's internal buffers plus Nacelle's
+body queue, so leave extra headroom when enabling large request bodies.
 
 For TCP protocols, `NacelleLimits::max_request_body_bytes` is the default body
 limit. Override

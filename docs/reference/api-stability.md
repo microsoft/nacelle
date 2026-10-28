@@ -19,7 +19,6 @@ Stable enough for prototype integrations:
 
 Experimental:
 
-- runtime memory accounting behind `experimental-memory`
 - Linux thread-per-core execution behind `experimental-thread-per-core`
 - plaintext/OpenSSL detection behind `experimental-openssl-detection`
 - stress tooling config
@@ -67,6 +66,23 @@ were removed. Transport pipelines now remain strongly typed through completion;
 there is no compatibility adapter.
 
 Before `1.0`, minor releases may change defaults or builder methods when production safety requires it. After `1.0`, public API changes should follow semver, with migration notes for config/default changes.
+
+## Experimental memory removal
+
+The `0.4` development line removes `experimental-memory` and its runtime memory
+accounting APIs. The formerly unconditional
+`NacelleResourceLimitReason::{MemoryBytes, MemoryLimitMismatch}` and
+`NacelleTimeoutReason::MemoryAllocation` variants are also removed, including
+their exports through `nacelle_core::error` and the crate root. Applications
+must stop matching those variants. Body, frame, connection, and request limits
+and streaming backpressure remain available; they are not a process memory cap.
+
+The release compatibility gate in `.github/scripts/check-public-api.sh` accepts
+only these six variant removals in the two core provider comparisons against
+its pinned baseline. It retains the complete diff artifacts, rejects other
+core removals and changed items, and continues to deny removals and changes
+for every other compared surface. An accepted experimental removal does not
+authorize unrelated API breaks.
 
 ## Unified TCP completion migration
 
