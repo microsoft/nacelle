@@ -45,3 +45,5 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 ## Commits
 
 When asked to commit, use Conventional Commits with a short, scoped message such as `fix: ...`, `feat: ...`, `perf: ...`, `docs: ...`, or `test: ...`. Commit only the coherent change requested; do not include unrelated working-tree changes.
+
+Use the [PR and commit drafting workflow](skills/pr-description/SKILL.md) when asked for titles, PR descriptions, commit descriptions, or squash commit messages. Commit bodies, including PR descriptions intended for reuse as commit bodies, must omit validation sections and equivalent test-results summaries. Keep necessary evidence and known failures in the PR or a separate handoff note. Remove filler throughout authored prose.
