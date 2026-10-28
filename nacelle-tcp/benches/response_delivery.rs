@@ -384,7 +384,21 @@ fn response_delivery(c: &mut Criterion) {
             });
         };
     }
-    profile!("default", NoTcpPolicies, 1);
+    policies.bench_function("default", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let stats = Arc::new(WriteStats::default());
+            let server = server(
+                ResponseWritePolicy::CoalesceBuffered,
+                RESPONSE_BUFFER_CAPACITY,
+            );
+            server
+                .serve_io(BenchmarkIo::new(64, 64, stats.clone()))
+                .await
+                .expect("static-policy benchmark should run");
+            assert_eq!(stats.writes.load(Ordering::Relaxed), 1);
+        });
+    });
+    profile!("attached_noop", NoTcpPolicies, 1);
     profile!("empty", TcpPolicies::new(), 1);
     profile!(
         "predicate",
