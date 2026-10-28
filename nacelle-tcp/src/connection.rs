@@ -573,9 +573,9 @@ where
                     legacy_policy_permit.as_ref().is_some_and(Option::is_some),
                 )
                 .await?;
+                drop(request_policy_permit.take());
                 #[cfg(feature = "policies")]
                 drop(legacy_policy_permit.take());
-                drop(request_policy_permit.take());
                 let mut can_respond = true;
                 let buffered_result = {
                     async {

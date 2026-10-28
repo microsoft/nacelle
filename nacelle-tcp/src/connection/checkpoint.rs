@@ -277,6 +277,18 @@ where
 mod tests {
     use super::*;
     use crate::config::NacelleTcpConfig;
+    use crate::policies::{NoTcpPolicies, SharedTcpPolicySet};
+
+    #[test]
+    fn no_policy_control_stores_underlying_future_once() {
+        let future = std::future::ready([0_u8; 4096]);
+        let future_bytes = std::mem::size_of_val(&future);
+        let controlled = <NoTcpPolicies as SharedTcpPolicySet<(), ()>>::run(
+            &NoTcpPolicies,
+            future,
+        );
+        assert_eq!(std::mem::size_of_val(&controlled), future_bytes);
+    }
 
     #[test]
     fn empty_checkpoint_does_not_construct_admission_or_store_delivery_state() {
@@ -300,5 +312,16 @@ mod tests {
             },
         );
         assert_eq!(std::mem::size_of_val(&future), 0);
+        drop(future);
+        let flush = Empty::flush_send(true, Io {
+            writer: &mut writer,
+            delivery: &mut delivery,
+            limits: &limits,
+            telemetry: &telemetry,
+            metrics: None,
+            phase_duration: false,
+            failure: &mut failure,
+        });
+        assert_eq!(std::mem::size_of_val(&flush), 0);
     }
 }

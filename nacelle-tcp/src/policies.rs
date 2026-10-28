@@ -291,7 +291,7 @@ macro_rules! empty_set {
             fn before<'a>(&'a self, _: &'a mut ConnectionContext<Storage>) -> impl Future<Output = Result<(), Rejection>> + $($send +)? 'a { async { Ok(()) } }
             fn head<'a>(&'a self, _: &'a mut Request, _: usize, _: &'a mut ConnectionContext<Storage>) -> impl Future<Output = Result<(), Rejection>> + $($send +)? 'a { async { Ok(()) } }
             fn handler<'a>(&'a self, _: &'a mut Request, _: usize, _: &'a mut ConnectionContext<Storage>) -> impl Future<Output = Result<(), Rejection>> + $($send +)? 'a { async { Ok(()) } }
-            fn run<F: Future $(+ $send)?>(&self, future: F) -> impl Future<Output = Result<F::Output, Rejection>> $(+ $send)? { async { Ok(future.await) } }
+            fn run<F: Future $(+ $send)?>(&self, future: F) -> impl Future<Output = Result<F::Output, Rejection>> $(+ $send)? { NoControl.run(future) }
         }
     };
 }
