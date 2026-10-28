@@ -173,6 +173,84 @@ async fn legacy_errors_close_connections_with_unread_bodies() {
     legacy_error_connection_reuse(false).await;
 }
 
+#[tokio::test]
+async fn handler_errors_preserve_connection_reuse_after_body_eof() {
+    for body in [
+        "Content-Length: 1\r\n\r\nx",
+        "Transfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\n\r\n",
+        "Transfer-Encoding: chunked\r\nTrailer: X-End\r\n\r\n1\r\nx\r\n0\r\nX-End: done\r\n\r\n",
+    ] {
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                if context.request().uri.path() == "/fail" {
+                    while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                        let _ = chunk?;
+                    }
+                    Err(NacelleError::protocol("handler failure"))
+                } else {
+                    context.respond(HttpResponse::empty(StatusCode::OK)).await
+                }
+            },
+        ));
+        let (mut client, task) = duplex_http(server);
+        let request = format!(
+            "POST /fail HTTP/1.1\r\nHost: localhost\r\n{body}\
+             GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("requests");
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .expect("responses must finish")
+            .expect("responses");
+        task.await.expect("join").expect("connection");
+        let response = String::from_utf8(response).expect("HTTP responses");
+        assert!(response.starts_with("HTTP/1.1 500"), "{response}");
+        assert_eq!(response.matches("HTTP/1.1 ").count(), 2, "{response}");
+        assert!(response.contains("HTTP/1.1 200"), "{response}");
+    }
+}
+
+#[tokio::test]
+async fn handler_errors_close_connections_after_body_pump_failure() {
+    let runtime = NacelleRuntimeState::new(
+        nacelle_core::NacelleLimits::default().with_max_request_body_bytes(1),
+    );
+    let server = HyperServer::new(handler_fn(
+        |mut context: HttpRequestContext<()>| async move {
+            while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                let _ = chunk?;
+            }
+            context.respond(HttpResponse::empty(StatusCode::OK)).await
+        },
+    ))
+    .with_runtime_state(runtime.clone());
+    let (mut client, task) = duplex_http(server);
+    client
+        .write_all(
+            b"POST /fail HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n\
+              2\r\nab\r\n0\r\n\r\n\
+              GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .expect("requests");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+        .await
+        .expect("error response must finish")
+        .expect("response");
+    task.await.expect("join").expect("connection");
+    let response = String::from_utf8(response).expect("HTTP response");
+    assert!(response.starts_with("HTTP/1.1 500"), "{response}");
+    assert_eq!(response.matches("HTTP/1.1 ").count(), 1, "{response}");
+    assert!(response.contains("connection: close"), "{response}");
+    assert_eq!(runtime.active_requests(), 0);
+    assert_eq!(runtime.active_streaming_tasks(), 0);
+}
+
 struct WaitingHandlerAdmission {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,

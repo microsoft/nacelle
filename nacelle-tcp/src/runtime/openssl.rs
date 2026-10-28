@@ -349,7 +349,7 @@ where
                 .map_err(NacelleError::from)
         },
         move |server, stream, connection, connection_permit| {
-            let acceptor = tls_config.acceptor();
+            let tls_config = tls_config.clone();
             async move {
                 server
                     .policies()
@@ -369,6 +369,7 @@ where
                             .accepted(&mut connection)
                             .await
                             .map_err(nacelle_core::policy::Rejection::into_error)?;
+                        let acceptor = tls_config.acceptor();
                         let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                         let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                             .map_err(NacelleError::protocol)?;
@@ -747,7 +748,7 @@ where
                             }
                         };
                         let server = server.clone();
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         connections.spawn(async move {
                             server.policies().run(async {
                             let _socket_lease = socket_lease;
@@ -758,6 +759,7 @@ where
                                 crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                             let mut connection = connection;
                             let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;

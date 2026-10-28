@@ -23,6 +23,7 @@ type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 
 pub(crate) type HttpBody<Observer, Lease = ()> = StreamBody<HttpBodyStream<Observer, Lease>>;
 
+/// The returned pump reports whether the incoming body reached EOF without failure.
 pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
     body_len_hint: Option<usize>,
@@ -30,7 +31,7 @@ pub(crate) fn incoming_to_body<Observer>(
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-) -> (NacelleBody, impl Future<Output = ()>)
+) -> (NacelleBody, impl Future<Output = bool>)
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -51,7 +52,9 @@ where
                 telemetry,
                 tx,
             )
-            .await;
+            .await
+        } else {
+            true
         }
     };
     (body, pump)
@@ -66,7 +69,8 @@ async fn pump_incoming_body<Observer>(
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
     tx: RequestBodySender,
-) where
+) -> bool
+where
     Observer: NacelleTelemetryObserver,
 {
     if let Some(body_len_hint) = body_len_hint
@@ -77,13 +81,13 @@ async fn pump_incoming_body<Observer>(
                 NacelleResourceLimitReason::RequestBodyBytes,
             )))
             .await;
-        return;
+        return false;
     }
     let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
         Ok(permit) => permit,
         Err(error) => {
             let _ = tx.send(Err(error)).await;
-            return;
+            return false;
         }
     };
     let mut body_bytes = 0_usize;
@@ -108,7 +112,7 @@ async fn pump_incoming_body<Observer>(
             }
         };
         let Some(frame) = frame else {
-            break;
+            return true;
         };
         match frame {
             Ok(frame) => {
@@ -143,6 +147,7 @@ async fn pump_incoming_body<Observer>(
             }
         }
     }
+    false
 }
 
 const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {

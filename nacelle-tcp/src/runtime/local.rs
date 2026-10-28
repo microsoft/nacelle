@@ -406,7 +406,7 @@ where
                         };
                         let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                             .with_listener(server.listener_label());
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         let socket_lease = match server.policies().socket(&connection) {
                             Ok(lease) => lease,
                             Err(_) => {
@@ -425,6 +425,7 @@ where
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
                             let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;
@@ -533,7 +534,7 @@ where
                         };
                         let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                             .with_listener(server.listener_label());
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         let socket_lease = match server.policies().socket(&connection) {
                             Ok(lease) => lease,
                             Err(_) => {
@@ -552,6 +553,7 @@ where
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
                             let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;
@@ -660,7 +662,7 @@ where
                         };
                         let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                             .with_listener(server.listener_label());
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         let detection_timeout = detection_options.timeout;
                         let socket_lease = match server.policies().socket(&connection) {
                             Ok(lease) => lease,
@@ -705,6 +707,7 @@ where
                                 .await;
                             }
 
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;

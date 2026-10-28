@@ -1390,12 +1390,16 @@ where
             }
         };
         let handler_future = dispatch.call(request, handler_lease);
+        let mut body_complete = body_is_empty;
         let handler_with_body = async {
             tokio::pin!(handler_future);
             tokio::pin!(body_pump);
             tokio::select! {
                 result = &mut handler_future => result,
-                () = &mut body_pump => handler_future.await,
+                complete = &mut body_pump => {
+                    body_complete = complete;
+                    handler_future.await
+                },
             }
         };
         let handler_result = if let Some(timeout) = self.runtime_state.limits().handler_timeout {
@@ -1446,7 +1450,7 @@ where
                 let response = self.error_response(
                     HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
                     version,
-                    !body_is_empty,
+                    !body_complete,
                     Some(head_lease),
                 );
                 if let Ok(response) = &response {

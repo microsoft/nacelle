@@ -130,6 +130,14 @@ connection rejection close the connection without a protocol response. After
 response commitment or during eviction, the transport closes rather than sending
 a second response.
 
+HTTP handler-error responses do not force connection closure after successful
+incoming-body EOF. Before successful EOF, handler errors still close the
+connection. Static policy rejections always close it.
+
+TLS listeners snapshot reloadable configuration after accepted admission,
+immediately before starting the handshake. Optional OpenSSL listeners also
+complete plaintext/TLS detection before taking that snapshot.
+
 ## Performance and body boundaries
 
 Dispatch, futures, and lease storage are concrete. The design avoids policy

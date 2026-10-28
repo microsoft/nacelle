@@ -192,6 +192,125 @@ impl SerialTcpHandler<PlainProtocol> for SerialHandler {
     }
 }
 
+#[cfg(feature = "policies")]
+#[tokio::test]
+async fn openssl_reload_after_accepted_admission_uses_current_certificate() {
+    use nacelle_core::policy::{Admission, Rejection};
+    use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
+    use tokio::sync::Notify;
+
+    struct WaitAccepted {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl Admission<crate::policies::TcpTransport<'_>> for WaitAccepted {
+        type Lease = ();
+
+        async fn enter<'a>(
+            &'a self,
+            _: &'a mut crate::policies::TcpTransport<'_>,
+        ) -> Result<(), Rejection> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    #[cfg(not(feature = "experimental-openssl-detection"))]
+    let modes = ["required"];
+    #[cfg(feature = "experimental-openssl-detection")]
+    let modes = ["required", "optional"];
+    for mode in modes {
+        let config = test_open_ssl_config();
+        let replacement = test_open_ssl_config().acceptor();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let server = Arc::new(
+            TcpServer::<PlainProtocol>::builder()
+                .protocol(PlainProtocol)
+                .handler(handler_fn(
+                    |context: TcpRequestContext<PlainProtocol>| async move {
+                        context.respond(TcpResponse::bytes("ok")).await
+                    },
+                ))
+                .policies(crate::TcpPolicies::new().on_accepted(WaitAccepted {
+                    entered: entered.clone(),
+                    release: release.clone(),
+                }))
+                .build()
+                .expect("server"),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("address");
+        let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+        let listener_config = config.clone();
+        let task = tokio::spawn(async move {
+            #[cfg(feature = "experimental-openssl-detection")]
+            if mode == "optional" {
+                return super::openssl_optional::serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
+                    server,
+                    listener,
+                    listener_config,
+                    crate::NacelleTcpOptions::default(),
+                    crate::NacelleTlsDetectionOptions::default(),
+                    token,
+                    NacelleDrainDeadline::new(Duration::ZERO),
+                ).await;
+            }
+            serve_tcp_openssl_listener_with_shutdown_deadline(
+                server,
+                listener,
+                listener_config,
+                token,
+                NacelleDrainDeadline::new(Duration::ZERO),
+            )
+            .await
+        });
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("client");
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("accepted admission");
+        config.replace_acceptor(replacement.as_ref().clone());
+        release.notify_one();
+
+        let mut connector = SslConnector::builder(SslMethod::tls()).expect("connector");
+        connector.set_verify(SslVerifyMode::NONE);
+        let ssl = connector
+            .build()
+            .configure()
+            .expect("configuration")
+            .verify_hostname(false)
+            .into_ssl("localhost")
+            .expect("client TLS");
+        let mut client = tokio_openssl::SslStream::new(ssl, stream).expect("TLS stream");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            std::pin::Pin::new(&mut client).connect(),
+        )
+        .await
+        .expect("handshake timeout")
+        .expect("handshake");
+        let certificate = client.ssl().peer_certificate().expect("peer certificate");
+        assert!(
+            certificate.as_ref()
+                == replacement
+                    .context()
+                    .certificate()
+                    .expect("replacement certificate"),
+            "{mode}: handshake must use the replacement certificate"
+        );
+        client.write_all(b"request").await.expect("request");
+        let mut response = [0; 2];
+        client.read_exact(&mut response).await.expect("response");
+        assert_eq!(&response, b"ok");
+        shutdown.shutdown();
+        task.await.expect("listener join").expect("listener");
+    }
+}
+
 #[tokio::test]
 async fn serial_required_openssl_accepts_tls_request() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

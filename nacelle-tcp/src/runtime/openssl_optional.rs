@@ -333,7 +333,7 @@ where
                             }
                         };
                         let server = server.clone();
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         let detection_timeout = detection_options.timeout;
                         connections.spawn(async move {
                             server.policies().run(async {
@@ -361,6 +361,7 @@ where
                                 return server.serve_io_without_connection_limit(stream, connection).await;
                             }
 
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;
@@ -748,7 +749,7 @@ where
                             }
                         };
                         let server = server.clone();
-                        let acceptor = tls_config.acceptor();
+                        let tls_config = tls_config.clone();
                         let detection_timeout = detection_options.timeout;
                         connections.spawn(async move {
                             server.policies().run(async {
@@ -776,6 +777,7 @@ where
                                     .await;
                             }
 
+                            let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                                 .map_err(NacelleError::protocol)?;
