@@ -11,12 +11,14 @@ on:
       - "**"
       - "!.github/**"
       - ".github/**/*.yml"
+      - ".github/scripts/**"
   push:
     branches: [main, "release/**"]
     paths:
       - "**"
       - "!.github/**"
       - ".github/**/*.yml"
+      - ".github/scripts/**"
 
 env:
   RUSTFLAGS: -Dwarnings
