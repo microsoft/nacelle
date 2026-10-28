@@ -116,6 +116,10 @@ not invalidate an older baseline. Within a shared suite, Criterion compares
 matching benchmark IDs and measures newer IDs without a delta when no baseline
 exists for them.
 
+The scripts use explicit feature selections and do not restore removed features
+for historical revisions. A historical suite that requires a removed feature
+will fail to build; select a compatible revision or a different suite instead.
+
 Each capture records the resolved commit, Rust toolchain, operating system,
 architecture, CPU information, selected suites, and full benchmark log. Each
 comparison records the same candidate metadata and Criterion's percentage and
@@ -190,7 +194,7 @@ head/body drain used by the connection loop. Treat the rotation replacement
 result as allocation cost, not per-request overhead.
 
 The `runtime_limits` benchmark group covers connection/request permit
-acquire/drop and memory allocation overhead. Watch it closely after changes to
+acquire/drop overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
 
 ## Profile Linux CPU and allocations
