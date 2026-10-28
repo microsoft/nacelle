@@ -69,6 +69,8 @@ jobs:
         uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
           tool: cargo-public-api@0.52.0
+      - name: Test public API gate
+        run: python3 .github/scripts/test-public-api.py
       - name: Check public API compatibility
         run: .github/scripts/check-public-api.sh
 

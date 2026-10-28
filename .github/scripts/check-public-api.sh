@@ -36,6 +36,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
+check_core_removals() {
+    local report="$1"
+    awk '
+        NR == 1 && $0 != "Removed items from the public API" {
+            print "unexpected public API report header: " $0 > "/dev/stderr"
+            invalid = 1
+            exit
+        }
+        /^Changed items in the public API$/ { found_changed = 1; exit }
+        /^-pub nacelle_core::(error::)?(NacelleResourceLimitReason::(MemoryBytes|MemoryLimitMismatch)|NacelleTimeoutReason::MemoryAllocation)$/ {
+            next
+        }
+        NR == 1 || /^=+$/ || /^$/ || /^\(none\)$/ { next }
+        {
+            print "unaccepted public API removal: " $0 > "/dev/stderr"
+            invalid = 1
+        }
+        END {
+            if (!found_changed) {
+                print "incomplete public API removal report" > "/dev/stderr"
+                invalid = 1
+            }
+            exit invalid
+        }
+    ' "$report"
+}
+
 compare() {
     local artifact="$1"
     local package="$2"
@@ -53,11 +80,17 @@ compare() {
         diff "${baseline_commit}..${candidate_commit}"
         --color never
         --deny changed
-        --deny removed
     )
+    # These three experimental-memory variants were exposed without a feature gate.
+    if [[ "$package" != "nacelle-core" ]]; then
+        args+=(--deny removed)
+    fi
 
     echo "==> $artifact"
     cargo "${args[@]}" > "$output_directory/$artifact.diff"
+    if [[ "$package" == "nacelle-core" ]]; then
+        check_core_removals "$output_directory/$artifact.diff"
+    fi
 }
 
 compare nacelle-codec nacelle-codec true ""
