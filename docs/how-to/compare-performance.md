@@ -59,6 +59,22 @@ Response delivery policies have a separate end-to-end benchmark:
 cargo bench -p nacelle-tcp --bench response_delivery -- --noplot
 ```
 
+For static admission policies, compare the same delivery cases with
+`--features policies`, including persistent connections and response coalescing.
+The core ready-path microbenchmarks compare empty admission, predicates, chains,
+and shared peer-rate admission with direct checks:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- policy_admission --noplot
+```
+
+Measure pending waits and cancellation separately from ready checks. Record
+allocation counts, future sizes, write/flush counts, and code size alongside
+throughput and tail latency. Compare shared and worker-local budgets deliberately;
+per-worker tables do not enforce a combined process-wide budget. Neither static
+dispatch nor a no-op source implementation proves zero overhead in the optimized
+transport path.
+
 ## Compare a tag or commit
 
 The PowerShell comparison scripts keep data under

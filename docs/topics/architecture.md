@@ -127,6 +127,15 @@ shared lifecycle/limit enforcement in core.
 
 ## Runtime State
 
+Server-owned static checkpoint sets keep admission policy types out of protocol
+and handler context types. Applications initialize dependencies and register
+concrete `TcpPolicies` or `HttpPolicies`; transports own hook placement, lease
+lifetimes, rejection mapping, and optional cancellation. Core owns shared
+admission, composition, bounded-wait, and rate-admission primitives. The facade's
+`policies` feature forwards to selected transports without enabling another
+transport. See [static admission policies](../reference/policies.md) for contracts
+and body-memory limitations.
+
 The optional TCP lifecycle policy layer wraps a concrete `Protocol` with an
 application-owned `TcpLifecyclePolicy`. Typed, statically dispatched hooks run
 at accepted-socket, transport-ready, pre-head, decoded-head, and body-complete

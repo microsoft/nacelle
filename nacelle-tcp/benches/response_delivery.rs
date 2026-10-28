@@ -8,7 +8,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
+use nacelle_core::policy::{Admission, Hold, Rejection, check_fn};
 use nacelle_core::telemetry::NacelleTelemetry;
+use nacelle_tcp::policies::{NoTcpPolicies, SharedTcpPolicySet, TcpHead, TcpPolicies};
 use nacelle_tcp::{
     DecodedRequest, FrameBuffer, NacelleTcpConfig, Protocol, ResponseWritePolicy,
     TcpRequestContext, TcpResponse, TcpServer,
@@ -371,6 +373,77 @@ fn response_delivery(c: &mut Criterion) {
         }
     }
     pooled.finish();
+
+    let mut policies = c.benchmark_group("tcp_static_policies_pipeline_64");
+    policies.throughput(Throughput::Elements(64));
+    macro_rules! profile {
+        ($name:literal, $policies:expr, $writes:expr) => {
+            policies.bench_function($name, |b| {
+                b.to_async(&runtime)
+                    .iter(|| run_static_workload($policies, $writes));
+            });
+        };
+    }
+    profile!("default", NoTcpPolicies, 1);
+    profile!("empty", TcpPolicies::new(), 1);
+    profile!(
+        "predicate",
+        TcpPolicies::new().on_request_head(check_fn(allow_head)),
+        1
+    );
+    profile!(
+        "two_predicates",
+        TcpPolicies::new()
+            .on_request_head(check_fn(allow_head))
+            .on_request_head(check_fn(allow_head)),
+        1
+    );
+    profile!(
+        "head_resource",
+        TcpPolicies::new().on_request_head(BenchLease),
+        64
+    );
+    profile!(
+        "handler_resource",
+        TcpPolicies::new().around_handler(BenchLease),
+        1
+    );
+    policies.finish();
+}
+
+fn allow_head(_: &TcpHead<'_, (), Arc<()>>) -> Result<(), Rejection> {
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct BenchLease;
+
+impl<I: ?Sized> Admission<I> for BenchLease {
+    type Lease = Hold<()>;
+
+    fn enter<'a>(
+        &'a self,
+        _: &'a mut I,
+    ) -> impl Future<Output = Result<Self::Lease, Rejection>> + Send + 'a {
+        std::future::ready(Ok(Hold::new(())))
+    }
+}
+
+async fn run_static_workload<Policies>(policies: Policies, expected_writes: usize)
+where
+    Policies: SharedTcpPolicySet<(), Arc<()>>,
+{
+    let stats = Arc::new(WriteStats::default());
+    let server = server(
+        ResponseWritePolicy::CoalesceBuffered,
+        RESPONSE_BUFFER_CAPACITY,
+    )
+    .with_policies(policies);
+    server
+        .serve_io(BenchmarkIo::new(64, 64, stats.clone()))
+        .await
+        .expect("static-policy benchmark should run");
+    assert_eq!(stats.writes.load(Ordering::Relaxed), expected_writes);
 }
 
 criterion_group!(benches, response_delivery);

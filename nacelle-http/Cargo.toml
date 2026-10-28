@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 
 [features]
 default = []
+policies = []
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 

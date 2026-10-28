@@ -8,11 +8,9 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopOb
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::config::NacelleTcpConfig;
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit,
-    serve_serial_stream_without_connection_limit,
-};
+use crate::connection::{serve_local_serial_io_with_policies, serve_serial_io_with_policies};
 use crate::limits::NacelleTcpLimits;
+use crate::policies::{LocalTcpPolicySet, NoTcpPolicies, SharedTcpPolicySet};
 use crate::protocol::{
     LocalAppStateHandler, LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedAppStateHandler,
 };
@@ -45,7 +43,7 @@ use crate::protocol::{
 /// ```text
 /// cargo run -p nacelle-examples --bin direct_tcp
 /// ```
-pub struct SerialTcpServer<P, H, Observer = NoopObserver> {
+pub struct SerialTcpServer<P, H, Observer = NoopObserver, Policies = NoTcpPolicies> {
     protocol: Arc<P>,
     handler: Arc<H>,
     config: NacelleTcpConfig,
@@ -53,11 +51,12 @@ pub struct SerialTcpServer<P, H, Observer = NoopObserver> {
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: Arc<str>,
+    policies: Policies,
 }
 
 #[doc(hidden)]
-pub type AppStateSerialTcpServer<P, H, Observer, AppState> =
-    SerialTcpServer<P, SharedAppStateHandler<P, H, AppState>, Observer>;
+pub type AppStateSerialTcpServer<P, H, Observer, AppState, Policies = NoTcpPolicies> =
+    SerialTcpServer<P, SharedAppStateHandler<P, H, AppState>, Observer, Policies>;
 
 impl<P, H> SerialTcpServer<P, H, NoopObserver> {
     /// Construct a serial server with one handler for all requests.
@@ -70,17 +69,18 @@ impl<P, H> SerialTcpServer<P, H, NoopObserver> {
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: Arc::from("direct"),
+            policies: NoTcpPolicies,
         }
     }
 }
 
-impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
+impl<P, H, Observer, Policies> SerialTcpServer<P, H, Observer, Policies> {
     /// Bind application state before serial request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> AppStateSerialTcpServer<P, H, Observer, AppState>
+    ) -> AppStateSerialTcpServer<P, H, Observer, AppState, Policies>
     where
         P: Protocol,
         P::ConnectionState: Send,
@@ -95,16 +95,18 @@ impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 }
 
-impl<P, H, Observer> SerialTcpServer<P, H, Observer>
+impl<P, H, Observer, Policies> SerialTcpServer<P, H, Observer, Policies>
 where
     P: Protocol,
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     /// Set TCP framing and buffering configuration.
     pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
@@ -129,7 +131,7 @@ where
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> SerialTcpServer<P, H, Next>
+    ) -> SerialTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -142,6 +144,7 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -150,7 +153,7 @@ where
         self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> SerialTcpServer<P, H, Next>
+    ) -> SerialTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -163,6 +166,7 @@ where
             runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -175,6 +179,10 @@ where
     /// Borrow the concrete protocol.
     pub fn protocol(&self) -> &P {
         self.protocol.as_ref()
+    }
+
+    pub(crate) fn policies(&self) -> &Policies {
+        &self.policies
     }
 
     /// Borrow the configured telemetry pipeline.
@@ -218,7 +226,7 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_serial_stream_without_connection_limit(
+        serve_serial_io_with_policies(
             &mut io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -227,14 +235,16 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            &self.policies,
         )
         .await
     }
 }
 
-impl<P, H, Observer> Clone for SerialTcpServer<P, H, Observer>
+impl<P, H, Observer, Policies> Clone for SerialTcpServer<P, H, Observer, Policies>
 where
     Observer: Clone,
+    Policies: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -245,12 +255,13 @@ where
             runtime_state: self.runtime_state.clone(),
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
+            policies: self.policies.clone(),
         }
     }
 }
 
 /// Worker-local TCP server with exclusive mutable connection state.
-pub struct LocalSerialTcpServer<P, H, Observer = NoopObserver> {
+pub struct LocalSerialTcpServer<P, H, Observer = NoopObserver, Policies = NoTcpPolicies> {
     protocol: Rc<P>,
     handler: Rc<H>,
     config: NacelleTcpConfig,
@@ -258,11 +269,12 @@ pub struct LocalSerialTcpServer<P, H, Observer = NoopObserver> {
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: Arc<str>,
+    policies: Policies,
 }
 
 #[doc(hidden)]
-pub type LocalAppStateSerialTcpServer<P, H, Observer, AppState> =
-    LocalSerialTcpServer<P, LocalAppStateHandler<P, H, AppState>, Observer>;
+pub type LocalAppStateSerialTcpServer<P, H, Observer, AppState, Policies = NoTcpPolicies> =
+    LocalSerialTcpServer<P, LocalAppStateHandler<P, H, AppState>, Observer, Policies>;
 
 impl<P, H> LocalSerialTcpServer<P, H, NoopObserver> {
     /// Construct a worker-local serial server with one handler for all requests.
@@ -275,17 +287,18 @@ impl<P, H> LocalSerialTcpServer<P, H, NoopObserver> {
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: Arc::from("direct"),
+            policies: NoTcpPolicies,
         }
     }
 }
 
-impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
+impl<P, H, Observer, Policies> LocalSerialTcpServer<P, H, Observer, Policies> {
     /// Bind application state before worker-local serial request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> LocalAppStateSerialTcpServer<P, H, Observer, AppState>
+    ) -> LocalAppStateSerialTcpServer<P, H, Observer, AppState, Policies>
     where
         P: Protocol,
         H: LocalSerialTcpHandler<P, AppState>,
@@ -299,15 +312,17 @@ impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 }
 
-impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer>
+impl<P, H, Observer, Policies> LocalSerialTcpServer<P, H, Observer, Policies>
 where
     P: Protocol,
     H: LocalSerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     /// Set worker-local TCP framing and buffering configuration.
     pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
@@ -332,7 +347,7 @@ where
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> LocalSerialTcpServer<P, H, Next>
+    ) -> LocalSerialTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -345,6 +360,7 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -353,7 +369,7 @@ where
         self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> LocalSerialTcpServer<P, H, Next>
+    ) -> LocalSerialTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -366,6 +382,7 @@ where
             runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -403,13 +420,17 @@ where
         self.listener.clone()
     }
 
+    pub(crate) fn policies(&self) -> &Policies {
+        &self.policies
+    }
+
     /// Serve one worker-local serial connection.
     pub async fn serve_io<IO>(&self, io: IO) -> Result<(), NacelleError>
     where
         IO: AsyncRead + AsyncWrite + Unpin + 'static,
     {
         let _connection_permit = self.runtime_state.acquire_connection_tracked()?;
-        serve_local_serial_stream_without_connection_limit(
+        serve_local_serial_io_with_policies(
             io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -418,7 +439,48 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
+            &self.policies,
         )
         .await
+    }
+}
+
+impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
+    /// Attach shared-runtime checkpoints without changing the serial handler.
+    pub fn with_policies<Next>(self, policies: Next) -> SerialTcpServer<P, H, Observer, Next>
+    where
+        P: Protocol,
+        Next: SharedTcpPolicySet<P::Request, P::ConnectionState>,
+    {
+        SerialTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            policies,
+        }
+    }
+}
+
+impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
+    /// Attach worker-local checkpoints without adding `Send` state bounds.
+    pub fn with_policies<Next>(self, policies: Next) -> LocalSerialTcpServer<P, H, Observer, Next>
+    where
+        P: Protocol,
+        Next: LocalTcpPolicySet<P::Request, P::ConnectionState>,
+    {
+        LocalSerialTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            policies,
+        }
     }
 }

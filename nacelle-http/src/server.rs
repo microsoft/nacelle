@@ -16,8 +16,12 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
+use crate::encoder::{HttpBody, incoming_to_body, response_to_http_with_lease};
 use crate::limits::NacelleHttpLimits;
+use crate::policies::{
+    AttachedHttpPolicies, HttpConnection, HttpHandlerInput, HttpPolicySet, HttpRequestHead,
+    HttpSocket, LocalHttpHandlerInput, LocalHttpPolicySet, LocalHttpRequestHead, NoHttpPolicies,
+};
 use crate::policy::validate_http_policy;
 pub use crate::policy::{NacelleForwardedHeader, NacelleHttpPolicy};
 use crate::rate_limit::forwarded_peer_ip;
@@ -25,6 +29,7 @@ use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeo
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo, RequiredResponder};
+use nacelle_core::policy::{Control, PolicyLease, Rejection, RejectionKind};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
@@ -45,86 +50,157 @@ trait HttpDispatch<State, Observer>
 where
     Observer: NacelleTelemetryObserver,
 {
+    type HeadLease: PolicyLease + 'static;
+
     fn connection_info(&self) -> &ConnectionInfo;
 
+    fn admit_head(
+        &mut self,
+        parts: &mut http::request::Parts,
+        peer_ip: Option<IpAddr>,
+        body_len: Option<usize>,
+    ) -> impl Future<Output = Result<Self::HeadLease, Rejection>>;
+
     fn call(
-        &self,
+        &mut self,
         request: HttpRequest,
-    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>>;
+    ) -> impl Future<Output = Result<Result<HttpHandlerCompletion, NacelleError>, Rejection>>;
 }
 
-struct SharedHttpDispatch<H, State> {
+struct SharedHttpDispatch<'a, H, State, Policies> {
     handler: Arc<H>,
     connection: ConnectionContext<Arc<State>>,
+    policies: &'a Policies,
 }
 
-impl<H, State> Clone for SharedHttpDispatch<H, State> {
+impl<H, State, Policies> Clone for SharedHttpDispatch<'_, H, State, Policies> {
     fn clone(&self) -> Self {
         Self {
             handler: self.handler.clone(),
             connection: self.connection.clone(),
+            policies: self.policies,
         }
     }
 }
 
-impl<H, State, Observer> HttpDispatch<State, Observer> for SharedHttpDispatch<H, State>
+impl<H, State, Observer, Policies> HttpDispatch<State, Observer>
+    for SharedHttpDispatch<'_, H, State, Policies>
 where
     State: Send + Sync + 'static,
     H: HttpHandler<State>,
     Observer: NacelleTelemetryObserver,
+    Policies: HttpPolicySet<State>,
 {
+    type HeadLease = Policies::HeadLease;
+
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
     }
 
-    fn call(
-        &self,
-        request: HttpRequest,
-    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
+    async fn admit_head(
+        &mut self,
+        parts: &mut http::request::Parts,
+        peer_ip: Option<IpAddr>,
+        body_len: Option<usize>,
+    ) -> Result<Self::HeadLease, Rejection> {
+        self.policies
+            .head(&mut HttpRequestHead {
+                parts,
+                connection: &mut self.connection,
+                peer_ip,
+                body_len,
+                state_type: std::marker::PhantomData,
+            })
+            .await
+    }
+
+    async fn call(
+        &mut self,
+        mut request: HttpRequest,
+    ) -> Result<Result<HttpHandlerCompletion, NacelleError>, Rejection> {
+        let _handler_lease = self
+            .policies
+            .handler(&mut HttpHandlerInput {
+                request: &mut request,
+                connection: &mut self.connection,
+                state_type: std::marker::PhantomData,
+            })
+            .await?;
         let context = HttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
+        Ok(nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context).await)
     }
 }
 
-struct LocalHttpDispatch<H, State> {
+struct LocalHttpDispatch<'a, H, State, Policies> {
     handler: Rc<H>,
     connection: ConnectionContext<Rc<State>>,
+    policies: &'a Policies,
 }
 
-impl<H, State> Clone for LocalHttpDispatch<H, State> {
+impl<H, State, Policies> Clone for LocalHttpDispatch<'_, H, State, Policies> {
     fn clone(&self) -> Self {
         Self {
             handler: self.handler.clone(),
             connection: self.connection.clone(),
+            policies: self.policies,
         }
     }
 }
 
 #[allow(clippy::future_not_send)]
-impl<H, State, Observer> HttpDispatch<State, Observer> for LocalHttpDispatch<H, State>
+impl<H, State, Observer, Policies> HttpDispatch<State, Observer>
+    for LocalHttpDispatch<'_, H, State, Policies>
 where
     State: 'static,
     H: LocalHttpHandler<State>,
     Observer: NacelleTelemetryObserver,
+    Policies: LocalHttpPolicySet<State>,
 {
+    type HeadLease = Policies::HeadLease;
+
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
     }
 
-    fn call(
-        &self,
-        request: HttpRequest,
-    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>> {
+    async fn admit_head(
+        &mut self,
+        parts: &mut http::request::Parts,
+        peer_ip: Option<IpAddr>,
+        body_len: Option<usize>,
+    ) -> Result<Self::HeadLease, Rejection> {
+        self.policies
+            .head(&mut LocalHttpRequestHead {
+                parts,
+                connection: &mut self.connection,
+                peer_ip,
+                body_len,
+                state_type: std::marker::PhantomData,
+            })
+            .await
+    }
+
+    async fn call(
+        &mut self,
+        mut request: HttpRequest,
+    ) -> Result<Result<HttpHandlerCompletion, NacelleError>, Rejection> {
+        let _handler_lease = self
+            .policies
+            .handler(&mut LocalHttpHandlerInput {
+                request: &mut request,
+                connection: &mut self.connection,
+                state_type: std::marker::PhantomData,
+            })
+            .await?;
         let context = LocalHttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
+        Ok(nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context).await)
     }
 }
 
@@ -162,10 +238,16 @@ where
 /// ```text
 /// cargo run -p nacelle-examples --bin direct_http --no-default-features --features http
 /// ```
-pub struct HyperServer<H = (), F = NoHttpConnectionState, Observer = NoopObserver> {
+pub struct HyperServer<
+    H = (),
+    F = NoHttpConnectionState,
+    Observer = NoopObserver,
+    Policies = NoHttpPolicies,
+> {
     handler: Arc<H>,
     connection_state_factory: Arc<F>,
     runtime: HttpRuntime<Observer>,
+    policies: Policies,
 }
 
 #[derive(Clone)]
@@ -211,10 +293,16 @@ where
 /// [`HyperServer`] contract. Worker-local execution requires the facade's
 /// `experimental-thread-per-core` feature and is outside the supported `0.3`
 /// contract.
-pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserver> {
+pub struct LocalHyperServer<
+    H,
+    F = NoHttpConnectionState,
+    Observer = NoopObserver,
+    Policies = NoHttpPolicies,
+> {
     handler: Rc<H>,
     connection_state_factory: Rc<F>,
     runtime: HttpRuntime<Observer>,
+    policies: Policies,
 }
 
 /// Process-wide HTTP edge state shared by worker-local listeners.
@@ -263,20 +351,52 @@ impl<H> LocalHyperServer<H, NoHttpConnectionState, NoopObserver> {
             handler: Rc::new(handler),
             connection_state_factory: Rc::new(NoHttpConnectionState),
             runtime: HttpRuntime::default(),
+            policies: NoHttpPolicies,
         }
     }
 }
 
-impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
+impl<H, F, Observer> LocalHyperServer<H, F, Observer, NoHttpPolicies> {
+    /// Attach initialized worker-local policies once, without changing handler types.
+    ///
+    /// ```compile_fail
+    /// use nacelle_http::{LocalHyperServer, NoHttpPolicies};
+    /// LocalHyperServer::new(())
+    ///     .with_policies(NoHttpPolicies)
+    ///     .with_policies(NoHttpPolicies);
+    /// ```
+    pub fn with_policies<NewPolicies>(
+        self,
+        policies: NewPolicies,
+    ) -> LocalHyperServer<H, F, Observer, AttachedHttpPolicies<NewPolicies>>
+    where
+        F: LocalHttpConnectionStateFactory,
+        NewPolicies: LocalHttpPolicySet<F::State>,
+    {
+        LocalHyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: self.runtime,
+            policies: AttachedHttpPolicies(policies),
+        }
+    }
+}
+
+impl<H, F, Observer, Policies> LocalHyperServer<H, F, Observer, Policies> {
     /// Replace the worker-local connection state factory.
-    pub fn with_connection_state_factory<F2>(self, factory: F2) -> LocalHyperServer<H, F2, Observer>
+    pub fn with_connection_state_factory<F2>(
+        self,
+        factory: F2,
+    ) -> LocalHyperServer<H, F2, Observer, Policies>
     where
         F2: LocalHttpConnectionStateFactory,
+        Policies: LocalHttpPolicySet<F2::State>,
     {
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: Rc::new(factory),
             runtime: self.runtime,
+            policies: self.policies,
         }
     }
 
@@ -285,7 +405,7 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> LocalHyperServer<LocalHttpAppStateHandler<H, AppState>, F, Observer>
+    ) -> LocalHyperServer<LocalHttpAppStateHandler<H, AppState>, F, Observer, Policies>
     where
         F: LocalHttpConnectionStateFactory,
         H: LocalHttpHandler<F::State, AppState>,
@@ -295,21 +415,23 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
             handler: Rc::new(LocalHttpAppStateHandler::new(self.handler, app_state)),
             connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
+            policies: self.policies,
         }
     }
 }
 
-impl<H, F, Observer> LocalHyperServer<H, F, Observer>
+impl<H, F, Observer, Policies> LocalHyperServer<H, F, Observer, Policies>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: LocalHttpPolicySet<F::State>,
 {
     /// Set telemetry for this worker.
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> LocalHyperServer<H, F, Next>
+    ) -> LocalHyperServer<H, F, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -317,6 +439,7 @@ where
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
+            policies: self.policies,
             runtime: HttpRuntime {
                 telemetry,
                 runtime_state: self.runtime.runtime_state,
@@ -335,7 +458,7 @@ where
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
         shared_state: LocalHttpSharedState,
-    ) -> LocalHyperServer<H, F, Next>
+    ) -> LocalHyperServer<H, F, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -344,6 +467,7 @@ where
         LocalHyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
+            policies: self.policies,
             runtime: HttpRuntime {
                 telemetry,
                 runtime_state,
@@ -417,13 +541,21 @@ where
                             continue;
                         }
                     };
+                    let socket_lease = match server.policies.socket(&HttpSocket { peer_addr, local_addr }) {
+                        Ok(lease) => lease,
+                        Err(rejection) => {
+                            server.runtime.telemetry.connection_rejected(NacelleTransport::new("http"), rejection.reason());
+                            continue;
+                        }
+                    };
                     server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
                         .with_listener(server.runtime.listener.clone());
                     let server = server.clone();
-                    connections.spawn_local(async move {
-                        run_local_http_connection(server, stream, connection, connection_permit).await
-                    });
+                    connections.spawn_local(run_local_http_connection(
+                        server, move |connection| async move { Ok((stream, connection)) }, connection,
+                        connection_permit, socket_lease,
+                    ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -482,12 +614,19 @@ where
                             continue;
                         }
                     };
+                    let socket_lease = match server.policies.socket(&HttpSocket { peer_addr, local_addr }) {
+                        Ok(lease) => lease,
+                        Err(rejection) => {
+                            server.runtime.telemetry.connection_rejected(NacelleTransport::new("http"), rejection.reason());
+                            continue;
+                        }
+                    };
                     server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
                         .with_listener(server.runtime.listener.clone());
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     let server = server.clone();
-                    connections.spawn_local(async move {
+                    let transport = move |connection: NacelleConnectionMeta| async move {
                         let stream = match tokio::time::timeout(
                             handshake_timeout,
                             acceptor.accept(stream),
@@ -497,10 +636,6 @@ where
                             Ok(Ok(stream)) => stream,
                             Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                             Err(_) => {
-                                server.runtime.telemetry.timeout(
-                                    NacelleTransport::new("http"),
-                                    "tls_handshake",
-                                );
                                 return Err(NacelleError::Timeout(
                                     NacelleTimeoutReason::TlsHandshake,
                                 ));
@@ -508,9 +643,11 @@ where
                         };
                         let connection =
                             connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
-                        run_local_http_connection(server, stream, connection, connection_permit)
-                            .await
-                    });
+                        Ok((stream, connection))
+                    };
+                    connections.spawn_local(run_local_http_connection(
+                        server, transport, connection, connection_permit, socket_lease,
+                    ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -531,15 +668,17 @@ where
     }
 }
 
-impl<H, F, Observer> Clone for HyperServer<H, F, Observer>
+impl<H, F, Observer, Policies> Clone for HyperServer<H, F, Observer, Policies>
 where
     Observer: Clone,
+    Policies: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             handler: self.handler.clone(),
             connection_state_factory: self.connection_state_factory.clone(),
             runtime: self.runtime.clone(),
+            policies: self.policies.clone(),
         }
     }
 }
@@ -553,19 +692,60 @@ impl<H> HyperServer<H, NoHttpConnectionState, NoopObserver> {
             handler: Arc::new(handler),
             connection_state_factory: Arc::new(NoHttpConnectionState),
             runtime: HttpRuntime::new(telemetry, runtime_state),
+            policies: NoHttpPolicies,
         }
     }
 }
 
-impl<H, F, Observer> HyperServer<H, F, Observer> {
-    pub fn with_connection_state_factory<F2>(self, factory: F2) -> HyperServer<H, F2, Observer>
+impl<H, F, Observer> HyperServer<H, F, Observer, NoHttpPolicies> {
+    /// Attach initialized policies once. Registration does not alter handler types.
+    ///
+    /// ```compile_fail
+    /// use nacelle_http::{HyperServer, HttpPolicies};
+    /// let server = HyperServer::new(())
+    ///     .with_policies(HttpPolicies::new())
+    ///     .with_policies(HttpPolicies::new());
+    /// ```
+    ///
+    /// Explicit no-op sets also count as an attachment:
+    ///
+    /// ```compile_fail
+    /// use nacelle_http::{HyperServer, NoHttpPolicies};
+    /// HyperServer::new(())
+    ///     .with_policies(NoHttpPolicies)
+    ///     .with_policies(NoHttpPolicies);
+    /// ```
+    pub fn with_policies<NewPolicies>(
+        self,
+        policies: NewPolicies,
+    ) -> HyperServer<H, F, Observer, AttachedHttpPolicies<NewPolicies>>
+    where
+        F: HttpConnectionStateFactory,
+        NewPolicies: HttpPolicySet<F::State>,
+    {
+        HyperServer {
+            handler: self.handler,
+            connection_state_factory: self.connection_state_factory,
+            runtime: self.runtime,
+            policies: AttachedHttpPolicies(policies),
+        }
+    }
+}
+
+impl<H, F, Observer, Policies> HyperServer<H, F, Observer, Policies> {
+    pub fn with_connection_state_factory<F2>(
+        self,
+        factory: F2,
+    ) -> HyperServer<H, F2, Observer, Policies>
     where
         F2: HttpConnectionStateFactory,
+        Policies: HttpPolicySet<F2::State>,
     {
         HyperServer {
             handler: self.handler,
             connection_state_factory: Arc::new(factory),
             runtime: self.runtime,
+            policies: self.policies,
         }
     }
 
@@ -574,7 +754,7 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> HyperServer<SharedHttpAppStateHandler<H, AppState>, F, Observer>
+    ) -> HyperServer<SharedHttpAppStateHandler<H, AppState>, F, Observer, Policies>
     where
         F: HttpConnectionStateFactory,
         H: HttpHandler<F::State, AppState>,
@@ -584,17 +764,22 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
             handler: Arc::new(SharedHttpAppStateHandler::new(self.handler, app_state)),
             connection_state_factory: self.connection_state_factory,
             runtime: self.runtime,
+            policies: self.policies,
         }
     }
 }
 
-impl<H, F, Observer> HyperServer<H, F, Observer>
+impl<H, F, Observer, Policies> HyperServer<H, F, Observer, Policies>
 where
     F: HttpConnectionStateFactory,
     H: HttpHandler<F::State>,
     Observer: NacelleTelemetryObserver,
+    Policies: HttpPolicySet<F::State>,
 {
-    pub fn with_telemetry<Next>(self, telemetry: NacelleTelemetry<Next>) -> HyperServer<H, F, Next>
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> HyperServer<H, F, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -602,6 +787,7 @@ where
         HyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
+            policies: self.policies,
             runtime: HttpRuntime {
                 telemetry,
                 runtime_state: self.runtime.runtime_state,
@@ -627,7 +813,7 @@ where
         self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> HyperServer<H, F, Next>
+    ) -> HyperServer<H, F, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -635,6 +821,7 @@ where
         HyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
+            policies: self.policies,
             runtime: HttpRuntime {
                 telemetry,
                 runtime_state,
@@ -780,6 +967,13 @@ where
                             continue;
                         }
                     };
+                    let socket_lease = match server.policies.socket(&HttpSocket { peer_addr, local_addr }) {
+                        Ok(lease) => lease,
+                        Err(rejection) => {
+                            server.runtime.telemetry.connection_rejected(NacelleTransport::new("http"), rejection.reason());
+                            continue;
+                        }
+                    };
                     server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(
                         Some(peer_addr),
@@ -788,9 +982,10 @@ where
                     .with_listener(server.runtime.listener.clone());
                     connections.spawn(run_http_connection(
                         server,
-                        stream,
+                        move |connection| async move { Ok((stream, connection)) },
                         connection,
                         connection_permit,
+                        socket_lease,
                     ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
@@ -920,6 +1115,13 @@ where
                             continue;
                         }
                     };
+                    let socket_lease = match server.policies.socket(&HttpSocket { peer_addr, local_addr }) {
+                        Ok(lease) => lease,
+                        Err(rejection) => {
+                            server.runtime.telemetry.connection_rejected(NacelleTransport::new("http"), rejection.reason());
+                            continue;
+                        }
+                    };
                     server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(
                         Some(peer_addr),
@@ -927,7 +1129,7 @@ where
                     )
                     .with_listener(server.runtime.listener.clone());
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
-                    connections.spawn(async move {
+                    let transport = move |connection: NacelleConnectionMeta| async move {
                         let tls_stream = match tokio::time::timeout(
                             handshake_timeout,
                             acceptor.accept(stream),
@@ -937,23 +1139,17 @@ where
                             Ok(Ok(stream)) => stream,
                             Ok(Err(error)) => return Err(NacelleError::protocol(error)),
                             Err(_) => {
-                                server
-                                    .runtime.telemetry
-                                    .timeout(NacelleTransport::new("http"), "tls_handshake");
                                 return Err(NacelleError::Timeout(
                                     NacelleTimeoutReason::TlsHandshake,
                                 ));
                             }
                         };
                         let connection = connection.with_tls(nacelle_rustls::connection_tls_meta(tls_stream.get_ref().1));
-                        run_http_connection(
-                            server,
-                            tls_stream,
-                            connection,
-                            connection_permit,
-                        )
-                        .await
-                    });
+                        Ok((tls_stream, connection))
+                    };
+                    connections.spawn(run_http_connection(
+                        server, transport, connection, connection_permit, socket_lease,
+                    ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -977,13 +1173,14 @@ where
         &self,
         request: Request<Incoming>,
         connection: &ConnectionContext<Arc<F::State>>,
-    ) -> Result<Response<HttpBody<Observer>>, NacelleError> {
+    ) -> Result<Response<HttpBody<Observer, Policies::HeadLease>>, NacelleError> {
         self.runtime
             .handle_with_dispatch(
                 request,
-                &SharedHttpDispatch {
+                &mut SharedHttpDispatch {
                     handler: self.handler.clone(),
                     connection: connection.clone(),
+                    policies: &self.policies,
                 },
             )
             .await
@@ -997,8 +1194,8 @@ where
     async fn handle_with_dispatch<State, D>(
         &self,
         request: Request<Incoming>,
-        dispatch: &D,
-    ) -> Result<Response<HttpBody<Observer>>, NacelleError>
+        dispatch: &mut D,
+    ) -> Result<Response<HttpBody<Observer, D::HeadLease>>, NacelleError>
     where
         D: HttpDispatch<State, Observer>,
     {
@@ -1020,11 +1217,12 @@ where
                 reason: Some(rejection.reason),
                 peer_resolution_reason,
             });
-            return response_to_http(
-                HttpResponse::bytes(rejection.status, rejection.reason),
+            return response_to_http_with_lease(
+                close_response(HttpResponse::bytes(rejection.status, rejection.reason)),
                 self.runtime_state.clone(),
                 self.telemetry.clone(),
                 &self.http_policy,
+                None,
             );
         }
         if let Some(peer_ip) = effective_peer_ip {
@@ -1043,15 +1241,16 @@ where
                     reason: Some(reason),
                     peer_resolution_reason,
                 });
-                return response_to_http(
-                    HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
+                return response_to_http_with_lease(
+                    close_response(HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason)),
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
+                    None,
                 );
             }
         }
-        let (parts, body) = request.into_parts();
+        let (mut parts, body) = request.into_parts();
         let body_len_hint = body
             .size_hint()
             .upper()
@@ -1075,11 +1274,15 @@ where
                 reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
                 peer_resolution_reason,
             });
-            return response_to_http(
-                HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
+            return response_to_http_with_lease(
+                close_response(HttpResponse::bytes(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    error.to_string(),
+                )),
                 self.runtime_state.clone(),
                 self.telemetry.clone(),
                 &self.http_policy,
+                None,
             );
         }
         let _request_permit = match self.runtime_state.acquire_request_tracked() {
@@ -1100,11 +1303,37 @@ where
                     reason: Some("in_flight_requests"),
                     peer_resolution_reason,
                 });
-                return response_to_http(
-                    HttpResponse::bytes(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
+                return response_to_http_with_lease(
+                    close_response(HttpResponse::bytes(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        error.to_string(),
+                    )),
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
+                    None,
+                );
+            }
+        };
+        let head_lease = match dispatch
+            .admit_head(&mut parts, effective_peer_ip, body_len_hint)
+            .await
+        {
+            Ok(lease) => lease,
+            Err(rejection) => {
+                return self.policy_rejection_response(
+                    rejection,
+                    None,
+                    HttpAccessLog {
+                        method: &method,
+                        uri: &uri,
+                        peer_ip: effective_peer_ip,
+                        status: policy_rejection_status(rejection),
+                        request_bytes: 0,
+                        elapsed: elapsed_since(request_started),
+                        reason: Some(rejection.reason()),
+                        peer_resolution_reason,
+                    },
                 );
             }
         };
@@ -1141,14 +1370,34 @@ where
             handler_with_body.await
         };
 
+        let handler_result = match handler_result {
+            Ok(result) => result,
+            Err(rejection) => {
+                return self.policy_rejection_response(
+                    rejection,
+                    Some(head_lease),
+                    HttpAccessLog {
+                        method: &method,
+                        uri: &uri,
+                        peer_ip: effective_peer_ip,
+                        status: policy_rejection_status(rejection),
+                        request_bytes: request_body_bytes.load(Ordering::Relaxed),
+                        elapsed: elapsed_since(request_started),
+                        reason: Some(rejection.reason()),
+                        peer_resolution_reason,
+                    },
+                );
+            }
+        };
         match handler_result {
             Ok(completion) => {
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
-                let response = response_to_http(
+                let response = response_to_http_with_lease(
                     completion.into_inner().response,
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
+                    Some(head_lease),
                 );
                 if let Ok(response) = &response {
                     self.access_log(HttpAccessLog {
@@ -1177,11 +1426,15 @@ where
                     &error,
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
-                let response = response_to_http(
-                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
+                let response = response_to_http_with_lease(
+                    close_response(HttpResponse::bytes(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal server error",
+                    )),
                     self.runtime_state.clone(),
                     self.telemetry.clone(),
                     &self.http_policy,
+                    Some(head_lease),
                 );
                 if let Ok(response) = &response {
                     self.access_log(HttpAccessLog {
@@ -1204,6 +1457,27 @@ where
                 response
             }
         }
+    }
+
+    fn policy_rejection_response<Lease>(
+        &self,
+        rejection: Rejection,
+        lease: Option<Lease>,
+        log: HttpAccessLog<'_>,
+    ) -> Result<Response<HttpBody<Observer, Lease>>, NacelleError> {
+        self.telemetry
+            .request_rejected(NacelleTransport::new("http"), rejection.reason());
+        self.access_log(log);
+        response_to_http_with_lease(
+            close_response(HttpResponse::bytes(
+                policy_rejection_status(rejection),
+                rejection.reason(),
+            )),
+            self.runtime_state.clone(),
+            self.telemetry.clone(),
+            &self.http_policy,
+            lease,
+        )
     }
 
     fn request_timing_enabled(&self) -> bool {
@@ -1266,6 +1540,22 @@ where
     }
 }
 
+fn close_response(mut response: HttpResponse) -> HttpResponse {
+    response.headers.insert(
+        http::header::CONNECTION,
+        http::HeaderValue::from_static("close"),
+    );
+    response
+}
+
+fn policy_rejection_status(rejection: Rejection) -> StatusCode {
+    match rejection.kind() {
+        RejectionKind::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        RejectionKind::Denied => StatusCode::FORBIDDEN,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
 fn peer_rate_rejection_reason(result: NacellePeerRateLimitResult) -> &'static str {
     match result {
         NacellePeerRateLimitResult::Allowed => unreachable!("allowed peers are not rejected"),
@@ -1296,24 +1586,70 @@ fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     }
 }
 
-async fn run_http_connection<H, F, Observer, I>(
-    server: Arc<HyperServer<H, F, Observer>>,
-    stream: I,
+async fn run_http_connection<H, F, Observer, Policies, I, T, TFut>(
+    server: Arc<HyperServer<H, F, Observer, Policies>>,
+    transport: T,
     connection: NacelleConnectionMeta,
     _connection_permit: nacelle_core::limits::TrackedPermit,
+    _socket_lease: Policies::SocketLease,
 ) -> Result<(), NacelleError>
 where
     F: HttpConnectionStateFactory,
     H: HttpHandler<F::State>,
     Observer: NacelleTelemetryObserver,
+    Policies: HttpPolicySet<F::State>,
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: FnOnce(NacelleConnectionMeta) -> TFut + Send,
+    TFut: Future<Output = Result<(I, NacelleConnectionMeta), NacelleError>> + Send,
+{
+    let serving = async {
+        let _accepted = server
+            .policies
+            .accepted(&mut HttpConnection { meta: &connection })
+            .await
+            .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))?;
+        let (stream, connection) =
+            report_http_transport_result(&server.runtime, transport(connection).await)?;
+        run_ready_http_connection(&server, stream, connection).await
+    };
+    let result = server
+        .policies
+        .control()
+        .run_send(serving)
+        .await
+        .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))
+        .and_then(std::convert::identity);
+    server.runtime.telemetry.connection_closed(
+        NacelleTransport::new("http"),
+        None,
+        http_close_reason(&result),
+    );
+    result
+}
+
+async fn run_ready_http_connection<H, F, Observer, Policies, I>(
+    server: &Arc<HyperServer<H, F, Observer, Policies>>,
+    stream: I,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    F: HttpConnectionStateFactory,
+    H: HttpHandler<F::State>,
+    Observer: NacelleTelemetryObserver,
+    Policies: HttpPolicySet<F::State>,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let _ready = server
+        .policies
+        .ready(&mut HttpConnection { meta: &connection })
+        .await
+        .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))?;
     let connection_info = ConnectionInfo::from(&connection);
     let connection_state = Arc::new(server.connection_state_factory.create(&connection_info));
     let connection = ConnectionContext::new(connection_info, connection_state);
     let write_timeout = server.runtime.http_limits.response_write_timeout;
     let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
-    let service_server = server.clone();
+    let service_server = Arc::clone(server);
     let service = service_fn(move |request| {
         let server = service_server.clone();
         let connection = connection.clone();
@@ -1325,7 +1661,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1340,7 +1676,42 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
+    }
+}
+
+async fn run_local_http_connection<H, F, Observer, Policies, I, T, TFut>(
+    server: Rc<LocalHyperServer<H, F, Observer, Policies>>,
+    transport: T,
+    connection: NacelleConnectionMeta,
+    _connection_permit: nacelle_core::limits::TrackedPermit,
+    _socket_lease: Policies::SocketLease,
+) -> Result<(), NacelleError>
+where
+    F: LocalHttpConnectionStateFactory,
+    H: LocalHttpHandler<F::State>,
+    Observer: NacelleTelemetryObserver,
+    Policies: LocalHttpPolicySet<F::State>,
+    I: AsyncRead + AsyncWrite + Unpin + 'static,
+    T: FnOnce(NacelleConnectionMeta) -> TFut,
+    TFut: Future<Output = Result<(I, NacelleConnectionMeta), NacelleError>>,
+{
+    let serving = async {
+        let _accepted = server
+            .policies
+            .accepted(&mut HttpConnection { meta: &connection })
+            .await
+            .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))?;
+        let (stream, connection) =
+            report_http_transport_result(&server.runtime, transport(connection).await)?;
+        run_ready_local_http_connection(&server, stream, connection).await
     };
+    let result = server
+        .policies
+        .control()
+        .run(serving)
+        .await
+        .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))
+        .and_then(std::convert::identity);
     server.runtime.telemetry.connection_closed(
         NacelleTransport::new("http"),
         None,
@@ -1349,35 +1720,41 @@ where
     result
 }
 
-async fn run_local_http_connection<H, F, Observer, I>(
-    server: Rc<LocalHyperServer<H, F, Observer>>,
+async fn run_ready_local_http_connection<H, F, Observer, Policies, I>(
+    server: &Rc<LocalHyperServer<H, F, Observer, Policies>>,
     stream: I,
     connection: NacelleConnectionMeta,
-    _connection_permit: nacelle_core::limits::TrackedPermit,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State>,
     Observer: NacelleTelemetryObserver,
+    Policies: LocalHttpPolicySet<F::State>,
     I: AsyncRead + AsyncWrite + Unpin + 'static,
 {
+    let _ready = server
+        .policies
+        .ready(&mut HttpConnection { meta: &connection })
+        .await
+        .map_err(|rejection| connection_policy_rejection(&server.runtime, rejection))?;
     let connection_info = ConnectionInfo::from(&connection);
     let connection_state = Rc::new(server.connection_state_factory.create(&connection_info));
     let dispatch = LocalHttpDispatch {
         handler: server.handler.clone(),
         connection: ConnectionContext::new(connection_info, connection_state),
+        policies: &server.policies,
     };
     let write_timeout = server.runtime.http_limits.response_write_timeout;
     let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
-    let service_server = server.clone();
+    let service_server = Rc::clone(server);
     let service_dispatch = dispatch.clone();
     let service = service_fn(move |request| {
         let server = service_server.clone();
-        let dispatch = service_dispatch.clone();
+        let mut dispatch = service_dispatch.clone();
         async move {
             server
                 .runtime
-                .handle_with_dispatch(request, &dispatch)
+                .handle_with_dispatch(request, &mut dispatch)
                 .await
         }
     });
@@ -1387,7 +1764,7 @@ where
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
         .keep_alive(server.runtime.http_limits.keep_alive);
     let connection = builder.serve_connection(io, service);
-    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
+    if let Some(max_age) = server.runtime.http_limits.max_connection_age {
         match tokio::time::timeout(max_age, connection).await {
             Ok(result) => result.map_err(NacelleError::protocol),
             Err(_) => {
@@ -1402,12 +1779,31 @@ where
         }
     } else {
         connection.await.map_err(NacelleError::protocol)
-    };
-    server.runtime.telemetry.connection_closed(
-        NacelleTransport::new("http"),
-        None,
-        http_close_reason(&result),
-    );
+    }
+}
+
+fn connection_policy_rejection<Observer: NacelleTelemetryObserver>(
+    runtime: &HttpRuntime<Observer>,
+    rejection: Rejection,
+) -> NacelleError {
+    runtime
+        .telemetry
+        .connection_rejected(NacelleTransport::new("http"), rejection.reason());
+    rejection.into_error()
+}
+
+fn report_http_transport_result<T, Observer: NacelleTelemetryObserver>(
+    runtime: &HttpRuntime<Observer>,
+    result: Result<T, NacelleError>,
+) -> Result<T, NacelleError> {
+    if matches!(
+        &result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake))
+    ) {
+        runtime
+            .telemetry
+            .timeout(NacelleTransport::new("http"), "tls_handshake");
+    }
     result
 }
 
@@ -1626,6 +2022,9 @@ async fn drain_http_connection_tasks<Observer>(
         log_http_connection_result(Some(result));
     }
 }
+
+#[cfg(test)]
+mod policy_tests;
 
 #[cfg(test)]
 mod tests {

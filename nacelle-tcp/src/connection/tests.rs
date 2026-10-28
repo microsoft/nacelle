@@ -35,6 +35,7 @@ use super::{
 
 #[cfg(feature = "policies")]
 mod policies;
+mod static_policies;
 mod unified;
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;

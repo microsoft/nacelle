@@ -17,6 +17,7 @@ http = ["nacelle/http", "dep:http"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 openssl = ["tcp", "nacelle/openssl"]
 bench = []
+policies = ["nacelle/policies"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -99,6 +100,11 @@ required-features = ["tcp", "tls-self-signed"]
 name = "dual_echo"
 path = "src/bin/dual_echo.rs"
 required-features = ["tcp", "http"]
+
+[[bin]]
+name = "policy_echo"
+path = "src/bin/policy_echo.rs"
+required-features = ["tcp", "http", "policies"]
 
 [[bin]]
 name = "compiler-pressure"

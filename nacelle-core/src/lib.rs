@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod limits;
 pub mod peer_rate;
 pub mod pipeline;
+pub mod policy;
 pub mod request;
 pub mod runtime;
 pub mod telemetry;

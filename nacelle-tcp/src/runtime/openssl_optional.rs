@@ -21,8 +21,8 @@ use super::common::{
     reap_finished_connections, record_connection_rejection,
 };
 
-pub async fn serve_tcp_optional_openssl<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
@@ -30,13 +30,14 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_optional_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
-pub async fn serve_tcp_optional_openssl_with_shutdown<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_shutdown<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -45,6 +46,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown(
         server,
@@ -57,8 +59,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -68,6 +70,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -81,8 +84,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_options<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_options<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -92,6 +95,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_optional_openssl_with_options_and_shutdown(
@@ -105,8 +109,8 @@ where
     .await
 }
 
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -117,6 +121,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -131,8 +136,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<
+    P,
+    H,
+    Observer,
+    Policies,
+>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -144,6 +154,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_deadline(
         server,
@@ -159,8 +170,13 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<
+    P,
+    H,
+    Observer,
+    Policies,
+>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -172,6 +188,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -187,8 +204,13 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<
+    P,
+    H,
+    Observer,
+    Policies,
+>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -200,6 +222,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
@@ -220,8 +243,9 @@ pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadl
     P,
     H,
     Observer,
+    Policies,
 >(
-    server: Arc<TcpServer<P, H, Observer>>,
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -233,6 +257,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     let mut connections = tokio::task::JoinSet::new();
@@ -245,75 +270,88 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_connections(&mut connections, NacelleTransport::new("tcp"));
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        record_connection_rejection(server.as_ref(), NacelleTransport::new("tcp"), "unknown", &error);
-                        server
-                            .telemetry()
-                            .connection_rejected(NacelleTransport::new("tcp"), connection_rejection_reason(&error));
-                        continue;
-                    }
-                };
-                let server = server.clone();
-                let acceptor = tls_config.acceptor();
-                let detection_timeout = detection_options.timeout;
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let connection = connection.with_listener(server.listener_label());
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
-                    let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
-                        Ok(is_tls) => is_tls,
-                        Err(error) => {
-                            if matches!(error, NacelleError::Timeout(_)) {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
+                        let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                record_connection_rejection(server.as_ref(), NacelleTransport::new("tcp"), "unknown", &error);
                                 server
                                     .telemetry()
-                                    .timeout(NacelleTransport::new("tcp"), "tls_detect");
+                                    .connection_rejected(NacelleTransport::new("tcp"), connection_rejection_reason(&error));
+                                continue;
                             }
-                            return Err(error);
-                        }
-                    };
+                        };
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        let acceptor = tls_config.acceptor();
+                        let detection_timeout = detection_options.timeout;
+                        connections.spawn(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
 
-                    if !is_tls {
-                        return server.serve_io_without_connection_limit(stream, connection).await;
-                    }
+                            let _connection_permit = connection_permit;
+                                                let connection = connection.with_listener(server.listener_label());
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
+                                Ok(is_tls) => is_tls,
+                                Err(error) => {
+                                    if matches!(error, NacelleError::Timeout(_)) {
+                                        server
+                                            .telemetry()
+                                            .timeout(NacelleTransport::new("tcp"), "tls_detect");
+                                    }
+                                    return Err(error);
+                                }
+                            };
 
-                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
-                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
-                        .map_err(NacelleError::protocol)?;
-                    match tokio::time::timeout(
-                        handshake_timeout,
-                        std::pin::Pin::new(&mut stream).accept(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                        Err(_) => {
-                            server
-                                .telemetry()
-                                .timeout(NacelleTransport::new("tcp"), "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
+                            if !is_tls {
+                                return server.serve_io_without_connection_limit(stream, connection).await;
+                            }
+
+                            let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                            let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                                .map_err(NacelleError::protocol)?;
+                            match tokio::time::timeout(
+                                handshake_timeout,
+                                std::pin::Pin::new(&mut stream).accept(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                                Err(_) => {
+                                    server
+                                        .telemetry()
+                                        .timeout(NacelleTransport::new("tcp"), "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            }
+                            let connection =
+                                connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
+                            server.serve_io_without_connection_limit(stream, connection).await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                    let connection =
-                        connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::new("tcp"));
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_connection_result(joined, NacelleTransport::new("tcp"));
+                    }
+                }
     }
     server.telemetry().shutdown_event(
         NacelleTelemetryEventKind::ListenerStoppedAccepting,
@@ -330,8 +368,8 @@ where
 }
 
 /// Listen on `addr` and serve serial plaintext or OpenSSL connections.
-pub async fn serve_serial_tcp_optional_openssl<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
@@ -340,14 +378,15 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_tcp_optional_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
 /// Listen for serial plaintext or OpenSSL connections until shutdown is requested.
-pub async fn serve_serial_tcp_optional_openssl_with_shutdown<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_shutdown<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -357,6 +396,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -371,8 +411,8 @@ where
 }
 
 /// Listen for serial plaintext or OpenSSL connections with bounded drain.
-pub async fn serve_serial_tcp_optional_openssl_with_shutdown_timeout<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -383,6 +423,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -397,8 +438,8 @@ where
 }
 
 /// Listen for serial plaintext or OpenSSL connections with edge options.
-pub async fn serve_serial_tcp_optional_openssl_with_options<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_options<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -409,6 +450,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_tcp_optional_openssl_with_options_and_shutdown(
@@ -423,8 +465,8 @@ where
 }
 
 /// Listen with serial optional OpenSSL edge options until shutdown.
-pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -436,6 +478,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout(
         server,
@@ -450,8 +493,13 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout<
+    P,
+    H,
+    Observer,
+    Policies,
+>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -464,6 +512,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_deadline(
         server,
@@ -479,8 +528,13 @@ where
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_deadline<
+    P,
+    H,
+    Observer,
+    Policies,
+>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -493,6 +547,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -512,8 +567,9 @@ pub async fn serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_de
     P,
     H,
     Observer,
+    Policies,
 >(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -526,6 +582,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
@@ -546,8 +603,9 @@ pub async fn serve_serial_tcp_optional_openssl_listener_with_options_and_shutdow
     P,
     H,
     Observer,
+    Policies,
 >(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -560,6 +618,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let handshake_timeout = tls_config.handshake_timeout();
@@ -574,84 +633,98 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_connections(&mut connections, transport);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        let context = nacelle_core::telemetry::NacelleMetricsContext::new(
-                            transport,
-                            server.listener_label(),
-                            server.protocol().name(),
-                            "unknown",
-                        );
-                        server.telemetry().operation_error(&context, "accept", &error);
-                        server.telemetry().connection_rejected(
-                            transport,
-                            connection_rejection_reason(&error),
-                        );
-                        continue;
-                    }
-                };
-                let server = server.clone();
-                let acceptor = tls_config.acceptor();
-                let detection_timeout = detection_options.timeout;
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
-                    let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
-                        Ok(is_tls) => is_tls,
-                        Err(error) => {
-                            if matches!(error, NacelleError::Timeout(_)) {
-                                server.telemetry().timeout(transport, "tls_detect");
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                let context = nacelle_core::telemetry::NacelleMetricsContext::new(
+                                    transport,
+                                    server.listener_label(),
+                                    server.protocol().name(),
+                                    "unknown",
+                                );
+                                server.telemetry().operation_error(&context, "accept", &error);
+                                server.telemetry().connection_rejected(
+                                    transport,
+                                    connection_rejection_reason(&error),
+                                );
+                                continue;
                             }
-                            return Err(error);
-                        }
-                    };
+                        };
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        let acceptor = tls_config.acceptor();
+                        let detection_timeout = detection_options.timeout;
+                        connections.spawn(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
 
-                    if !is_tls {
-                        return server
-                            .serve_io_without_connection_limit(stream, connection)
-                            .await;
-                    }
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
+                                Ok(is_tls) => is_tls,
+                                Err(error) => {
+                                    if matches!(error, NacelleError::Timeout(_)) {
+                                        server.telemetry().timeout(transport, "tls_detect");
+                                    }
+                                    return Err(error);
+                                }
+                            };
 
-                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
-                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
-                        .map_err(NacelleError::protocol)?;
-                    match tokio::time::timeout(
-                        handshake_timeout,
-                        std::pin::Pin::new(&mut stream).accept(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                        Err(_) => {
-                            server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
+                            if !is_tls {
+                                return server
+                                    .serve_io_without_connection_limit(stream, connection)
+                                    .await;
+                            }
+
+                            let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                            let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                                .map_err(NacelleError::protocol)?;
+                            match tokio::time::timeout(
+                                handshake_timeout,
+                                std::pin::Pin::new(&mut stream).accept(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                                Err(_) => {
+                                    server.telemetry().timeout(transport, "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            }
+                            let connection =
+                                connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
+                            server
+                                .serve_io_without_connection_limit(stream, connection)
+                                .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                    let connection =
-                        connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
-                    server
-                        .serve_io_without_connection_limit(stream, connection)
-                        .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, transport);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_connection_result(joined, transport);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(

@@ -38,6 +38,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
+use crate::policies::{
+    LocalDispatch, LocalTcpPolicySet, NoTcpPolicies, DeliveryDispatch, SharedDispatch,
+    SharedTcpPolicySet,
+};
 #[cfg(feature = "policies")]
 use crate::policy::TcpLifecyclePolicy;
 use crate::protocol::{
@@ -46,10 +50,13 @@ use crate::protocol::{
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::ConnectionInfo;
+use nacelle_core::policy::{PolicyLease, Rejection};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 
 mod body;
+#[doc(hidden)]
+pub mod checkpoint;
 mod framing;
 mod io;
 mod metrics;
@@ -67,6 +74,197 @@ use request::{
     SharedRequestDispatch, run_request,
 };
 use response::{ResponseDelivery, write_error};
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_shared_halves_with_policies<P, H, R, W, Observer, Policies>(
+    reader: R,
+    writer: W,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    policies: &Policies,
+    acquire_connection: bool,
+) -> Result<(), NacelleError>
+where
+    P: SharedProtocol,
+    H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    Policies: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    let _connection_permit = acquire_connection
+        .then(|| runtime_state.acquire_connection_tracked())
+        .transpose()?;
+    policies
+        .run(drive_connection_with_dispatch(
+            reader,
+            writer,
+            protocol,
+            SharedRequestDispatch(handler),
+            SharedDispatch(policies),
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        ))
+        .await
+        .map_err(Rejection::into_error)?
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_shared_io_with_policies<P, H, IO, Observer, Policies>(
+    mut io: IO,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    policies: &Policies,
+    acquire_connection: bool,
+) -> Result<(), NacelleError>
+where
+    P: SharedProtocol,
+    H: TcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    Policies: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    serve_shared_halves_with_policies(
+        reader,
+        writer,
+        protocol,
+        handler,
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+        policies,
+        acquire_connection,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_serial_io_with_policies<P, H, IO, Observer, Policies>(
+    io: &mut IO,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    policies: &Policies,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: SerialTcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    Policies: SharedTcpPolicySet<P::Request, P::ConnectionState>,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (reader, writer) = tokio::io::split(io);
+    policies
+        .run(drive_connection_with_dispatch(
+            reader,
+            writer,
+            protocol,
+            SerialRequestDispatch(handler),
+            SharedDispatch(policies),
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        ))
+        .await
+        .map_err(Rejection::into_error)?
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_local_io_with_policies<P, H, IO, Observer, Policies>(
+    mut io: IO,
+    protocol: Rc<P>,
+    handler: Rc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    policies: &Policies,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: crate::protocol::LocalTcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    Policies: LocalTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    policies
+        .run(drive_connection_with_dispatch(
+            reader,
+            writer,
+            protocol,
+            LocalRequestDispatch(handler),
+            LocalDispatch(policies),
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        ))
+        .await
+        .map_err(Rejection::into_error)?
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_local_serial_io_with_policies<P, H, IO, Observer, Policies>(
+    mut io: IO,
+    protocol: Rc<P>,
+    handler: Rc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    policies: &Policies,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    H: LocalSerialTcpHandler<P>,
+    Observer: NacelleTelemetryObserver,
+    Policies: LocalTcpPolicySet<P::Request, P::ConnectionState>,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, writer) = tokio::io::split(&mut io);
+    policies
+        .run(drive_connection_with_dispatch(
+            reader,
+            writer,
+            protocol,
+            LocalSerialRequestDispatch(handler),
+            LocalDispatch(policies),
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        ))
+        .await
+        .map_err(Rejection::into_error)?
+}
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W, Observer>(
@@ -191,6 +389,7 @@ where
         writer,
         protocol,
         SharedRequestDispatch(handler),
+        SharedDispatch(&NoTcpPolicies),
         config,
         telemetry,
         runtime_state,
@@ -201,21 +400,23 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn drive_connection_with_dispatch<P, PO, D, R, W, Observer>(
+async fn drive_connection_with_dispatch<P, PO, D, R, W, Observer, Policies>(
     reader: R,
     mut writer: W,
     protocol: PO,
     handler: D,
+    policies: Policies,
     config: NacelleTcpConfig,
     telemetry: NacelleTelemetry<Observer>,
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
-    connection: NacelleConnectionMeta,
+    mut connection: NacelleConnectionMeta,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     PO: Deref<Target = P>,
     D: RequestDispatch<P>,
+    Policies: DeliveryDispatch<P::Request, D::Storage, W, Observer>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -226,16 +427,20 @@ where
         .policy()
         .transport_ready(&connection)
         .await
-        .inspect_err(|error| {
+        .inspect_err(|_error| {
             crate::policy::record_error(
                 protocol.deref(),
                 &connection,
                 &telemetry,
                 "policy_transport_ready",
-                error,
+                _error,
             );
             telemetry.connection_rejected(connection.transport, "policy");
         })?;
+    let _ready_lease = policies
+        .ready(&mut connection)
+        .await
+        .map_err(Rejection::into_error)?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
     let connection_info = ConnectionInfo::from(&connection);
@@ -266,6 +471,7 @@ where
     telemetry.connection_opened(transport);
 
     #[cfg(feature = "policies")]
+    let mut legacy_policy_permit = None;
     let mut request_policy_permit = None;
     let result: Result<(), NacelleError> = async {
         'conn: loop {
@@ -273,18 +479,14 @@ where
             request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
             let read_result = {
-                #[cfg(feature = "policies")]
-                let admission = request_policy_permit.is_none().then(|| {
-                    protocol.policy().before_request(
-                        handler.info(&connection_context),
-                        handler.state(&connection_context),
-                    )
-                });
                 async {
                     #[cfg(feature = "policies")]
-                    if let Some(admission) = admission {
-                        request_policy_permit = Some(
-                            admission
+                    if legacy_policy_permit.is_none() {
+                        legacy_policy_permit = Some(
+                            protocol.policy().before_request(
+                                handler.info(&connection_context),
+                                handler.state(&connection_context),
+                            )
                                 .await
                                 .inspect_err(|error| {
                                     crate::policy::record_error(
@@ -297,6 +499,18 @@ where
                                 })
                                 .map_err(framing::MessageReadFailure::policy)?,
                         );
+                    }
+                    if request_policy_permit.is_none() {
+                        let mut failure = None;
+                        request_policy_permit = Some(policies.before(
+                            handler.context_mut(&mut connection_context),
+                            checkpoint::Io {
+                                writer: &mut writer, delivery: &mut response_delivery,
+                                limits: &tcp_limits, telemetry: &telemetry,
+                                metrics: connection_metrics.as_ref(),
+                                phase_duration: telemetry_plan.phase_duration, failure: &mut failure,
+                            },
+                        ).await.map_err(framing::MessageReadFailure::policy)?);
                     }
                     read_message_with_timeout(&mut request_reader, &tcp_limits).await
                 }
@@ -343,6 +557,7 @@ where
                     &mut response_delivery,
                     protocol.deref(),
                     &handler,
+                    &policies,
                     request,
                     error_context,
                     &config,
@@ -353,25 +568,23 @@ where
                     &mut connection_context,
                     connection_metrics.as_ref(),
                     telemetry_plan,
+                    request_policy_permit.as_ref().is_some_and(PolicyLease::requires_flush),
                     #[cfg(feature = "policies")]
-                    request_policy_permit.as_ref().is_some_and(Option::is_some),
+                    legacy_policy_permit.as_ref().is_some_and(Option::is_some),
                 )
                 .await?;
                 #[cfg(feature = "policies")]
+                drop(legacy_policy_permit.take());
                 drop(request_policy_permit.take());
-                #[cfg(feature = "policies")]
                 let mut can_respond = true;
                 let buffered_result = {
-                    #[cfg(feature = "policies")]
-                    let admission = (!request_reader.buffer().is_empty()).then(|| {
-                        protocol.policy().before_request(
-                            handler.info(&connection_context),
-                            handler.state(&connection_context),
-                        )
-                    });
                     async {
                         #[cfg(feature = "policies")]
-                        if let Some(admission) = admission {
+                        if !request_reader.buffer().is_empty() {
+                            let admission = protocol.policy().before_request(
+                                handler.info(&connection_context),
+                                handler.state(&connection_context),
+                            );
                             tokio::pin!(admission);
                             let result = std::future::poll_fn(|cx| {
                                 std::task::Poll::Ready(admission.as_mut().poll(cx))
@@ -397,7 +610,7 @@ where
                                     admission.await
                                 }
                             };
-                            request_policy_permit = Some(result.inspect_err(|error| {
+                            legacy_policy_permit = Some(result.inspect_err(|error| {
                                 crate::policy::record_error(
                                     protocol.deref(),
                                     &connection,
@@ -406,6 +619,20 @@ where
                                     error,
                                 );
                             })?);
+                        }
+                        if !request_reader.buffer().is_empty() {
+                            let mut failure = None;
+                            let admitted = policies.before(
+                                handler.context_mut(&mut connection_context),
+                                checkpoint::Io {
+                                    writer: &mut writer, delivery: &mut response_delivery,
+                                    limits: &tcp_limits, telemetry: &telemetry,
+                                    metrics: connection_metrics.as_ref(),
+                                    phase_duration: telemetry_plan.phase_duration, failure: &mut failure,
+                                },
+                            ).await;
+                            if failure.is_some() { can_respond = false; }
+                            request_policy_permit = Some(admitted?);
                         }
                         request_reader
                             .decode_buffered()
@@ -416,7 +643,6 @@ where
                 decoded = match buffered_result {
                     Ok(decoded) => decoded,
                     Err(error) => {
-                        #[cfg(feature = "policies")]
                         if !can_respond {
                             return Err(error);
                         }
@@ -514,6 +740,7 @@ where
         writer,
         protocol,
         LocalRequestDispatch(handler),
+        LocalDispatch(&NoTcpPolicies),
         config,
         telemetry,
         runtime_state,
@@ -551,6 +778,7 @@ where
         writer,
         protocol,
         SerialRequestDispatch(handler),
+        SharedDispatch(&NoTcpPolicies),
         config,
         telemetry,
         runtime_state,
@@ -584,6 +812,7 @@ where
         writer,
         protocol,
         LocalSerialRequestDispatch(handler),
+        LocalDispatch(&NoTcpPolicies),
         config,
         telemetry,
         runtime_state,

@@ -201,16 +201,20 @@ where
 
     #[cfg(feature = "tcp")]
     /// Start a typed TCP listener under this host's supervision.
-    pub fn enable_tcp<P, H, ServerObserver>(
+    pub fn enable_tcp<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -244,17 +248,18 @@ where
 
     #[cfg(feature = "tcp")]
     /// Start a serial TCP listener with exclusive mutable connection state.
-    pub fn enable_serial_tcp<P, H, ServerObserver>(
+    pub fn enable_serial_tcp<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         self.enable_serial_tcp_with_bind_options(
             name,
@@ -266,18 +271,19 @@ where
 
     #[cfg(feature = "tcp")]
     /// Start a serial TCP listener with explicit bind options.
-    pub fn enable_serial_tcp_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_serial_tcp_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -313,17 +319,21 @@ where
 
     #[cfg(feature = "tcp")]
     /// Start a typed TCP listener with explicit stream options.
-    pub fn enable_tcp_with_options<P, H, ServerObserver>(
+    pub fn enable_tcp_with_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         tcp_options: NacelleTcpOptions,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -358,17 +368,21 @@ where
 
     #[cfg(feature = "tcp")]
     /// Start a typed TCP listener with explicit bind and stream options.
-    pub fn enable_tcp_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_tcp_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -403,16 +417,20 @@ where
 
     #[cfg(all(feature = "tcp", unix))]
     /// Start a typed Unix-domain socket listener.
-    pub fn enable_unix_socket<P, H, ServerObserver>(
+    pub fn enable_unix_socket<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -448,17 +466,21 @@ where
 
     #[cfg(all(feature = "tcp", unix))]
     /// Start a Unix-domain socket listener with explicit path options.
-    pub fn enable_unix_socket_with_options<P, H, ServerObserver>(
+    pub fn enable_unix_socket_with_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -495,17 +517,18 @@ where
 
     #[cfg(all(feature = "tcp", unix))]
     /// Start a serial Unix-domain socket listener.
-    pub fn enable_serial_unix_socket<P, H, ServerObserver>(
+    pub fn enable_serial_unix_socket<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         self.enable_serial_unix_socket_with_options(
             name,
@@ -517,18 +540,19 @@ where
 
     #[cfg(all(feature = "tcp", unix))]
     /// Start a serial Unix-domain listener with explicit path options.
-    pub fn enable_serial_unix_socket_with_options<P, H, ServerObserver>(
+    pub fn enable_serial_unix_socket_with_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
     ) -> &mut Self
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         let name = name.into();
         let path = path.as_ref().to_path_buf();
@@ -566,17 +590,21 @@ where
 
     #[cfg(all(feature = "tcp", feature = "rustls"))]
     /// Start a typed Rustls TCP listener.
-    pub fn enable_tcp_tls<P, H, ServerObserver>(
+    pub fn enable_tcp_tls<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -611,17 +639,21 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Start a typed OpenSSL TCP listener.
-    pub fn enable_tcp_openssl<P, H, ServerObserver>(
+    pub fn enable_tcp_openssl<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         self.enable_tcp_openssl_with_options(
             name,
@@ -634,11 +666,11 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Start an OpenSSL TCP listener with explicit stream options.
-    pub fn enable_tcp_openssl_with_options<P, H, ServerObserver>(
+    pub fn enable_tcp_openssl_with_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
     ) -> &mut Self
@@ -646,6 +678,10 @@ where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         self.enable_tcp_openssl_with_bind_options(
             name,
@@ -658,11 +694,11 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Start an OpenSSL TCP listener with explicit bind and stream options.
-    pub fn enable_tcp_openssl_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_tcp_openssl_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
@@ -670,6 +706,10 @@ where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -706,11 +746,11 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Start a serial OpenSSL TCP listener.
-    pub fn enable_serial_tcp_openssl<P, H, ServerObserver>(
+    pub fn enable_serial_tcp_openssl<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
@@ -718,6 +758,7 @@ where
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         self.enable_serial_tcp_openssl_with_bind_options(
             name,
@@ -730,11 +771,11 @@ where
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Start a serial OpenSSL TCP listener with explicit bind options.
-    pub fn enable_serial_tcp_openssl_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_serial_tcp_openssl_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
     ) -> &mut Self
@@ -743,6 +784,7 @@ where
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -778,17 +820,21 @@ where
 
     #[cfg(feature = "experimental-openssl-detection")]
     /// Start an experimental listener that accepts plaintext or OpenSSL TCP.
-    pub fn enable_tcp_optional_openssl<P, H, ServerObserver>(
+    pub fn enable_tcp_optional_openssl<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         self.enable_tcp_optional_openssl_with_options(
             name,
@@ -802,11 +848,11 @@ where
 
     #[cfg(feature = "experimental-openssl-detection")]
     /// Start optional OpenSSL detection with explicit edge options.
-    pub fn enable_tcp_optional_openssl_with_options<P, H, ServerObserver>(
+    pub fn enable_tcp_optional_openssl_with_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
         detection_options: NacelleTlsDetectionOptions,
@@ -815,6 +861,10 @@ where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
             name,
@@ -828,11 +878,11 @@ where
 
     #[cfg(feature = "experimental-openssl-detection")]
     /// Start optional OpenSSL detection with explicit bind and detection options.
-    pub fn enable_tcp_optional_openssl_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_tcp_optional_openssl_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::TcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
@@ -841,6 +891,10 @@ where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<
+                P::Request,
+                std::sync::Arc<P::ConnectionState>,
+            >,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -873,11 +927,11 @@ where
 
     #[cfg(feature = "experimental-openssl-detection")]
     /// Start a serial listener that accepts plaintext or OpenSSL TCP.
-    pub fn enable_serial_tcp_optional_openssl<P, H, ServerObserver>(
+    pub fn enable_serial_tcp_optional_openssl<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
     ) -> &mut Self
     where
@@ -885,6 +939,7 @@ where
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         self.enable_serial_tcp_optional_openssl_with_bind_options(
             name,
@@ -899,11 +954,11 @@ where
     #[cfg(feature = "experimental-openssl-detection")]
     #[allow(clippy::too_many_arguments)]
     /// Start serial optional OpenSSL detection with explicit edge options.
-    pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, ServerObserver>(
+    pub fn enable_serial_tcp_optional_openssl_with_bind_options<P, H, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
+        server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver, Policies>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
@@ -913,6 +968,7 @@ where
         P::ConnectionState: Send,
         H: nacelle_tcp::SerialTcpHandler<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
+        Policies: nacelle_tcp::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
     {
         let name = name.into();
         let telemetry = self.telemetry.clone();
@@ -949,15 +1005,16 @@ where
 
     #[cfg(feature = "http")]
     /// Start a typed HTTP/1 listener.
-    pub fn enable_http<H, F, ServerObserver>(
+    pub fn enable_http<H, F, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_http::HyperServer<H, F, ServerObserver>,
+        server: nacelle_http::HyperServer<H, F, ServerObserver, Policies>,
     ) -> &mut Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
         H: nacelle_http::HttpHandler<F::State, AppState>,
+        Policies: nacelle_http::HttpPolicySet<F::State>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -988,16 +1045,17 @@ where
 
     #[cfg(all(feature = "http", feature = "rustls"))]
     /// Start a typed HTTP/1 listener over Rustls.
-    pub fn enable_http_tls<H, F, ServerObserver>(
+    pub fn enable_http_tls<H, F, ServerObserver, Policies>(
         &mut self,
         name: impl Into<String>,
         addr: SocketAddr,
-        server: nacelle_http::HyperServer<H, F, ServerObserver>,
+        server: nacelle_http::HyperServer<H, F, ServerObserver, Policies>,
         tls_config: NacelleTlsConfig,
     ) -> &mut Self
     where
         F: nacelle_http::HttpConnectionStateFactory,
         H: nacelle_http::HttpHandler<F::State, AppState>,
+        Policies: nacelle_http::HttpPolicySet<F::State>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();

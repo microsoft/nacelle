@@ -28,6 +28,7 @@
 
 - [Reference protocol](reference/protocol.md)
 - [TCP lifecycle policies](reference/tcp-policies.md)
+- [Static admission policies](reference/policies.md)
 - [Codec primitives](reference/nacelle-codec.md)
 - [HTTP hardening reference](reference/http-hardening.md)
 - [Dependency security resolutions](reference/dependency-security.md)

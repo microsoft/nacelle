@@ -713,7 +713,7 @@ where
 /// its protocol and `!Send` handlers, and processes accepted connections only
 /// through `spawn_local` on that worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState, Policies>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
@@ -723,7 +723,9 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies:
+        nacelle_tcp::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -764,7 +766,15 @@ where
 
 /// Run one worker-local serial TCP listener stack per configured worker.
 #[cfg(feature = "tcp")]
-pub fn run_local_serial_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_serial_tcp_thread_per_core<
+    P,
+    H,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+    Policies,
+>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
@@ -774,7 +784,8 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies: nacelle_tcp::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -815,7 +826,15 @@ where
 
 /// Run one worker-local Rustls TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "rustls"))]
-pub fn run_local_tcp_tls_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_tcp_tls_thread_per_core<
+    P,
+    H,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+    Policies,
+>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
@@ -826,7 +845,9 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies:
+        nacelle_tcp::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -869,7 +890,15 @@ where
 
 /// Run one worker-local required-OpenSSL TCP listener stack per configured worker.
 #[cfg(all(feature = "tcp", feature = "openssl"))]
-pub fn run_local_tcp_openssl_thread_per_core<P, H, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_tcp_openssl_thread_per_core<
+    P,
+    H,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+    Policies,
+>(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
     server_factory: Factory,
@@ -880,7 +909,9 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies:
+        nacelle_tcp::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+    Factory: Fn(Worker) -> Result<LocalTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -930,6 +961,7 @@ pub fn run_local_serial_tcp_openssl_thread_per_core<
     ServerObserver,
     Factory,
     AppState,
+    Policies,
 >(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
@@ -941,7 +973,8 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies: nacelle_tcp::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -991,6 +1024,7 @@ pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
     ServerObserver,
     Factory,
     AppState,
+    Policies,
 >(
     config: LocalTcpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleOpenSslConfig,
@@ -1003,7 +1037,8 @@ where
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver>, NacelleError>
+    Policies: nacelle_tcp::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+    Factory: Fn(Worker) -> Result<LocalSerialTcpServer<P, H, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -1048,17 +1083,18 @@ where
 
 /// Run one worker-local HTTP/1 listener stack per configured worker.
 #[cfg(feature = "http")]
-pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory, AppState, Policies>(
     config: LocalHttpRuntimeConfig<Observer, AppState>,
     server_factory: Factory,
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State, AppState> + 'static,
+    Policies: nacelle_http::LocalHttpPolicySet<F::State>,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,
@@ -1099,7 +1135,15 @@ where
 
 /// Run one worker-local Rustls HTTP/1 listener stack per configured worker.
 #[cfg(all(feature = "http", feature = "rustls"))]
-pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factory, AppState>(
+pub fn run_local_http_tls_thread_per_core<
+    H,
+    F,
+    Observer,
+    ServerObserver,
+    Factory,
+    AppState,
+    Policies,
+>(
     config: LocalHttpRuntimeConfig<Observer, AppState>,
     tls_config: NacelleTlsConfig,
     server_factory: Factory,
@@ -1107,10 +1151,11 @@ pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factor
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpHandler<F::State, AppState> + 'static,
+    Policies: nacelle_http::LocalHttpPolicySet<F::State>,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
-    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver>, NacelleError>
+    Factory: Fn(Worker) -> Result<LocalHyperServer<H, F, ServerObserver, Policies>, NacelleError>
         + Clone
         + Send
         + 'static,

@@ -84,8 +84,8 @@ pub(super) fn connection_rejection_reason(error: &NacelleError) -> &'static str 
     }
 }
 
-pub(super) fn record_connection_rejection<P, H, Observer>(
-    server: &TcpServer<P, H, Observer>,
+pub(super) fn record_connection_rejection<P, H, Observer, Policies>(
+    server: &TcpServer<P, H, Observer, Policies>,
     transport: NacelleTransport,
     tls: &'static str,
     error: &NacelleError,
@@ -93,6 +93,7 @@ pub(super) fn record_connection_rejection<P, H, Observer>(
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let context = NacelleMetricsContext::new(
         transport,
@@ -146,8 +147,8 @@ pub(super) async fn drain_connection_tasks<Observer>(
 /// handshake where applicable). `tls_label` is used only for rejection
 /// telemetry.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_accept_loop<P, H, Observer, Prepare, Serve, Fut>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub(super) async fn run_accept_loop<P, H, Observer, Policies, Prepare, Serve, Fut>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     listener: TcpListener,
     tls_label: &'static str,
     mut shutdown: NacelleShutdownToken,
@@ -159,9 +160,10 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
     Serve: FnMut(
-        Arc<TcpServer<P, H, Observer>>,
+        Arc<TcpServer<P, H, Observer, Policies>>,
         TcpStream,
         NacelleConnectionMeta,
         TrackedPermit,
@@ -184,7 +186,8 @@ where
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
                 prepare_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
                 let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -195,8 +198,18 @@ where
                         continue;
                     }
                 };
+                let socket_lease = match server.policies().socket(&connection) {
+                    Ok(lease) => lease,
+                    Err(_) => {
+                        server.telemetry().connection_rejected(transport, "policy");
+                        continue;
+                    }
+                };
                 let task = serve_connection(server.clone(), stream, connection, connection_permit);
-                connections.spawn(task);
+                connections.spawn(async move {
+                    let _socket_lease = socket_lease;
+                    task.await
+                });
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, transport);

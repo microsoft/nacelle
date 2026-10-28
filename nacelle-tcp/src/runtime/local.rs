@@ -15,9 +15,7 @@ use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
-};
+use crate::connection::{serve_local_io_with_policies, serve_local_serial_io_with_policies};
 use crate::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
@@ -34,8 +32,8 @@ use super::openssl_optional::detect_tls_handshake;
 ///
 /// This function must run inside a Tokio [`tokio::task::LocalSet`]. Each
 /// accepted stream is spawned locally and remains on the accepting worker.
-pub async fn serve_local_tcp_listener<P, H, Observer>(
-    server: Rc<LocalTcpServer<P, H, Observer>>,
+pub async fn serve_local_tcp_listener<P, H, Observer, Policies>(
+    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -45,6 +43,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -54,48 +53,63 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server
-                            .telemetry()
-                            .connection_rejected(transport, connection_rejection_reason(&error));
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server
+                                    .telemetry()
+                                    .connection_rejected(transport, connection_rejection_reason(&error));
+                                continue;
+                            }
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            serve_local_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    serve_local_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(
@@ -113,8 +127,8 @@ where
 }
 
 /// Serve one worker-local serial TCP listener until shared shutdown.
-pub async fn serve_local_serial_tcp_listener<P, H, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
+pub async fn serve_local_serial_tcp_listener<P, H, Observer, Policies>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -124,6 +138,7 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -133,48 +148,63 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server
-                            .telemetry()
-                            .connection_rejected(transport, connection_rejection_reason(&error));
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server
+                                    .telemetry()
+                                    .connection_rejected(transport, connection_rejection_reason(&error));
+                                continue;
+                            }
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            serve_local_serial_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    serve_local_serial_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(
@@ -193,8 +223,8 @@ where
 
 /// Serve one worker-local Rustls TCP listener until shared shutdown.
 #[cfg(feature = "rustls")]
-pub async fn serve_local_tcp_tls_listener<P, H, Observer>(
-    server: Rc<LocalTcpServer<P, H, Observer>>,
+pub async fn serve_local_tcp_tls_listener<P, H, Observer, Policies>(
+    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleTlsConfig,
@@ -205,6 +235,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -215,66 +246,81 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server
-                            .telemetry()
-                            .connection_rejected(transport, connection_rejection_reason(&error));
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server
+                                    .telemetry()
+                                    .connection_rejected(transport, connection_rejection_reason(&error));
+                                continue;
+                            }
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let stream = match tokio::time::timeout(
+                                handshake_timeout,
+                                acceptor.accept(stream),
+                            )
+                            .await
+                            {
+                                Ok(Ok(stream)) => stream,
+                                Ok(Err(error)) => return Err(NacelleError::Io(error)),
+                                Err(_) => {
+                                    server
+                                        .telemetry()
+                                        .timeout(transport, "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            };
+                            let connection = connection
+                                .with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
+                            serve_local_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    let stream = match tokio::time::timeout(
-                        handshake_timeout,
-                        acceptor.accept(stream),
-                    )
-                    .await
-                    {
-                        Ok(Ok(stream)) => stream,
-                        Ok(Err(error)) => return Err(NacelleError::Io(error)),
-                        Err(_) => {
-                            server
-                                .telemetry()
-                                .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
-                    };
-                    let connection = connection
-                        .with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
-                    serve_local_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(
@@ -293,8 +339,8 @@ where
 
 /// Serve one worker-local required-OpenSSL TCP listener until shared shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_tcp_openssl_listener<P, H, Observer>(
-    server: Rc<LocalTcpServer<P, H, Observer>>,
+pub async fn serve_local_tcp_openssl_listener<P, H, Observer, Policies>(
+    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -305,6 +351,7 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -315,70 +362,85 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server
-                            .telemetry()
-                            .connection_rejected(transport, connection_rejection_reason(&error));
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server
+                                    .telemetry()
+                                    .connection_rejected(transport, connection_rejection_reason(&error));
+                                continue;
+                            }
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let acceptor = tls_config.acceptor();
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                            let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                                .map_err(NacelleError::protocol)?;
+                            match tokio::time::timeout(
+                                handshake_timeout,
+                                std::pin::Pin::new(&mut stream).accept(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                                Err(_) => {
+                                    server
+                                        .telemetry()
+                                        .timeout(transport, "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            }
+                            let connection = connection.with_tls(
+                                nacelle_openssl::connection_tls_meta(stream.ssl()),
+                            );
+                            serve_local_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let acceptor = tls_config.acceptor();
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
-                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
-                        .map_err(NacelleError::protocol)?;
-                    match tokio::time::timeout(
-                        handshake_timeout,
-                        std::pin::Pin::new(&mut stream).accept(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                        Err(_) => {
-                            server
-                                .telemetry()
-                                .timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
                     }
-                    let connection = connection.with_tls(
-                        nacelle_openssl::connection_tls_meta(stream.ssl()),
-                    );
-                    serve_local_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                }
     }
 
     server.telemetry().shutdown_event(
@@ -397,8 +459,8 @@ where
 
 /// Serve one worker-local serial required-OpenSSL listener until shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
+pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer, Policies>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -409,6 +471,7 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -419,69 +482,84 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server.telemetry().connection_rejected(
-                            transport,
-                            connection_rejection_reason(&error),
-                        );
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server.telemetry().connection_rejected(
+                                    transport,
+                                    connection_rejection_reason(&error),
+                                );
+                                continue;
+                            }
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let acceptor = tls_config.acceptor();
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                            let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                                .map_err(NacelleError::protocol)?;
+                            match tokio::time::timeout(
+                                handshake_timeout,
+                                std::pin::Pin::new(&mut stream).accept(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                                Err(_) => {
+                                    server.telemetry().timeout(transport, "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            }
+                            let connection = connection.with_tls(
+                                nacelle_openssl::connection_tls_meta(stream.ssl()),
+                            );
+                            serve_local_serial_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let acceptor = tls_config.acceptor();
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
-                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
-                        .map_err(NacelleError::protocol)?;
-                    match tokio::time::timeout(
-                        handshake_timeout,
-                        std::pin::Pin::new(&mut stream).accept(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                        Err(_) => {
-                            server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
                     }
-                    let connection = connection.with_tls(
-                        nacelle_openssl::connection_tls_meta(stream.ssl()),
-                    );
-                    serve_local_serial_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                }
     }
 
     server.telemetry().shutdown_event(
@@ -501,8 +579,8 @@ where
 /// Serve one worker-local serial plaintext-or-OpenSSL listener until shutdown.
 #[cfg(feature = "experimental-openssl-detection")]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer>>,
+pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer, Policies>(
+    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -514,6 +592,7 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -524,94 +603,110 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_local_connections(&mut connections);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
-                {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        server.telemetry().connection_rejected(
-                            transport,
-                            connection_rejection_reason(&error),
-                        );
-                        continue;
-                    }
-                };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
-                let acceptor = tls_config.acceptor();
-                let detection_timeout = detection_options.timeout;
-                let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
-                    let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
-                        Ok(is_tls) => is_tls,
-                        Err(error) => {
-                            if matches!(error, NacelleError::Timeout(_)) {
-                                server.telemetry().timeout(transport, "tls_detect");
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, peer_addr) = accepted?;
+                        tcp_options.apply_to_stream(&stream)?;
+                        let connection_permit = match server
+                            .runtime_state()
+                            .acquire_connection_for_peer(peer_addr.ip())
+                        {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                server.telemetry().connection_rejected(
+                                    transport,
+                                    connection_rejection_reason(&error),
+                                );
+                                continue;
                             }
-                            return Err(error);
-                        }
-                    };
+                        };
+                        let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                            .with_listener(server.listener_label());
+                        let acceptor = tls_config.acceptor();
+                        let detection_timeout = detection_options.timeout;
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn_local(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
 
-                    if !is_tls {
-                        return serve_local_serial_stream_without_connection_limit(
-                            stream,
-                            server.protocol(),
-                            server.handler(),
-                            server.config(),
-                            server.telemetry(),
-                            server.runtime_state(),
-                            server.tcp_limits(),
-                            connection,
-                        )
-                        .await;
-                    }
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
+                                Ok(is_tls) => is_tls,
+                                Err(error) => {
+                                    if matches!(error, NacelleError::Timeout(_)) {
+                                        server.telemetry().timeout(transport, "tls_detect");
+                                    }
+                                    return Err(error);
+                                }
+                            };
 
-                    let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
-                    let mut stream = tokio_openssl::SslStream::new(ssl, stream)
-                        .map_err(NacelleError::protocol)?;
-                    match tokio::time::timeout(
-                        handshake_timeout,
-                        std::pin::Pin::new(&mut stream).accept(),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                        Err(_) => {
-                            server.telemetry().timeout(transport, "tls_handshake");
-                            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
-                        }
+                            if !is_tls {
+                                return serve_local_serial_io_with_policies(
+                                    stream,
+                                    server.protocol(),
+                                    server.handler(),
+                                    server.config(),
+                                    server.telemetry(),
+                                    server.runtime_state(),
+                                    server.tcp_limits(),
+                                    connection,
+                                server.policies(),
+                            )
+                                .await;
+                            }
+
+                            let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
+                            let mut stream = tokio_openssl::SslStream::new(ssl, stream)
+                                .map_err(NacelleError::protocol)?;
+                            match tokio::time::timeout(
+                                handshake_timeout,
+                                std::pin::Pin::new(&mut stream).accept(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+                                Err(_) => {
+                                    server.telemetry().timeout(transport, "tls_handshake");
+                                    return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+                                }
+                            }
+                            let connection = connection.with_tls(
+                                nacelle_openssl::connection_tls_meta(stream.ssl()),
+                            );
+                            serve_local_serial_io_with_policies(
+                                stream,
+                                server.protocol(),
+                                server.handler(),
+                                server.config(),
+                                server.telemetry(),
+                                server.runtime_state(),
+                                server.tcp_limits(),
+                                connection,
+                            server.policies(),
+                            )
+                            .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                    let connection = connection.with_tls(
-                        nacelle_openssl::connection_tls_meta(stream.ssl()),
-                    );
-                    serve_local_serial_stream_without_connection_limit(
-                        stream,
-                        server.protocol(),
-                        server.handler(),
-                        server.config(),
-                        server.telemetry(),
-                        server.runtime_state(),
-                        server.tcp_limits(),
-                        connection,
-                    )
-                    .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_local_connection_result(joined);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_local_connection_result(joined);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(

@@ -300,12 +300,87 @@ fn telemetry_benches(c: &mut Criterion) {
     group.finish();
 }
 
+fn policy_benches(c: &mut Criterion) {
+    use nacelle::core::policy::{Admission, Chain, NoPolicy, RequestRate, check_fn};
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("ready policy benchmark must not wait"),
+        }
+    }
+
+    let check = |value: &usize| {
+        if *value > 0 {
+            Ok(())
+        } else {
+            Err(nacelle::core::policy::Rejection::new(
+                nacelle::core::policy::RejectionKind::Denied,
+                "zero",
+            ))
+        }
+    };
+    let predicate = check_fn(check);
+    let chain = Chain::new(predicate, predicate);
+    let peers = Arc::new(NacellePeerRateLimiter::new(128));
+    let rate = RequestRate::new(peers.clone(), usize::MAX);
+    let peer = IpAddr::from([127, 0, 0, 1]);
+    let mut group = c.benchmark_group("policy_admission");
+    group.bench_function("direct_predicate", |b| {
+        b.iter(|| check(&black_box(1_usize)).unwrap())
+    });
+    group.bench_function("empty", |b| {
+        b.iter(|| {
+            ready(Admission::enter(
+                black_box(&NoPolicy),
+                &mut black_box(1_usize),
+            ))
+            .unwrap();
+        })
+    });
+    group.bench_function("predicate", |b| {
+        b.iter(|| {
+            ready(Admission::enter(
+                black_box(&predicate),
+                &mut black_box(1_usize),
+            ))
+            .unwrap();
+        })
+    });
+    group.bench_function("two_predicates", |b| {
+        b.iter(|| {
+            ready(Admission::enter(black_box(&chain), &mut black_box(1_usize))).unwrap();
+        })
+    });
+    group.bench_function("direct_peer_rate", |b| {
+        b.iter(|| black_box(peers.try_acquire(black_box(peer), usize::MAX)))
+    });
+    group.bench_function("peer_rate_policy", |b| {
+        b.iter(|| {
+            ready(Admission::enter(
+                black_box(&rate),
+                &mut Some(black_box(peer)),
+            ))
+            .unwrap();
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     critical_paths,
     protocol_frame_benches,
     protocol_pipeline_benches,
     runtime_limit_benches,
     peer_rate_limit_benches,
-    telemetry_benches
+    telemetry_benches,
+    policy_benches
 );
 criterion_main!(critical_paths);

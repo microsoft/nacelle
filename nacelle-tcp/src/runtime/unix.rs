@@ -25,22 +25,23 @@ use super::common::{
 ///
 /// The socket path is passed directly to Tokio. Existing socket files are not
 /// removed automatically.
-pub async fn serve_unix<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_unix_with_shutdown(server, path, token).await
 }
 
 /// Listen on a Unix domain socket until shutdown is requested.
-pub async fn serve_unix_with_shutdown<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_shutdown<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -48,14 +49,15 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_unix_with_shutdown_timeout(server, path, shutdown, Duration::from_secs(30)).await
 }
 
 /// Listen on a Unix domain socket until shutdown is requested, then drain or
 /// abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_shutdown_timeout<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -64,6 +66,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_unix_with_shutdown_deadline(
         server,
@@ -75,8 +78,8 @@ where
 }
 
 /// Listen on a Unix domain socket with explicit socket-file lifecycle options.
-pub async fn serve_unix_with_options<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_options<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
@@ -84,6 +87,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_unix_with_options_and_shutdown(server, path, unix_options, token).await
@@ -91,8 +95,8 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options until
 /// shutdown is requested.
-pub async fn serve_unix_with_options_and_shutdown<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -101,6 +105,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_unix_with_options_and_shutdown_timeout(
         server,
@@ -114,8 +119,8 @@ where
 
 /// Listen on a Unix domain socket with explicit lifecycle options, then drain
 /// or abort active connection tasks after `drain_timeout`.
-pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -125,6 +130,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_unix_with_options_and_shutdown_deadline(
         server,
@@ -137,8 +143,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_shutdown_deadline<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -147,6 +153,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_unix_with_options_and_shutdown_deadline(
         server,
@@ -159,8 +166,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -170,6 +177,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let path = path.as_ref();
     unix_options.prepare_path(path)?;
@@ -186,8 +194,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_unix_listener_with_shutdown_deadline<P, H, Observer>(
-    server: Arc<TcpServer<P, H, Observer>>,
+pub async fn serve_unix_listener_with_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<TcpServer<P, H, Observer, Policies>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,
@@ -197,6 +205,7 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let mut connections = tokio::task::JoinSet::new();
     nacelle_core::runtime::report_runtime_topology(
@@ -207,41 +216,54 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_connections(&mut connections, NacelleTransport::new("unix_socket"));
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let connection = NacelleConnectionMeta::unix_socket(local_path.clone());
-                let connection_permit = match server.runtime_state().acquire_connection_tracked() {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        record_connection_rejection(
-                            server.as_ref(),
-                            NacelleTransport::new("unix_socket"),
-                            "none",
-                            &error,
-                        );
-                        server
-                            .telemetry()
-                            .connection_rejected(NacelleTransport::new("unix_socket"), connection_rejection_reason(&error));
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted?;
+                        let connection = NacelleConnectionMeta::unix_socket(local_path.clone());
+                        let connection_permit = match server.runtime_state().acquire_connection_tracked() {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                record_connection_rejection(
+                                    server.as_ref(),
+                                    NacelleTransport::new("unix_socket"),
+                                    "none",
+                                    &error,
+                                );
+                                server
+                                    .telemetry()
+                                    .connection_rejected(NacelleTransport::new("unix_socket"), connection_rejection_reason(&error));
+                                continue;
+                            }
+                        };
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                                                let connection = connection.with_listener(server.listener_label());
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            server.serve_io_without_connection_limit(stream, connection).await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let server = server.clone();
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let connection = connection.with_listener(server.listener_label());
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, NacelleTransport::new("unix_socket"));
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_connection_result(joined, NacelleTransport::new("unix_socket"));
+                    }
+                }
     }
     server.telemetry().shutdown_event(
         NacelleTelemetryEventKind::ListenerStoppedAccepting,
@@ -258,8 +280,8 @@ where
 }
 
 /// Listen on a Unix domain socket and serve serial mutable-state connections.
-pub async fn serve_serial_unix<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
 ) -> Result<(), NacelleError>
 where
@@ -267,14 +289,15 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_unix_with_shutdown(server, path, token).await
 }
 
 /// Listen on a Unix domain socket for serial connections until shutdown.
-pub async fn serve_serial_unix_with_shutdown<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_shutdown<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -283,6 +306,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
         server,
@@ -295,8 +319,8 @@ where
 }
 
 /// Listen for serial Unix connections with a bounded shutdown drain.
-pub async fn serve_serial_unix_with_shutdown_timeout<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -306,6 +330,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_unix_with_shutdown_deadline(
         server,
@@ -317,8 +342,8 @@ where
 }
 
 /// Listen on a Unix domain socket for serial connections with explicit options.
-pub async fn serve_serial_unix_with_options<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_options<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
 ) -> Result<(), NacelleError>
@@ -327,6 +352,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_unix_with_options_and_shutdown_deadline(
@@ -340,8 +366,8 @@ where
 }
 
 /// Listen with serial Unix socket options until shutdown is requested.
-pub async fn serve_serial_unix_with_options_and_shutdown<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -351,6 +377,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_unix_with_options_and_shutdown_timeout(
         server,
@@ -363,8 +390,8 @@ where
 }
 
 /// Listen with serial Unix options and a bounded shutdown drain.
-pub async fn serve_serial_unix_with_options_and_shutdown_timeout<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown_timeout<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -375,6 +402,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
         server,
@@ -387,8 +415,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_with_shutdown_deadline<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -398,6 +426,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_unix_with_options_and_shutdown_deadline(
         server,
@@ -410,8 +439,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_with_options_and_shutdown_deadline<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     path: impl AsRef<Path>,
     unix_options: NacelleUnixSocketOptions,
     shutdown: NacelleShutdownToken,
@@ -422,6 +451,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let path = path.as_ref();
     unix_options.prepare_path(path)?;
@@ -438,8 +468,8 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_unix_listener_with_shutdown_deadline<P, H, Observer>(
-    server: Arc<SerialTcpServer<P, H, Observer>>,
+pub async fn serve_serial_unix_listener_with_shutdown_deadline<P, H, Observer, Policies>(
+    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
     listener: UnixListener,
     local_path: Option<PathBuf>,
     mut shutdown: NacelleShutdownToken,
@@ -450,6 +480,7 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("unix_socket");
     let mut connections = tokio::task::JoinSet::new();
@@ -462,44 +493,58 @@ where
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_connections(&mut connections, transport);
         tokio::select! {
-            biased;
-            _ = shutdown.changed() => break,
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let connection = NacelleConnectionMeta::unix_socket(local_path.clone())
-                    .with_listener(server.listener_label());
-                let connection_permit = match server.runtime_state().acquire_connection_tracked() {
-                    Ok(permit) => permit,
-                    Err(error) => {
-                        let context = nacelle_core::telemetry::NacelleMetricsContext::new(
-                            transport,
-                            server.listener_label(),
-                            server.protocol().name(),
-                            "none",
-                        );
-                        server.telemetry().operation_error(&context, "accept", &error);
-                        server.telemetry().connection_rejected(
-                            transport,
-                            connection_rejection_reason(&error),
-                        );
-                        continue;
+                    biased;
+                    _ = shutdown.changed() => break,
+                    accepted = listener.accept() => {
+                        let (stream, _) = accepted?;
+                        let connection = NacelleConnectionMeta::unix_socket(local_path.clone())
+                            .with_listener(server.listener_label());
+                        let connection_permit = match server.runtime_state().acquire_connection_tracked() {
+                            Ok(permit) => permit,
+                            Err(error) => {
+                                let context = nacelle_core::telemetry::NacelleMetricsContext::new(
+                                    transport,
+                                    server.listener_label(),
+                                    server.protocol().name(),
+                                    "none",
+                                );
+                                server.telemetry().operation_error(&context, "accept", &error);
+                                server.telemetry().connection_rejected(
+                                    transport,
+                                    connection_rejection_reason(&error),
+                                );
+                                continue;
+                            }
+                        };
+                        let socket_lease = match server.policies().socket(&connection) {
+                            Ok(lease) => lease,
+                            Err(_) => {
+                                server.telemetry().connection_rejected(connection.transport, "policy");
+                                continue;
+                            }
+                        };
+                        let server = server.clone();
+                        connections.spawn(async move {
+                            server.policies().run(async {
+                            let _socket_lease = socket_lease;
+
+                            let _connection_permit = connection_permit;
+                            #[cfg(feature = "policies")]
+                            let _policy_permit =
+                                crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
+                            let mut connection = connection;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            server
+                                .serve_io_without_connection_limit(stream, connection)
+                                .await
+
+                            }).await.map_err(nacelle_core::policy::Rejection::into_error)?
+        });
                     }
-                };
-                let server = server.clone();
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    #[cfg(feature = "policies")]
-                    let _policy_permit =
-                        crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
-                    server
-                        .serve_io_without_connection_limit(stream, connection)
-                        .await
-                });
-            }
-            joined = connections.join_next(), if !connections.is_empty() => {
-                log_connection_result(joined, transport);
-            }
-        }
+                    joined = connections.join_next(), if !connections.is_empty() => {
+                        log_connection_result(joined, transport);
+                    }
+                }
     }
 
     server.telemetry().shutdown_event(

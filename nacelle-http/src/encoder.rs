@@ -21,7 +21,7 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, Nacell
 
 type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 
-pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
+pub(crate) type HttpBody<Observer, Lease = ()> = StreamBody<HttpBodyStream<Observer, Lease>>;
 
 pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
@@ -149,12 +149,26 @@ const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {
     matches!(body_len_hint, Some(0))
 }
 
+#[cfg(test)]
 pub(crate) fn response_to_http<Observer>(
     response: HttpResponse,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
     policy: &NacelleHttpPolicy,
 ) -> Result<Response<HttpBody<Observer>>, NacelleError>
+where
+    Observer: NacelleTelemetryObserver,
+{
+    response_to_http_with_lease(response, runtime_state, telemetry, policy, None::<()>)
+}
+
+pub(crate) fn response_to_http_with_lease<Observer, Lease>(
+    response: HttpResponse,
+    runtime_state: NacelleRuntimeState,
+    telemetry: NacelleTelemetry<Observer>,
+    policy: &NacelleHttpPolicy,
+    lease: Option<Lease>,
+) -> Result<Response<HttpBody<Observer, Lease>>, NacelleError>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -169,15 +183,17 @@ where
             response.body,
             runtime_state,
             telemetry,
+            lease,
         ))
         .map_err(NacelleError::protocol)
 }
 
-fn nacelle_body_to_http<Observer>(
+fn nacelle_body_to_http<Observer, Lease>(
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
-) -> HttpBody<Observer>
+    lease: Option<Lease>,
+) -> HttpBody<Observer, Lease>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -187,18 +203,23 @@ where
         telemetry,
         response_body_bytes: 0,
         response_body_metric_pending: true,
+        lease,
     })
 }
 
-pub(crate) struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
+pub(crate) struct HttpBodyStream<Observer: NacelleTelemetryObserver, Lease = ()> {
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
     response_body_bytes: usize,
     response_body_metric_pending: bool,
+    lease: Option<Lease>,
 }
 
-impl<Observer> Stream for HttpBodyStream<Observer>
+// Only the Unpin body is polled through Pin; the owned lease is never pinned.
+impl<Observer: NacelleTelemetryObserver, Lease> Unpin for HttpBodyStream<Observer, Lease> {}
+
+impl<Observer, Lease> Stream for HttpBodyStream<Observer, Lease>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -210,12 +231,14 @@ where
             Poll::Ready(Some(Ok(chunk))) => {
                 let Some(next) = this.response_body_bytes.checked_add(chunk.len()) else {
                     this.response_body_metric_pending = false;
+                    this.lease.take();
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 };
                 if next > this.runtime_state.limits().max_response_body_bytes {
                     this.response_body_metric_pending = false;
+                    this.lease.take();
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
@@ -225,9 +248,11 @@ where
             }
             Poll::Ready(Some(Err(error))) => {
                 this.response_body_metric_pending = false;
+                this.lease.take();
                 Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
+                this.lease.take();
                 if this.response_body_metric_pending {
                     this.response_body_metric_pending = false;
                     this.telemetry.response_body_bytes(
@@ -246,6 +271,8 @@ where
 mod tests {
     use http::StatusCode;
     use http_body_util::BodyExt;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     use super::{incoming_body_is_empty, response_to_http};
     use crate::pipeline::HttpResponse;
@@ -255,6 +282,50 @@ mod tests {
     use nacelle_core::telemetry::{
         NacelleInMemoryObserver, NacelleTelemetry, NacelleTelemetryEventKind,
     };
+
+    struct LeaseDrop(Rc<Cell<usize>>);
+
+    impl Drop for LeaseDrop {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn response_lease_ends_at_eof_error_or_drop_without_send_bound() {
+        for outcome in ["eof", "error", "drop"] {
+            let drops = Rc::new(Cell::new(0));
+            let (sender, body) = nacelle_core::NacelleBody::channel(1);
+            let response = super::response_to_http_with_lease(
+                HttpResponse::new(http::StatusCode::OK, http::HeaderMap::new(), body),
+                NacelleRuntimeState::default(),
+                NacelleTelemetry::default(),
+                &NacelleHttpPolicy::default(),
+                Some(nacelle_core::policy::Hold::new(LeaseDrop(drops.clone()))),
+            )
+            .expect("response");
+            let mut body = response.into_body();
+            if outcome == "eof" {
+                sender
+                    .send(Ok(bytes::Bytes::from_static(b"data")))
+                    .await
+                    .expect("chunk");
+                drop(sender);
+                assert!(body.frame().await.expect("frame").is_ok());
+                assert_eq!(drops.get(), 0);
+                assert!(body.frame().await.is_none());
+            } else if outcome == "error" {
+                sender
+                    .send(Err(NacelleError::ConnectionClosed))
+                    .await
+                    .expect("error");
+                assert!(body.frame().await.expect("frame").is_err());
+            } else {
+                drop(body);
+            }
+            assert_eq!(drops.get(), 1, "{outcome}");
+        }
+    }
 
     #[test]
     fn only_exact_zero_body_hint_skips_body_pump() {

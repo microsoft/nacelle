@@ -162,7 +162,6 @@ pub(super) struct MessageReadFailure {
 }
 
 impl MessageReadFailure {
-    #[cfg(feature = "policies")]
     pub(super) const fn policy(error: NacelleError) -> Self {
         Self {
             error,

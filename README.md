@@ -114,6 +114,9 @@ cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0
 
 # TCP and HTTP listeners sharing app state and one host
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
+
+# TCP and HTTP sharing rate and bounded backend admission policies
+cargo run -p nacelle-examples --features http,policies --bin policy_echo -- 127.0.0.1:8080 127.0.0.1:8081
 ```
 
 The HTTPS echo example logs a certificate-generation status message, not the
@@ -135,6 +138,8 @@ protocol.
 - Custom TCP protocol support over TCP and Unix domain sockets.
 - Opt-in application-owned [TCP lifecycle admission policies](docs/reference/tcp-policies.md)
   through the `tcp-policies` feature, retaining existing limits during migration.
+- Opt-in [static admission policies](docs/reference/policies.md) for TCP and HTTP
+  through `policies`, with unchanged handler types and application-owned budgets.
 - Serial plain TCP, OpenSSL, experimental optional OpenSSL, and Unix socket handlers with
     exclusive mutable connection state and no async mutex on the connection
     path.
@@ -184,6 +189,8 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
 | `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
+| `policies` | Statically composed TCP/HTTP admission checkpoints; does not select a transport. |
+| `tcp-policies` | TCP lifecycle policies, including the legacy protocol wrapper. Implies TCP. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |

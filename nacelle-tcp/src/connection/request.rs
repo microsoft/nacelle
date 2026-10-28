@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
+use crate::policies::DeliveryDispatch;
 #[cfg(feature = "policies")]
 use crate::policy::TcpLifecyclePolicy;
 use crate::protocol::{
@@ -18,10 +19,12 @@ use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::{
     ConnectionContext, ConnectionInfo, OptionalResponder, RequestContext,
 };
+use nacelle_core::policy::PolicyLease;
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::body::{buffered_request_body, pump_request_body, read_buffered_request_body};
+use super::checkpoint::Io as PolicyIo;
 use super::metrics::{
     TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
@@ -33,6 +36,12 @@ where
     P: Protocol,
 {
     type Connection;
+    type Storage;
+
+    fn context_mut<'a>(
+        &self,
+        connection: &'a mut Self::Connection,
+    ) -> &'a mut ConnectionContext<Self::Storage>;
 
     fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection;
 
@@ -70,6 +79,14 @@ where
     H: TcpHandler<P>,
 {
     type Connection = ConnectionContext<Arc<P::ConnectionState>>;
+    type Storage = Arc<P::ConnectionState>;
+
+    fn context_mut<'a>(
+        &self,
+        connection: &'a mut Self::Connection,
+    ) -> &'a mut ConnectionContext<Self::Storage> {
+        connection
+    }
 
     fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
         ConnectionContext::new(info, Arc::new(state))
@@ -96,6 +113,14 @@ where
     H: LocalTcpHandler<P>,
 {
     type Connection = ConnectionContext<Arc<P::ConnectionState>>;
+    type Storage = Arc<P::ConnectionState>;
+
+    fn context_mut<'a>(
+        &self,
+        connection: &'a mut Self::Connection,
+    ) -> &'a mut ConnectionContext<Self::Storage> {
+        connection
+    }
 
     fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
         ConnectionContext::new(info, Arc::new(state))
@@ -123,6 +148,14 @@ where
     H: SerialTcpHandler<P>,
 {
     type Connection = ConnectionContext<P::ConnectionState>;
+    type Storage = P::ConnectionState;
+
+    fn context_mut<'a>(
+        &self,
+        connection: &'a mut Self::Connection,
+    ) -> &'a mut ConnectionContext<Self::Storage> {
+        connection
+    }
 
     fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
         ConnectionContext::new(info, state)
@@ -149,6 +182,14 @@ where
     H: LocalSerialTcpHandler<P>,
 {
     type Connection = ConnectionContext<P::ConnectionState>;
+    type Storage = P::ConnectionState;
+
+    fn context_mut<'a>(
+        &self,
+        connection: &'a mut Self::Connection,
+    ) -> &'a mut ConnectionContext<Self::Storage> {
+        connection
+    }
 
     fn new_connection(&self, info: ConnectionInfo, state: P::ConnectionState) -> Self::Connection {
         ConnectionContext::new(info, state)
@@ -245,13 +286,14 @@ fn use_buffered_body(body_len: usize, buffered_len: usize) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_request<P, D, R, W, Observer>(
+pub(super) async fn run_request<P, D, R, W, Observer, Policies>(
     reader: &mut R,
     writer: &mut W,
     read_buf: &mut BytesMut,
     delivery: &mut ResponseDelivery,
     protocol: &P,
     handler: &D,
+    policies: &Policies,
     decoded: DecodedRequest<P::Request>,
     error_context: P::ErrorContext,
     config: &NacelleTcpConfig,
@@ -262,16 +304,18 @@ pub(super) async fn run_request<P, D, R, W, Observer>(
     connection_context: &mut D::Connection,
     metrics_context: Option<&NacelleMetricsContext>,
     telemetry_plan: TcpTelemetryPlan,
-    #[cfg(feature = "policies")] policy_delivery_barrier: bool,
+    policy_delivery_barrier: bool,
+    #[cfg(feature = "policies")] legacy_delivery_barrier: bool,
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
     D: RequestDispatch<P>,
+    Policies: DeliveryDispatch<P::Request, D::Storage, W, Observer>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let request = decoded.request;
+    let mut request = decoded.request;
     let detailed_request_metrics = telemetry_plan.request_metrics;
     let core_request_events = telemetry_plan.request_events;
     let request_started = telemetry_plan
@@ -290,8 +334,10 @@ where
     let mut _request_permit = None;
     #[cfg(feature = "policies")]
     let mut _head_policy_permit = None;
+    let mut head_lease = None;
     #[cfg(feature = "policies")]
     let mut _body_policy_permit = None;
+    let mut policy_flush_failure = None;
     let outcome = async {
         #[cfg(feature = "policies")]
         {
@@ -321,6 +367,18 @@ where
                 return Err(error);
             }
         });
+        head_lease = Some(
+            policies.head(
+                &mut request, decoded.body_len, handler.context_mut(connection_context),
+                PolicyIo {
+                    writer, delivery, limits: tcp_limits, telemetry,
+                    metrics: metrics_context,
+                    phase_duration: telemetry_plan.phase_duration,
+                    failure: &mut policy_flush_failure,
+                },
+            )
+            .await?,
+        );
         let use_buffered_body = use_buffered_body(decoded.body_len, read_buf.len());
         if use_buffered_body {
             let body_started = start_tcp_phase(telemetry_plan.phase_duration);
@@ -350,7 +408,13 @@ where
             }
             execute_handler_with_metrics(
                 handler,
+                policies,
+                writer,
+                delivery,
+                tcp_limits,
+                &mut policy_flush_failure,
                 request,
+                decoded.body_len,
                 body,
                 response_context,
                 runtime_state,
@@ -398,7 +462,13 @@ where
                     }
                     execute_handler_with_metrics(
                         handler,
+                        policies,
+                        writer,
+                        delivery,
+                        tcp_limits,
+                        &mut policy_flush_failure,
                         request,
+                        decoded.body_len,
                         body,
                         response_context,
                         runtime_state,
@@ -422,7 +492,13 @@ where
             let body = NacelleBody::new(body_rx, decoded.body_len);
             let handler_future = execute_handler_with_metrics(
                 handler,
+                policies,
+                writer,
+                delivery,
+                tcp_limits,
+                &mut policy_flush_failure,
                 request,
+                decoded.body_len,
                 body,
                 response_context,
                 runtime_state,
@@ -540,8 +616,20 @@ where
                 0
             };
             // Application leases must not be released with response bytes queued.
+            if let Err(error) = policies.flush(
+                policy_delivery_barrier
+                    || head_lease.as_ref().is_some_and(PolicyLease::requires_flush),
+                PolicyIo {
+                    writer, delivery, limits: tcp_limits, telemetry,
+                    metrics: metrics_context, phase_duration: telemetry_plan.phase_duration,
+                    failure: &mut policy_flush_failure,
+                },
+            ).await {
+                request_metrics.complete("error", policy_flush_failure.unwrap_or(0));
+                return Err(error);
+            }
             #[cfg(feature = "policies")]
-            if (policy_delivery_barrier
+            if (legacy_delivery_barrier
                 || _head_policy_permit.is_some()
                 || _body_policy_permit.is_some())
                 && let Err(error) = delivery
@@ -577,6 +665,10 @@ where
                 request_started,
                 &error,
             );
+            if let Some(delivered_bytes) = policy_flush_failure {
+                request_metrics.complete("error", delivered_bytes);
+                return Err(error);
+            }
             let response_bytes = match write_error::<P, W, Observer>(
                 writer,
                 protocol,
@@ -597,6 +689,19 @@ where
                     return Err(delivery_error.error);
                 }
             };
+            if let Err(failure) = delivery
+                .flush(
+                    writer,
+                    tcp_limits,
+                    telemetry,
+                    metrics_context,
+                    telemetry_plan.phase_duration,
+                )
+                .await
+            {
+                request_metrics.complete("error", failure.delivered_bytes);
+                return Err(failure.error);
+            }
             record_core_request_completed(
                 telemetry,
                 core_request_events,
@@ -615,9 +720,15 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_handler_with_metrics<P, D, Observer>(
+async fn execute_handler_with_metrics<P, D, Observer, Policies, W>(
     handler: &D,
-    request: P::Request,
+    policies: &Policies,
+    writer: &mut W,
+    delivery: &mut ResponseDelivery,
+    tcp_limits: &NacelleTcpLimits,
+    policy_flush_failure: &mut Option<usize>,
+    mut request: P::Request,
+    body_len: usize,
     body: NacelleBody,
     response_context: P::ResponseContext,
     runtime_state: &NacelleRuntimeState,
@@ -629,8 +740,21 @@ async fn execute_handler_with_metrics<P, D, Observer>(
 where
     P: Protocol,
     D: RequestDispatch<P>,
+    Policies: DeliveryDispatch<P::Request, D::Storage, W, Observer>,
+    W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
+    let _handler_lease = policies.handler(
+            &mut request,
+            body_len,
+            handler.context_mut(connection_context),
+            PolicyIo {
+                writer, delivery, limits: tcp_limits, telemetry,
+                metrics: metrics_context, phase_duration: phase_duration_metrics,
+                failure: policy_flush_failure,
+            },
+    )
+    .await?;
     let handler_started = start_tcp_phase(phase_duration_metrics && metrics_context.is_some());
     let result = execute_handler(
         handler,

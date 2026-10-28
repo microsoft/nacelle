@@ -122,6 +122,103 @@ impl<Request, State> TcpLifecyclePolicy<Request, State> for RecordingPolicy {
 
 type PolicyProtocol = WithTcpPolicy<PhaseProtocol, RecordingPolicy>;
 
+#[tokio::test]
+async fn server_registration_runs_legacy_then_new_hooks_once() {
+    use crate::{TcpHead, TcpPolicies, TcpTransport};
+    use nacelle_core::policy::check_fn;
+
+    let legacy = RecordingPolicy::default();
+    let state = legacy.state.clone();
+    let socket = state.clone();
+    let accepted = state.clone();
+    let ready = state.clone();
+    let before = state.clone();
+    let head = state.clone();
+    let around = state.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (shutdown, token) = NacelleShutdown::pair();
+    let server = TcpServer::<PolicyProtocol>::builder()
+        .protocol(protocol(legacy))
+        .handler(handler_fn(
+            |context: TcpRequestContext<PolicyProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .listener_label("policy-test")
+        .policies(
+            TcpPolicies::new()
+                .on_socket(check_fn(move |_: &NacelleConnectionMeta| {
+                    socket.events.lock().unwrap().push("socket");
+                    Ok(())
+                }))
+                .on_accepted(check_fn(move |view: &TcpTransport<'_>| {
+                    assert!(view.connection().tls.is_none());
+                    accepted.events.lock().unwrap().push("new_accepted");
+                    Ok(())
+                }))
+                .on_transport_ready(check_fn(move |view: &TcpTransport<'_>| {
+                    assert_eq!(&*view.connection().listener, "policy-test");
+                    ready.events.lock().unwrap().push("new_ready");
+                    Ok(())
+                }))
+                .before_request(check_fn(
+                    move |_: &crate::TcpConnection<'_, Arc<AuthState>>| {
+                        before.events.lock().unwrap().push("new_before");
+                        Ok(())
+                    },
+                ))
+                .on_request_head(check_fn(
+                    move |_: &TcpHead<'_, PhaseRequest, Arc<AuthState>>| {
+                        head.events.lock().unwrap().push("new_head");
+                        Ok(())
+                    },
+                ))
+                .around_handler(check_fn(
+                    move |_: &TcpHead<'_, PhaseRequest, Arc<AuthState>>| {
+                        around.events.lock().unwrap().push("new_handler");
+                        Ok(())
+                    },
+                )),
+        )
+        .build()
+        .unwrap();
+    let task = tokio::spawn(crate::runtime::serve_tcp_listener_with_shutdown_deadline(
+        Arc::new(server),
+        listener,
+        token,
+        NacelleDrainDeadline::new(Duration::from_secs(2)),
+    ));
+    let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+    client.write_all(&[0]).await.unwrap();
+    let mut response = [0; 2];
+    client.read_exact(&mut response).await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut remainder = Vec::new();
+    client.read_to_end(&mut remainder).await.unwrap();
+    shutdown.shutdown();
+    task.await.unwrap().unwrap();
+    assert_eq!(
+        *state.events.lock().unwrap(),
+        [
+            "socket",
+            "accepted",
+            "new_accepted",
+            "ready",
+            "new_ready",
+            "before",
+            "new_before",
+            "head",
+            "new_head",
+            "body",
+            "new_handler",
+            "before",
+            "new_before",
+        ]
+    );
+    assert_eq!(state.active.load(Ordering::SeqCst), 0);
+}
+
 fn protocol(policy: RecordingPolicy) -> PolicyProtocol {
     PhaseProtocol {
         authenticated: true,

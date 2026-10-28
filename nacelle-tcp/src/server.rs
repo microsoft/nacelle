@@ -3,12 +3,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::config::NacelleTcpConfig;
-use crate::connection::{
-    serve_connection_with_connection_meta_and_tcp_state,
-    serve_stream_with_connection_meta_and_tcp_state,
-    serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
-};
+use crate::connection::{serve_shared_halves_with_policies, serve_shared_io_with_policies};
 use crate::limits::NacelleTcpLimits;
+use crate::policies::{LocalTcpPolicySet, NoTcpPolicies, SharedTcpPolicySet};
 use crate::protocol::{LocalAppStateHandler, LocalTcpHandler};
 use crate::protocol::{Protocol, SharedAppStateHandler, SharedProtocol, TcpHandler};
 use nacelle_core::error::NacelleError;
@@ -50,7 +47,7 @@ pub struct Present;
 /// ```text
 /// cargo run -p nacelle-examples --bin direct_tcp
 /// ```
-pub struct TcpServer<P, H = (), Observer = NoopObserver> {
+pub struct TcpServer<P, H = (), Observer = NoopObserver, Policies = NoTcpPolicies> {
     protocol: Arc<P>,
     handler: Arc<H>,
     config: NacelleTcpConfig,
@@ -58,6 +55,7 @@ pub struct TcpServer<P, H = (), Observer = NoopObserver> {
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
+    policies: Policies,
 }
 
 /// Worker-local TCP server for explicit thread-per-core execution.
@@ -65,7 +63,7 @@ pub struct TcpServer<P, H = (), Observer = NoopObserver> {
 /// Protocol and handler ownership uses [`Rc`] so application handlers may hold
 /// `!Send` worker-local state. Instances must be constructed and used on their
 /// owning worker.
-pub struct LocalTcpServer<P, H, Observer = NoopObserver> {
+pub struct LocalTcpServer<P, H, Observer = NoopObserver, Policies = NoTcpPolicies> {
     protocol: Rc<P>,
     handler: Rc<H>,
     config: NacelleTcpConfig,
@@ -73,19 +71,20 @@ pub struct LocalTcpServer<P, H, Observer = NoopObserver> {
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
+    policies: Policies,
 }
 
 #[doc(hidden)]
-pub type LocalAppStateTcpServer<P, H, Observer, AppState> =
-    LocalTcpServer<P, LocalAppStateHandler<P, H, AppState>, Observer>;
+pub type LocalAppStateTcpServer<P, H, Observer, AppState, Policies = NoTcpPolicies> =
+    LocalTcpServer<P, LocalAppStateHandler<P, H, AppState>, Observer, Policies>;
 
-impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
+impl<P, H, Observer, Policies> LocalTcpServer<P, H, Observer, Policies> {
     /// Bind application state before worker-local request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> LocalAppStateTcpServer<P, H, Observer, AppState>
+    ) -> LocalAppStateTcpServer<P, H, Observer, AppState, Policies>
     where
         P: Protocol,
         H: LocalTcpHandler<P, AppState>,
@@ -99,6 +98,7 @@ impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 }
@@ -118,15 +118,17 @@ where
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: StdArc::from("direct"),
+            policies: NoTcpPolicies,
         }
     }
 }
 
-impl<P, H, Observer> LocalTcpServer<P, H, Observer>
+impl<P, H, Observer, Policies> LocalTcpServer<P, H, Observer, Policies>
 where
     P: Protocol,
     H: LocalTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: LocalTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
 {
     /// Set worker-local TCP framing and buffering configuration.
     pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
@@ -151,7 +153,7 @@ where
     pub fn with_telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> LocalTcpServer<P, H, Next>
+    ) -> LocalTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -164,6 +166,7 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -172,7 +175,7 @@ where
         self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> LocalTcpServer<P, H, Next>
+    ) -> LocalTcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -185,6 +188,7 @@ where
             runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -221,11 +225,36 @@ where
     pub(crate) fn listener_label(&self) -> StdArc<str> {
         self.listener.clone()
     }
+
+    pub(crate) fn policies(&self) -> &Policies {
+        &self.policies
+    }
+
+    /// Serve one worker-local I/O connection, starting at transport-ready admission.
+    pub async fn serve_io<IO>(&self, io: IO) -> Result<(), NacelleError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + 'static,
+    {
+        let _connection_permit = self.runtime_state.acquire_connection_tracked()?;
+        crate::connection::serve_local_io_with_policies(
+            io,
+            self.protocol.clone(),
+            self.handler.clone(),
+            self.config.clone(),
+            self.telemetry.clone(),
+            self.runtime_state.clone(),
+            self.tcp_limits,
+            NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
+            &self.policies,
+        )
+        .await
+    }
 }
 
-impl<P, H, Observer> Clone for TcpServer<P, H, Observer>
+impl<P, H, Observer, Policies> Clone for TcpServer<P, H, Observer, Policies>
 where
     Observer: Clone,
+    Policies: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -236,21 +265,22 @@ where
             runtime_state: self.runtime_state.clone(),
             tcp_limits: self.tcp_limits,
             listener: self.listener.clone(),
+            policies: self.policies.clone(),
         }
     }
 }
 
 #[doc(hidden)]
-pub type AppStateTcpServer<P, H, Observer, AppState> =
-    TcpServer<P, SharedAppStateHandler<P, H, AppState>, Observer>;
+pub type AppStateTcpServer<P, H, Observer, AppState, Policies = NoTcpPolicies> =
+    TcpServer<P, SharedAppStateHandler<P, H, AppState>, Observer, Policies>;
 
-impl<P, H, Observer> TcpServer<P, H, Observer> {
+impl<P, H, Observer, Policies> TcpServer<P, H, Observer, Policies> {
     /// Bind application state before shared-runtime request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
         self,
         app_state: Arc<AppState>,
-    ) -> AppStateTcpServer<P, H, Observer, AppState>
+    ) -> AppStateTcpServer<P, H, Observer, AppState, Policies>
     where
         P: SharedProtocol,
         H: TcpHandler<P, AppState>,
@@ -264,6 +294,7 @@ impl<P, H, Observer> TcpServer<P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 }
@@ -278,17 +309,59 @@ impl<P> TcpServer<P, (), NoopObserver> {
             runtime_state: NacelleRuntimeState::default(),
             tcp_limits: NacelleTcpLimits::default(),
             listener: StdArc::from("direct"),
+            policies: NoTcpPolicies,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
     }
 }
 
-impl<P, H, Observer> TcpServer<P, H, Observer>
+impl<P, H, Observer> TcpServer<P, H, Observer> {
+    /// Attach one server-owned checkpoint set without changing handler types.
+    pub fn with_policies<Next>(self, policies: Next) -> TcpServer<P, H, Observer, Next>
+    where
+        P: SharedProtocol,
+        Next: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    {
+        TcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            policies,
+        }
+    }
+}
+
+impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
+    /// Attach worker-local checkpoints, which may own `!Send` state.
+    pub fn with_policies<Next>(self, policies: Next) -> LocalTcpServer<P, H, Observer, Next>
+    where
+        P: Protocol,
+        Next: LocalTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    {
+        LocalTcpServer {
+            protocol: self.protocol,
+            handler: self.handler,
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            policies,
+        }
+    }
+}
+
+impl<P, H, Observer, Policies> TcpServer<P, H, Observer, Policies>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
+    Policies: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
         &self.config
@@ -314,6 +387,10 @@ where
         self.protocol.as_ref()
     }
 
+    pub(crate) fn policies(&self) -> &Policies {
+        &self.policies
+    }
+
     pub fn with_listener_label(mut self, listener: impl Into<StdArc<str>>) -> Self {
         self.listener = listener.into();
         self
@@ -330,7 +407,10 @@ where
         self
     }
 
-    pub fn with_telemetry<Next>(self, telemetry: NacelleTelemetry<Next>) -> TcpServer<P, H, Next>
+    pub fn with_telemetry<Next>(
+        self,
+        telemetry: NacelleTelemetry<Next>,
+    ) -> TcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -343,6 +423,7 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -351,7 +432,7 @@ where
         self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> TcpServer<P, H, Next>
+    ) -> TcpServer<P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -364,6 +445,7 @@ where
             runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         }
     }
 
@@ -373,7 +455,7 @@ where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        serve_connection_with_connection_meta_and_tcp_state(
+        serve_shared_halves_with_policies(
             reader,
             writer,
             self.protocol.clone(),
@@ -383,6 +465,8 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
+            &self.policies,
+            true,
         )
         .await
     }
@@ -398,7 +482,7 @@ where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
-        serve_connection_with_connection_meta_and_tcp_state(
+        serve_shared_halves_with_policies(
             reader,
             writer,
             self.protocol.clone(),
@@ -408,6 +492,8 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            &self.policies,
+            true,
         )
         .await
     }
@@ -417,7 +503,7 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_stream_with_connection_meta_and_tcp_state(
+        serve_shared_io_with_policies(
             io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -426,6 +512,8 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
+            &self.policies,
+            true,
         )
         .await
     }
@@ -439,7 +527,7 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_stream_with_connection_meta_and_tcp_state(
+        serve_shared_io_with_policies(
             io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -448,6 +536,8 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            &self.policies,
+            true,
         )
         .await
     }
@@ -460,7 +550,7 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_stream_without_connection_limit_with_connection_meta_and_tcp_state(
+        serve_shared_io_with_policies(
             io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -469,12 +559,21 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            &self.policies,
+            false,
         )
         .await
     }
 }
 
-pub struct TcpServerBuilder<ProtocolState, HandlerState, P, H, Observer = NoopObserver> {
+pub struct TcpServerBuilder<
+    ProtocolState,
+    HandlerState,
+    P,
+    H,
+    Observer = NoopObserver,
+    Policies = NoTcpPolicies,
+> {
     protocol: Option<Arc<P>>,
     handler: Option<H>,
     config: NacelleTcpConfig,
@@ -482,12 +581,13 @@ pub struct TcpServerBuilder<ProtocolState, HandlerState, P, H, Observer = NoopOb
     runtime_state: NacelleRuntimeState,
     tcp_limits: NacelleTcpLimits,
     listener: StdArc<str>,
+    policies: Policies,
     _protocol: PhantomData<ProtocolState>,
     _handler: PhantomData<HandlerState>,
 }
 
-impl<ProtocolState, HandlerState, P, H, Observer>
-    TcpServerBuilder<ProtocolState, HandlerState, P, H, Observer>
+impl<ProtocolState, HandlerState, P, H, Observer, Policies>
+    TcpServerBuilder<ProtocolState, HandlerState, P, H, Observer, Policies>
 {
     pub fn tcp_config(mut self, config: NacelleTcpConfig) -> Self {
         self.config = config;
@@ -497,7 +597,7 @@ impl<ProtocolState, HandlerState, P, H, Observer>
     pub fn telemetry<Next>(
         self,
         telemetry: NacelleTelemetry<Next>,
-    ) -> TcpServerBuilder<ProtocolState, HandlerState, P, H, Next>
+    ) -> TcpServerBuilder<ProtocolState, HandlerState, P, H, Next, Policies>
     where
         Next: NacelleTelemetryObserver,
     {
@@ -509,6 +609,7 @@ impl<ProtocolState, HandlerState, P, H, Observer>
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
@@ -530,11 +631,13 @@ impl<ProtocolState, HandlerState, P, H, Observer>
     }
 }
 
-impl<HandlerState, P, H, Observer> TcpServerBuilder<Missing, HandlerState, P, H, Observer> {
+impl<HandlerState, P, H, Observer, Policies>
+    TcpServerBuilder<Missing, HandlerState, P, H, Observer, Policies>
+{
     pub fn protocol<P2>(
         self,
         protocol: P2,
-    ) -> TcpServerBuilder<Present, HandlerState, P2, H, Observer> {
+    ) -> TcpServerBuilder<Present, HandlerState, P2, H, Observer, Policies> {
         TcpServerBuilder {
             protocol: Some(Arc::new(protocol)),
             handler: self.handler,
@@ -543,17 +646,20 @@ impl<HandlerState, P, H, Observer> TcpServerBuilder<Missing, HandlerState, P, H,
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
     }
 }
 
-impl<ProtocolState, P, H, Observer> TcpServerBuilder<ProtocolState, Missing, P, H, Observer> {
+impl<ProtocolState, P, H, Observer, Policies>
+    TcpServerBuilder<ProtocolState, Missing, P, H, Observer, Policies>
+{
     pub fn handler<H2>(
         self,
         handler: H2,
-    ) -> TcpServerBuilder<ProtocolState, Present, P, H2, Observer> {
+    ) -> TcpServerBuilder<ProtocolState, Present, P, H2, Observer, Policies> {
         TcpServerBuilder {
             protocol: self.protocol,
             handler: Some(handler),
@@ -562,17 +668,20 @@ impl<ProtocolState, P, H, Observer> TcpServerBuilder<ProtocolState, Missing, P, 
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
             _protocol: PhantomData,
             _handler: PhantomData,
         }
     }
 }
 
-impl<P, H, Observer> TcpServerBuilder<Present, Present, P, H, Observer>
+impl<P, H, Observer, Policies> TcpServerBuilder<Present, Present, P, H, Observer, Policies>
 where
     Observer: NacelleTelemetryObserver,
+    P: SharedProtocol,
+    Policies: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
 {
-    pub fn build(self) -> Result<TcpServer<P, H, Observer>, NacelleError> {
+    pub fn build(self) -> Result<TcpServer<P, H, Observer, Policies>, NacelleError> {
         let protocol = self.protocol.ok_or(NacelleError::MissingProtocol)?;
         let handler = self.handler.expect("handler state guarantees a handler");
 
@@ -587,6 +696,29 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+            policies: self.policies,
         })
+    }
+}
+
+impl<PS, HS, P, H, Observer> TcpServerBuilder<PS, HS, P, H, Observer> {
+    /// Attach a checkpoint set once; later registration appends within that set.
+    pub fn policies<Next>(self, policies: Next) -> TcpServerBuilder<PS, HS, P, H, Observer, Next>
+    where
+        P: SharedProtocol,
+        Next: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
+    {
+        TcpServerBuilder {
+            protocol: self.protocol,
+            handler: self.handler,
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            policies,
+            _protocol: PhantomData,
+            _handler: PhantomData,
+        }
     }
 }

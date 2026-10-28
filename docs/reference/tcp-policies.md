@@ -1,5 +1,10 @@
 # TCP lifecycle policies
 
+For new integrations, prefer server-owned
+[static admission policies](policies.md), which do not change handler context
+types and support additive registration. The protocol wrapper described here
+remains available; its hooks run before corresponding server-owned hooks.
+
 TCP lifecycle policies let an application admit, reject, or wait for its own
 capacity at explicit transport and request boundaries. Enable the non-default
 `tcp-policies` facade feature, or `policies` when depending directly on

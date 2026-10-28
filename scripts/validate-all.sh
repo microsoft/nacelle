@@ -24,6 +24,8 @@ cargo test -p nacelle-tcp --features policies,experimental-openssl-detection --a
 cargo clippy -p nacelle-tcp --features policies,experimental-openssl-detection --all-targets -- -D warnings
 cargo test -p nacelle-http --features tls-self-signed --all-targets
 cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings
+cargo test -p nacelle-http --features policies,tls-self-signed --all-targets
+cargo clippy -p nacelle-http --features policies,tls-self-signed --all-targets -- -D warnings
 cargo test -p nacelle-reference-protocol --all-targets
 cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings
 cargo check -p nacelle-examples --no-default-features --features bench,http,tcp,tls-self-signed --all-targets
@@ -47,6 +49,9 @@ cargo clippy -p nacelle --features http,tls-self-signed --all-targets -- -D warn
 cargo test -p nacelle --no-default-features --all-targets
 cargo test -p nacelle --no-default-features --features tcp-policies --all-targets
 cargo clippy -p nacelle --no-default-features --features tcp-policies --all-targets -- -D warnings
+cargo test -p nacelle --no-default-features --features http,policies --all-targets
+cargo check -p nacelle-examples --features http,policies --bin policy_echo
+cargo test -p nacelle-examples --features http,policies --test policies
 cargo test -p nacelle-stress-test --all-targets
 cargo test -p nacelle-stress-test --no-default-features --all-targets
 cargo test -p nacelle-stress-server --all-targets

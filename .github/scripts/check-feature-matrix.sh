@@ -30,18 +30,18 @@ cargo "${command}" -p nacelle-tcp \
 
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,error-hints,experimental-thread-per-core,fuzzing,http,phase-timing,rustls,tcp,tcp-policies,tls-self-signed \
+    --features bench,buffer-rotation,error-hints,experimental-thread-per-core,fuzzing,http,phase-timing,policies,rustls,tcp,tcp-policies,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,tcp,tcp-policies \
+    --features bench,buffer-rotation,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,policies,tcp,tcp-policies \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-examples \
     --no-default-features \
-    --features bench,http,tcp,tls-self-signed \
+    --features bench,http,policies,tcp,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-examples \
     --no-default-features \
-    --features bench,http,openssl,tcp \
+    --features bench,http,openssl,policies,tcp \
     "${cargo_args[@]}"

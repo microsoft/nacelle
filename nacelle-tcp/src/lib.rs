@@ -4,6 +4,7 @@ pub mod config;
 pub mod connection;
 pub mod limits;
 pub mod options;
+pub mod policies;
 #[cfg(feature = "policies")]
 pub mod policy;
 pub mod protocol;
@@ -19,6 +20,7 @@ pub use options::NacelleTlsDetectionOptions;
 #[cfg(unix)]
 pub use options::NacelleUnixSocketOptions;
 pub use options::{NacelleTcpBindOptions, NacelleTcpKeepalive, NacelleTcpOptions};
+pub use policies::{NoTcpPolicies, TcpConnection, TcpHead, TcpPolicies, TcpTransport};
 #[cfg(feature = "policies")]
 pub use policy::{TcpLifecyclePolicy, WithTcpPolicy};
 pub use protocol::{

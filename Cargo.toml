@@ -66,6 +66,7 @@ metrics-util = { version = "0.20.1", default-features = false, features = ["debu
 openssl = "0.10.81"
 openssl-sys = "0.9.117"
 pem = "3.0.6"
+pin-project-lite = "0.2.17"
 proptest = { version = "1.11.0", default-features = false, features = ["std", "bit-set"] }
 rcgen = "0.14.8"
 rustls = "0.23.46"
