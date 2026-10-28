@@ -50,14 +50,15 @@ entry points retain their generic arguments and accept servers without a set.
 | --- | --- |
 | `.on_socket(...)` | Synchronous admission before spawning a connection task. |
 | `.on_accepted(...)` | Admission before TLS negotiation. |
-| `.on_transport_ready(...)` | Admission after transport negotiation. |
+| `.on_transport_ready(...)` (TCP), `.on_ready(...)` (HTTP) | Admission after transport negotiation. |
 | `.before_request(...)` | TCP-only admission before reading or decoding the next head. |
 | `.on_request_head(...)` | Validated head admission before additional Nacelle body work. |
 | `.around_handler(...)` | Admission immediately before handler invocation. |
 
-TCP `serve_io*` callers own acceptance and TLS, so those entry points do not
-visit socket, accepted, or transport-ready checkpoints. Hyper owns HTTP parsing;
-HTTP has no pre-decode `.before_request(...)` hook.
+TCP `serve_io*` and `serve_halves*` callers own acceptance and TLS, so these entry
+points skip socket and accepted admission but still run transport-ready
+admission. Hyper owns HTTP parsing; HTTP has no pre-decode
+`.before_request(...)` hook.
 
 ## Custom decisions and shared algorithms
 
