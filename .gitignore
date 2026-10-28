@@ -32,3 +32,6 @@ docs/internal
 
 # Generated Reports
 .reports/
+
+# Agency
+agency.toml

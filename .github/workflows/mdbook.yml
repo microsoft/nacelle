@@ -8,6 +8,11 @@ on:
   # Runs on pushes targeting the default branch
   push:
     branches: ["main"]
+    # Ignore .github-only edits unless they change a .yml file.
+    paths:
+      - "docs/**"
+      - "book.toml"
+      - ".github/workflows/mdbook.yml"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:

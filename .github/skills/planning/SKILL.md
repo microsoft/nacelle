@@ -10,9 +10,11 @@ Turn substantial goals into scoped, ordered work with explicit risks, validation
 ## Scope
 
 - Inspect the relevant repository state, architecture documentation, manifests, modules, tests, configuration, scripts, CI, and recent commits before planning.
-- Use chat for narrow plans. Create or update a durable plan for broad, risky, architectural, release, migration, or multi-session work when the user requests one or the work needs a persistent handoff.
+- Apply the repository's general communication and documentation styles to plans. Preserve required technical evidence and safety details when brevity would obscure them.
+- Use chat for plans unless the user requests a durable plan file. For requested broad, risky, architectural, release, migration, or multi-session plans, include enough evidence for a persistent handoff.
 - Continue the nearest existing plan when it matches the goal. If no convention exists and a durable plan is justified, use `.github/plans/YYYY-MM-DD-<topic>.md`.
 - Keep internal assessments and decisions separate from public operator, API, user, and release documentation.
+- Plan files under `.github/plans/` and working documents under `docs/internal/` stay ignored and untracked; do not add ignore exceptions.
 - Leave implementation tactics to the owning crate and nearby code unless they affect ordering, risk, validation, compatibility, or architecture.
 - When the user requests only a plan, do not implement or commit changes.
 

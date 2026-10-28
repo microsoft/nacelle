@@ -6,8 +6,19 @@ permissions:
 
 on:
   pull_request:
+    # Ignore .github-only edits unless they change a .yml file.
+    paths:
+      - "**"
+      - "!.github/**"
+      - ".github/**/*.yml"
+      - ".github/scripts/**"
   push:
     branches: [main, "release/**"]
+    paths:
+      - "**"
+      - "!.github/**"
+      - ".github/**/*.yml"
+      - ".github/scripts/**"
 
 env:
   RUSTFLAGS: -Dwarnings
