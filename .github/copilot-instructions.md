@@ -7,7 +7,8 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 - Read `README.md` and `docs/topics/architecture.md` before changing public behavior or crate boundaries.
 - Keep transport-agnostic byte/message decoding, encoding, asynchronous reader/writer adapters, and reusable framing buffers in `nacelle-codec`.
 - Keep transport-neutral request, response, handler, lifecycle, limits, telemetry, and TLS primitives in `nacelle-core`.
-- Keep TCP and Unix socket behavior in `nacelle-tcp`, all HTTP behavior in `nacelle-http`, and convenience re-exports plus the reference protocol in `nacelle`.
+- Keep TCP and Unix socket behavior in `nacelle-tcp`, all HTTP behavior in `nacelle-http`, and convenience re-exports in `nacelle`.
+- Keep the reference protocol in the unpublished `examples/nacelle-reference-protocol` package, outside the published library API.
 - Treat TCP `Protocol` implementations as consumers of the `nacelle-codec` decoder contract and, together with HTTP conversion, as adapters around the transport-neutral `Handler` boundary.
 - Preserve public APIs, feature behavior, configuration defaults, and wire behavior unless the task explicitly requires a change. Update the corresponding reference docs when these contracts change.
 - Keep generated files, dependency updates, formatting churn, and metadata edits out of scope unless required. Allow Cargo to update `Cargo.lock` only when dependency resolution changes.

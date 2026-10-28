@@ -26,8 +26,10 @@ relevant.
   Keep transport-neutral handlers, lifecycle, limits, telemetry, and TLS
   primitives in `nacelle-core`.
 - Keep TCP/Unix policy in `nacelle-tcp`, HTTP policy in `nacelle-http`, provider
-  implementations in their TLS crates, and convenience re-exports plus the
-  reference protocol in `nacelle`.
+  implementations in their TLS crates, and convenience re-exports in `nacelle`.
+- Keep the reference protocol in the unpublished
+  `examples/nacelle-reference-protocol` package, outside the published library
+  API.
 - Trace public type, trait, error, configuration, default, feature, and wire
   changes through consumers and adapters. Confirm intended changes have
   compatibility documentation and focused coverage.
