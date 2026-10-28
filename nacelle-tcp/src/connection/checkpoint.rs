@@ -127,7 +127,9 @@ impl FlushMode for Registered {
         W: AsyncWrite + Unpin + 'a,
         Observer: NacelleTelemetryObserver,
     {
-        if required { flush_delivery(io).await?; }
+        if required {
+            flush_delivery(io).await?;
+        }
         Ok(())
     }
 
@@ -139,7 +141,9 @@ impl FlushMode for Registered {
         W: AsyncWrite + Unpin + Send + 'a,
         Observer: NacelleTelemetryObserver,
     {
-        if required { flush_delivery(io).await?; }
+        if required {
+            flush_delivery(io).await?;
+        }
         Ok(())
     }
 }
@@ -246,8 +250,7 @@ where
     Observer: NacelleTelemetryObserver,
 {
     tokio::pin!(admission);
-    let first =
-        std::future::poll_fn(|cx| Poll::Ready(admission.as_mut().poll(cx))).await;
+    let first = std::future::poll_fn(|cx| Poll::Ready(admission.as_mut().poll(cx))).await;
     let result = match first {
         Poll::Ready(result) => result,
         Poll::Pending => {
@@ -264,7 +267,13 @@ where
     Observer: NacelleTelemetryObserver,
 {
     io.delivery
-        .flush(io.writer, io.limits, io.telemetry, io.metrics, io.phase_duration)
+        .flush(
+            io.writer,
+            io.limits,
+            io.telemetry,
+            io.metrics,
+            io.phase_duration,
+        )
         .await
         .inspect_err(|error| {
             *io.failure = Some(error.delivered_bytes);
@@ -283,10 +292,7 @@ mod tests {
     fn no_policy_control_stores_underlying_future_once() {
         let future = std::future::ready([0_u8; 4096]);
         let future_bytes = std::mem::size_of_val(&future);
-        let controlled = <NoTcpPolicies as SharedTcpPolicySet<(), ()>>::run(
-            &NoTcpPolicies,
-            future,
-        );
+        let controlled = <NoTcpPolicies as SharedTcpPolicySet<(), ()>>::run(&NoTcpPolicies, future);
         assert_eq!(std::mem::size_of_val(&controlled), future_bytes);
     }
 
@@ -313,15 +319,18 @@ mod tests {
         );
         assert_eq!(std::mem::size_of_val(&future), 0);
         drop(future);
-        let flush = Empty::flush_send(true, Io {
-            writer: &mut writer,
-            delivery: &mut delivery,
-            limits: &limits,
-            telemetry: &telemetry,
-            metrics: None,
-            phase_duration: false,
-            failure: &mut failure,
-        });
+        let flush = Empty::flush_send(
+            true,
+            Io {
+                writer: &mut writer,
+                delivery: &mut delivery,
+                limits: &limits,
+                telemetry: &telemetry,
+                metrics: None,
+                phase_duration: false,
+                failure: &mut failure,
+            },
+        );
         assert_eq!(std::mem::size_of_val(&flush), 0);
     }
 }

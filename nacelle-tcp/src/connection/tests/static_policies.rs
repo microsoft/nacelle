@@ -160,9 +160,11 @@ fn local_bootstrap() -> impl LocalTcpPolicySet<PhaseRequest, Rc<Cell<usize>>> {
 async fn opaque_policy_factories_attach_to_builders_and_servers() {
     let server = TcpServer::<StaticProtocol>::builder()
         .protocol(StaticProtocol(PhantomData))
-        .handler(handler_fn(|context: TcpRequestContext<StaticProtocol>| async move {
-            context.respond(TcpResponse::bytes("ok")).await
-        }))
+        .handler(handler_fn(
+            |context: TcpRequestContext<StaticProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
         .policies(shared_bootstrap())
         .build()
         .unwrap();
@@ -170,9 +172,11 @@ async fn opaque_policy_factories_attach_to_builders_and_servers() {
 
     let server = TcpServer::<StaticProtocol>::builder()
         .protocol(StaticProtocol(PhantomData))
-        .handler(handler_fn(|context: TcpRequestContext<StaticProtocol>| async move {
-            context.respond(TcpResponse::bytes("ok")).await
-        }))
+        .handler(handler_fn(
+            |context: TcpRequestContext<StaticProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
         .build()
         .unwrap()
         .with_policies(shared_bootstrap());

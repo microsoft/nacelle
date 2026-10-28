@@ -616,15 +616,22 @@ where
                 0
             };
             // Application leases must not be released with response bytes queued.
-            if let Err(error) = policies.flush(
-                policy_delivery_barrier
-                    || head_lease.as_ref().is_some_and(PolicyLease::requires_flush),
-                PolicyIo {
-                    writer, delivery, limits: tcp_limits, telemetry,
-                    metrics: metrics_context, phase_duration: telemetry_plan.phase_duration,
-                    failure: &mut policy_flush_failure,
-                },
-            ).await {
+            if let Err(error) = policies
+                .flush(
+                    policy_delivery_barrier
+                        || head_lease.as_ref().is_some_and(PolicyLease::requires_flush),
+                    PolicyIo {
+                        writer,
+                        delivery,
+                        limits: tcp_limits,
+                        telemetry,
+                        metrics: metrics_context,
+                        phase_duration: telemetry_plan.phase_duration,
+                        failure: &mut policy_flush_failure,
+                    },
+                )
+                .await
+            {
                 request_metrics.complete("error", policy_flush_failure.unwrap_or(0));
                 return Err(error);
             }
@@ -744,17 +751,22 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    let _handler_lease = policies.handler(
+    let _handler_lease = policies
+        .handler(
             &mut request,
             body_len,
             handler.context_mut(connection_context),
             PolicyIo {
-                writer, delivery, limits: tcp_limits, telemetry,
-                metrics: metrics_context, phase_duration: phase_duration_metrics,
+                writer,
+                delivery,
+                limits: tcp_limits,
+                telemetry,
+                metrics: metrics_context,
+                phase_duration: phase_duration_metrics,
                 failure: policy_flush_failure,
             },
-    )
-    .await?;
+        )
+        .await?;
     let handler_started = start_tcp_phase(phase_duration_metrics && metrics_context.is_some());
     let result = execute_handler(
         handler,

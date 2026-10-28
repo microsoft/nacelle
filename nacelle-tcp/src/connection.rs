@@ -39,7 +39,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
 use crate::policies::{
-    LocalDispatch, LocalTcpPolicySet, NoTcpPolicies, DeliveryDispatch, SharedDispatch,
+    DeliveryDispatch, LocalDispatch, LocalTcpPolicySet, NoTcpPolicies, SharedDispatch,
     SharedTcpPolicySet,
 };
 #[cfg(feature = "policies")]
@@ -483,10 +483,12 @@ where
                     #[cfg(feature = "policies")]
                     if legacy_policy_permit.is_none() {
                         legacy_policy_permit = Some(
-                            protocol.policy().before_request(
-                                handler.info(&connection_context),
-                                handler.state(&connection_context),
-                            )
+                            protocol
+                                .policy()
+                                .before_request(
+                                    handler.info(&connection_context),
+                                    handler.state(&connection_context),
+                                )
                                 .await
                                 .inspect_err(|error| {
                                     crate::policy::record_error(
@@ -502,15 +504,23 @@ where
                     }
                     if request_policy_permit.is_none() {
                         let mut failure = None;
-                        request_policy_permit = Some(policies.before(
-                            handler.context_mut(&mut connection_context),
-                            checkpoint::Io {
-                                writer: &mut writer, delivery: &mut response_delivery,
-                                limits: &tcp_limits, telemetry: &telemetry,
-                                metrics: connection_metrics.as_ref(),
-                                phase_duration: telemetry_plan.phase_duration, failure: &mut failure,
-                            },
-                        ).await.map_err(framing::MessageReadFailure::policy)?);
+                        request_policy_permit = Some(
+                            policies
+                                .before(
+                                    handler.context_mut(&mut connection_context),
+                                    checkpoint::Io {
+                                        writer: &mut writer,
+                                        delivery: &mut response_delivery,
+                                        limits: &tcp_limits,
+                                        telemetry: &telemetry,
+                                        metrics: connection_metrics.as_ref(),
+                                        phase_duration: telemetry_plan.phase_duration,
+                                        failure: &mut failure,
+                                    },
+                                )
+                                .await
+                                .map_err(framing::MessageReadFailure::policy)?,
+                        );
                     }
                     read_message_with_timeout(&mut request_reader, &tcp_limits).await
                 }
@@ -568,7 +578,9 @@ where
                     &mut connection_context,
                     connection_metrics.as_ref(),
                     telemetry_plan,
-                    request_policy_permit.as_ref().is_some_and(PolicyLease::requires_flush),
+                    request_policy_permit
+                        .as_ref()
+                        .is_some_and(PolicyLease::requires_flush),
                     #[cfg(feature = "policies")]
                     legacy_policy_permit.as_ref().is_some_and(Option::is_some),
                 )
@@ -622,16 +634,23 @@ where
                         }
                         if !request_reader.buffer().is_empty() {
                             let mut failure = None;
-                            let admitted = policies.before(
-                                handler.context_mut(&mut connection_context),
-                                checkpoint::Io {
-                                    writer: &mut writer, delivery: &mut response_delivery,
-                                    limits: &tcp_limits, telemetry: &telemetry,
-                                    metrics: connection_metrics.as_ref(),
-                                    phase_duration: telemetry_plan.phase_duration, failure: &mut failure,
-                                },
-                            ).await;
-                            if failure.is_some() { can_respond = false; }
+                            let admitted = policies
+                                .before(
+                                    handler.context_mut(&mut connection_context),
+                                    checkpoint::Io {
+                                        writer: &mut writer,
+                                        delivery: &mut response_delivery,
+                                        limits: &tcp_limits,
+                                        telemetry: &telemetry,
+                                        metrics: connection_metrics.as_ref(),
+                                        phase_duration: telemetry_plan.phase_duration,
+                                        failure: &mut failure,
+                                    },
+                                )
+                                .await;
+                            if failure.is_some() {
+                                can_respond = false;
+                            }
                             request_policy_permit = Some(admitted?);
                         }
                         request_reader

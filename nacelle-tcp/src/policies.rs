@@ -631,5 +631,11 @@ macro_rules! dispatch {
     };
 }
 
-dispatch!(SharedDispatch, SharedTcpPolicySet, enter_send, flush_send, Send);
+dispatch!(
+    SharedDispatch,
+    SharedTcpPolicySet,
+    enter_send,
+    flush_send,
+    Send
+);
 dispatch!(LocalDispatch, LocalTcpPolicySet, enter, flush);
