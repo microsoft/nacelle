@@ -68,6 +68,21 @@ and shared peer-rate admission with direct checks:
 cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- policy_admission --noplot
 ```
 
+The `tcp_static_policies_pipeline_64` group compares default and attached-empty
+sets, ready predicates, and head/handler resource leases using the same plaintext
+mock-I/O profile:
+
+```bash
+cargo bench -p nacelle-tcp --bench response_delivery --features policies -- tcp_static_policies_pipeline_64 --noplot
+```
+
+Each iteration initializes one connection and processes 64 requests. Compare
+cases within that group; the existing delivery groups include different task
+setup. Keep feature flags matched for revision comparisons: TCP's `policies`
+feature also enables its legacy lifecycle hooks. For older saved baselines,
+filter to `tcp_response_delivery_` or use `--baseline-lenient` so newly added
+benchmark IDs do not fail a strict baseline comparison.
+
 Measure pending waits and cancellation separately from ready checks. Record
 allocation counts, future sizes, write/flush counts, and code size alongside
 throughput and tail latency. Compare shared and worker-local budgets deliberately;

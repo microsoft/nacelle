@@ -334,7 +334,7 @@ fn policy_benches(c: &mut Criterion) {
     let peer = IpAddr::from([127, 0, 0, 1]);
     let mut group = c.benchmark_group("policy_admission");
     group.bench_function("direct_predicate", |b| {
-        b.iter(|| check(&black_box(1_usize)).unwrap())
+        b.iter(|| black_box(&check)(&black_box(1_usize)).unwrap())
     });
     group.bench_function("empty", |b| {
         b.iter(|| {

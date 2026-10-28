@@ -33,8 +33,23 @@ and `LocalHttpHandlerInput`; register local hooks with `.on_local_*` or
 `.around_local_handler`.
 
 HTTP bootstrap helpers can return `impl HttpPolicySet<State>` or
-`impl LocalHttpPolicySet<State>` directly. Callers do not need to name the
-checkpoint chains or response-lease adapter types.
+`impl LocalHttpPolicySet<State>` directly. TCP helpers use
+`SharedTcpPolicySet<Request, Storage>` or `LocalTcpPolicySet<Request, Storage>`
+from `nacelle::tcp::policies`. Callers do not need to name the checkpoint chains
+or response-lease adapter types.
+
+| Registration | Checkpoint |
+| --- | --- |
+| `.on_socket(...)` | Synchronous admission before spawning a connection task. |
+| `.on_accepted(...)` | Admission before TLS negotiation. |
+| `.on_transport_ready(...)` | Admission after transport negotiation. |
+| `.before_request(...)` | TCP-only admission before reading or decoding the next head. |
+| `.on_request_head(...)` | Validated head admission before additional Nacelle body work. |
+| `.around_handler(...)` | Admission immediately before handler invocation. |
+
+TCP `serve_io*` callers own acceptance and TLS, so those entry points do not
+visit socket, accepted, or transport-ready checkpoints. Hyper owns HTTP parsing;
+HTTP has no pre-decode `.before_request(...)` hook.
 
 ## Custom decisions and shared algorithms
 
