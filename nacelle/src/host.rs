@@ -4,16 +4,16 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio::task::JoinSet;
-
 #[cfg(test)]
 use nacelle_core::error::NacelleResourceLimitReason;
-use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown, NacelleShutdownToken};
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::NacelleTransport;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
+use nacelle_core::{
+    error::{NacelleError, NacelleTimeoutReason},
+    lifecycle::{NacelleDrainDeadline, NacelleShutdown, NacelleShutdownToken},
+    limits::{NacelleLimits, NacelleRuntimeState},
+    telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver},
+};
 #[cfg(all(feature = "tcp", feature = "openssl"))]
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
@@ -24,6 +24,7 @@ use nacelle_tcp::NacelleTlsDetectionOptions;
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
+use tokio::task::JoinSet;
 
 /// Manual listener supervisor for advanced serving integrations.
 ///

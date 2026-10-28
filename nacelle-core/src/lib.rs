@@ -16,10 +16,10 @@ pub use error::{BoxError, NacelleError, NacelleResourceLimitReason, NacelleTimeo
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
 pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
 pub use peer_rate::{
-    DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
+    NacellePeerRateLimitResult, NacellePeerRateLimiter, DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
 };
 pub use request::{NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta};
-pub use runtime::{NacelleRuntimeTopology, declare_worker_topology};
+pub use runtime::{declare_worker_topology, NacelleRuntimeTopology};
 pub use telemetry::{
     CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetricsConfig,
     NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,

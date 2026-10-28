@@ -1,16 +1,18 @@
 //! Reference-protocol client and upstream wire exchange.
 
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
 use bytes::{BufMut, Bytes, BytesMut};
-/// Protocol adapter used by the proxy's inbound and upstream connections.
-pub use nacelle_reference_protocol::LengthDelimitedProtocol as ProxyProtocol;
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR, FRAME_FLAG_START};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 use crate::ProxyError;
+
+/// Protocol adapter used by the proxy's inbound and upstream connections.
+pub use nacelle_reference_protocol::LengthDelimitedProtocol as ProxyProtocol;
 
 const FRAME_HEADER_LEN: usize = 24;
 const FRAME_FIELDS_LEN: usize = FRAME_HEADER_LEN - 4;

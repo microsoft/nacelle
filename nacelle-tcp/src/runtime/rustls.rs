@@ -1,15 +1,17 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use crate::protocol::{SharedProtocol, TcpHandler};
-use crate::server::TcpServer;
-use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::telemetry::{NacelleTelemetryObserver, NacelleTransport};
+use nacelle_core::{
+    error::{NacelleError, NacelleTimeoutReason},
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    telemetry::{NacelleTelemetryObserver, NacelleTransport},
+};
 use nacelle_rustls::NacelleTlsConfig;
 
 use super::common::{bind_tcp_listener, run_accept_loop};
+use crate::{
+    protocol::{SharedProtocol, TcpHandler},
+    server::TcpServer,
+};
 
 /// Listen on `addr` and serve framed TCP connections over Rustls.
 pub async fn serve_tcp_tls<P, H, Observer>(

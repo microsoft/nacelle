@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
-use nacelle_core::error::NacelleError;
 #[cfg(any(feature = "openssl", feature = "rustls"))]
 use nacelle_core::error::NacelleTimeoutReason;
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+use nacelle_core::{
+    error::NacelleError,
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    request::NacelleConnectionMeta,
+    telemetry::{NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport},
 };
 #[cfg(feature = "openssl")]
 use nacelle_openssl::NacelleOpenSslConfig;
@@ -15,20 +15,20 @@ use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
-};
-use crate::options::NacelleTcpOptions;
-#[cfg(feature = "experimental-openssl-detection")]
-use crate::options::NacelleTlsDetectionOptions;
-use crate::protocol::{LocalSerialTcpHandler, LocalTcpHandler, Protocol};
-use crate::serial_server::LocalSerialTcpServer;
-use crate::server::LocalTcpServer;
-
 use super::common::CONNECTION_REAP_BATCH;
-
 #[cfg(feature = "experimental-openssl-detection")]
 use super::openssl_optional::detect_tls_handshake;
+#[cfg(feature = "experimental-openssl-detection")]
+use crate::options::NacelleTlsDetectionOptions;
+use crate::{
+    connection::{
+        serve_local_serial_stream_without_connection_limit,
+        serve_local_stream_without_connection_limit,
+    },
+    options::NacelleTcpOptions,
+    protocol::{LocalSerialTcpHandler, LocalTcpHandler, Protocol},
+    serial_server::LocalSerialTcpServer, server::LocalTcpServer,
+};
 
 /// Serve one worker-local TCP listener until shared shutdown is requested.
 ///

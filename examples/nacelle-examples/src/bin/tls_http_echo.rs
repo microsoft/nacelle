@@ -1,10 +1,10 @@
 use bytes::BytesMut;
 use http::StatusCode;
-use nacelle::NacelleApp;
-use nacelle::core::NacelleError;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
-use nacelle::rustls::NacelleTlsConfig;
+use nacelle::{
+    core::NacelleError, core::pipeline::handler_fn,
+    http::{HttpRequestContext, HttpResponse, HyperServer},
+    rustls::NacelleTlsConfig, NacelleApp,
+};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), NacelleError> {

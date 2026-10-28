@@ -1,17 +1,15 @@
-use std::fmt;
-use std::marker::PhantomData;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{fmt, marker::PhantomData, rc::Rc, sync::Arc};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
-use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, Handler, LocalHandler, OptionalCompletion,
-    OptionalResponder, RequestContext, Respond,
+use nacelle_core::{
+    error::{NacelleError, NacelleResourceLimitReason},
+    pipeline::{
+        ConnectionContext, ConnectionInfo, Handler, LocalHandler, OptionalCompletion,
+        OptionalResponder, RequestContext, Respond,
+    },
+    request::NacelleBody,
 };
-use nacelle_core::request::NacelleBody;
 
 #[derive(Debug)]
 pub struct DecodedRequest<Req> {

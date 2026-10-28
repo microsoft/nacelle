@@ -1,14 +1,16 @@
-use bytes::BytesMut;
-use nacelle_codec::{MessageDecoder, MessageReadError};
 #[cfg(feature = "phase-timing")]
 use std::pin::Pin;
 #[cfg(feature = "phase-timing")]
 use std::task::{Context, Poll};
+
+use bytes::BytesMut;
+use nacelle_codec::{MessageDecoder, MessageReadError};
+use nacelle_core::{
+    error::NacelleError,
+    telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver},
+};
 #[cfg(feature = "phase-timing")]
 use tokio::io::{AsyncRead, ReadBuf};
-
-use nacelle_core::error::NacelleError;
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::metrics::{finish_tcp_phase, start_tcp_phase};
 

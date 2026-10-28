@@ -1,17 +1,16 @@
-use std::fmt;
-use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf, pin::Pin, sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
 use futures_core::Stream;
 use tokio::sync::mpsc;
 
-use crate::error::NacelleError;
-use crate::telemetry::NacelleTransport;
+use crate::{error::NacelleError, telemetry::NacelleTransport};
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 

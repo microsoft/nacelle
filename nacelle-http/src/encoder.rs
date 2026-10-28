@@ -1,23 +1,29 @@
 //! HTTP body conversion between Hyper's `Incoming` and Nacelle's
 //! `NacelleBody`, plus response serialization.
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::{Context, Poll};
+use std::{
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
 use futures_core::Stream;
 use http_body_util::{BodyExt, StreamBody};
-use hyper::Response;
-use hyper::body::{Frame, Incoming};
+use hyper::{
+    body::{Frame, Incoming},
+    Response,
+};
+use nacelle_core::{
+    error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason},
+    limits::NacelleRuntimeState, request::NacelleBody,
+    telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport},
+};
 
-use crate::limits::NacelleHttpLimits;
-use crate::pipeline::HttpResponse;
-use crate::policy::{NacelleHttpPolicy, apply_security_headers};
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
-use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::NacelleBody;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport};
+use crate::{
+    limits::NacelleHttpLimits, pipeline::HttpResponse,
+    policy::{apply_security_headers, NacelleHttpPolicy},
+};
 
 type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 

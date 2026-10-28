@@ -6,15 +6,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::sync::Arc;
 
-use nacelle_core::error::NacelleError;
 #[cfg(all(test, feature = "http"))]
 use nacelle_core::error::NacelleResourceLimitReason;
-use nacelle_core::lifecycle::NacelleShutdown;
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
-
-use crate::host::NacelleHost;
-
+use nacelle_core::{
+    error::NacelleError, lifecycle::NacelleShutdown,
+    limits::{NacelleLimits, NacelleRuntimeState},
+    telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver},
+};
 #[cfg(all(feature = "tcp", feature = "openssl"))]
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(all(any(feature = "tcp", feature = "http"), feature = "rustls"))]
@@ -25,6 +23,8 @@ use nacelle_tcp::NacelleTlsDetectionOptions;
 use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
+
+use crate::host::NacelleHost;
 
 type ListenerInstaller<Observer, AppState> =
     Box<dyn FnOnce(&mut NacelleHost<Observer, AppState>) + Send + 'static>;

@@ -1,9 +1,10 @@
 //! Tokio runtime helpers.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::{Context, Poll};
+use std::{
+    future::Future, pin::Pin,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
+};
 
 pub use tokio::task::JoinError;
 

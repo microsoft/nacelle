@@ -2,8 +2,7 @@
 
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::pipeline::ConnectionInfo;
-use nacelle_core::{NacelleBody, NacelleError};
+use nacelle_core::{pipeline::ConnectionInfo, NacelleBody, NacelleError};
 use nacelle_tcp::{DecodedRequest, FrameBuffer, Protocol, TcpCompletion, TcpResponse};
 
 const HEADER_LEN: usize = 24;

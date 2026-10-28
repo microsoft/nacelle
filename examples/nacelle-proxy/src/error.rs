@@ -1,7 +1,9 @@
 //! Proxy-owned error boundary and stable error classifications.
 
-use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::{
+    error::Error,
+    fmt::{Display, Formatter},
+};
 
 type BoxError = Box<dyn Error + Send + Sync + 'static>;
 

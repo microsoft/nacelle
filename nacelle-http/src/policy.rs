@@ -1,11 +1,11 @@
 //! HTTP request policy enforcement: host/method/header allowlists and security
 //! headers. Wire-level filtering applied before a request reaches the handler.
 
-use http::header::{HeaderName, HeaderValue};
-use hyper::body::Incoming;
-use hyper::{Method, Request, StatusCode};
-use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
 use std::net::{IpAddr, Ipv6Addr};
+
+use http::header::{HeaderName, HeaderValue};
+use hyper::{body::Incoming, Method, Request, StatusCode};
+use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
 
 /// The authoritative client-address header written by a trusted proxy.
 #[derive(Debug, Clone, Copy, Default)]

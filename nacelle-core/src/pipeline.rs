@@ -8,14 +8,16 @@
 //! abandonment by updating synchronous state or cancellation guards. `Drop`
 //! must not perform asynchronous I/O.
 
-use std::future::Future;
-use std::marker::PhantomData;
-use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+    future::Future, marker::PhantomData,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf, sync::Arc,
+};
 
-use crate::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
-use crate::telemetry::NacelleTransport;
+use crate::{
+    request::{NacelleConnectionMeta, NacelleConnectionTlsMeta},
+    telemetry::NacelleTransport,
+};
 
 /// Immutable transport metadata for one accepted connection.
 #[non_exhaustive]

@@ -1,16 +1,17 @@
 //! Rustls configuration and connection metadata for Nacelle transports.
 
-use std::fs;
-use std::io;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::{
+    fs, io, path::Path,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use nacelle_core::request::NacelleConnectionTlsMeta;
-use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::{ClientHello, ResolvesServerCert};
-use rustls::sign::CertifiedKey;
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer},
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey, ServerConfig,
+};
 
 /// Reloadable Rustls server configuration.
 #[derive(Debug, Clone)]

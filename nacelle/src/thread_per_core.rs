@@ -1,25 +1,22 @@
-use std::collections::HashSet;
-use std::future::Future;
-use std::net::SocketAddr;
 #[cfg(any(feature = "tcp", feature = "http"))]
 use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
+use std::{collections::HashSet, future::Future, net::SocketAddr, sync::mpsc, thread};
 
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
-use nacelle_core::lifecycle::{NacelleShutdown, NacelleShutdownToken};
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
-#[cfg(all(feature = "openssl", feature = "tcp"))]
-use nacelle_openssl::NacelleOpenSslConfig;
-#[cfg(all(feature = "rustls", any(feature = "tcp", feature = "http")))]
-use nacelle_rustls::NacelleTlsConfig;
-
+use nacelle_core::{
+    error::{NacelleError, NacelleResourceLimitReason},
+    lifecycle::{NacelleShutdown, NacelleShutdownToken},
+    limits::{NacelleLimits, NacelleRuntimeState},
+};
 #[cfg(feature = "http")]
 use nacelle_http::{
     LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpSharedState, LocalHyperServer,
 };
+#[cfg(all(feature = "openssl", feature = "tcp"))]
+use nacelle_openssl::NacelleOpenSslConfig;
+#[cfg(all(feature = "rustls", any(feature = "tcp", feature = "http")))]
+use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]

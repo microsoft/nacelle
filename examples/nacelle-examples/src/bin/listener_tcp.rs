@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::prelude::*;
-use nacelle::tcp::runtime::serve_tcp;
-use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
+use nacelle::{
+    core::pipeline::handler_fn, prelude::*, tcp::runtime::serve_tcp,
+    tcp::{TcpRequestContext, TcpResponse, TcpServer},
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]

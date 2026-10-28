@@ -1,9 +1,10 @@
 //! OpenSSL configuration and connection metadata for Nacelle transports.
 
-use std::io;
-use std::path::Path;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::{
+    io, path::Path,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use nacelle_core::request::NacelleConnectionTlsMeta;
 use openssl::ssl::{

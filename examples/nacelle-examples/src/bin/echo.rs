@@ -3,9 +3,10 @@
 //! error text into a typed response with the error flag and original request ID.
 
 use bytes::BytesMut;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::prelude::*;
-use nacelle::tcp::{TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer};
+use nacelle::{
+    core::pipeline::handler_fn, prelude::*,
+    tcp::{TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer},
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 async fn echo(

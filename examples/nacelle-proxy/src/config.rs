@@ -1,10 +1,11 @@
 //! Proxy configuration loading, validation, and TLS material snapshots.
 
-use std::fmt::{Debug, Formatter};
-use std::io;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::{
+    fmt::{Debug, Formatter},
+    io, net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use nacelle::rustls::NacelleTlsConfig;
 use serde::Deserialize;

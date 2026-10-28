@@ -1,14 +1,13 @@
 //! Runtime configuration watching and last-known-good reload policy.
 
-use std::fmt::Write as _;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fmt::Write as _, path::PathBuf, sync::Arc, time::Duration};
 
 use nacelle::runtime::NacelleShutdownToken;
 
-use crate::ProxyService;
-use crate::config::{ConfigurationSnapshot, ProxyStartupConfiguration, load_snapshot};
+use crate::{
+    config::{load_snapshot, ConfigurationSnapshot, ProxyStartupConfiguration},
+    ProxyService,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReloadPolicy {

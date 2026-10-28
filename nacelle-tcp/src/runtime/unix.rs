@@ -1,24 +1,24 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::net::UnixListener;
-
-use crate::options::NacelleUnixSocketOptions;
-use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
-use crate::runtime::common::reap_finished_connections;
-use crate::serial_server::SerialTcpServer;
-use crate::server::TcpServer;
-use nacelle_core::error::NacelleError;
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc, time::Duration,
 };
+
+use nacelle_core::{
+    error::NacelleError,
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    request::NacelleConnectionMeta,
+    telemetry::{NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport},
+};
+use tokio::net::UnixListener;
 
 use super::common::{
     connection_rejection_reason, drain_connection_tasks, log_connection_result,
     record_connection_rejection,
+};
+use crate::{
+    options::NacelleUnixSocketOptions,
+    protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler},
+    runtime::common::reap_finished_connections, serial_server::SerialTcpServer, server::TcpServer,
 };
 
 /// Listen on a Unix domain socket and serve each accepted connection.

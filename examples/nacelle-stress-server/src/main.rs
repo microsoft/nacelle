@@ -4,25 +4,26 @@ static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[path = "shared.rs"]
 mod shared;
-use shared::{StressServer, build_server, configure_allocator, parse_args, print_config};
-
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::thread;
-use std::time::Duration;
+use std::{collections::BTreeMap, net::SocketAddr, thread, time::Duration};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 #[cfg(feature = "tls-self-signed")]
 use nacelle::core::NacelleTimeoutReason;
-use nacelle::core::telemetry::NacelleTelemetryObserver;
-use nacelle::core::{NacelleError, NacelleTelemetry};
 #[cfg(feature = "tls-self-signed")]
 use nacelle::rustls::NacelleTlsConfig;
-use nacelle::tcp::TcpHandler;
+use nacelle::{
+    core::telemetry::NacelleTelemetryObserver,
+    core::{NacelleError, NacelleTelemetry},
+    tcp::TcpHandler,
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::make_tcp_socket;
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::watch;
+use tokio::{
+    net::{TcpListener, TcpSocket, TcpStream},
+    sync::watch,
+};
+
+use shared::{build_server, configure_allocator, parse_args, print_config, StressServer};
 
 #[cfg(feature = "tls-self-signed")]
 type StressTlsConfig = NacelleTlsConfig;

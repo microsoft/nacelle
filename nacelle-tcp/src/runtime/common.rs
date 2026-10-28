@@ -1,20 +1,21 @@
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
-use crate::options::NacelleTcpBindOptions;
-use crate::protocol::{SharedProtocol, TcpHandler};
-use crate::server::TcpServer;
-use nacelle_core::error::NacelleError;
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::limits::TrackedPermit;
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
-    NacelleTransport,
+use nacelle_core::{
+    error::NacelleError,
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    limits::TrackedPermit, request::NacelleConnectionMeta,
+    telemetry::{
+        NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind,
+        NacelleTelemetryObserver, NacelleTransport,
+    },
 };
-use std::future::Future;
-use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+
+use crate::{
+    options::NacelleTcpBindOptions,
+    protocol::{SharedProtocol, TcpHandler},
+    server::TcpServer,
+};
 
 pub(super) fn bind_tcp_listener(
     addr: SocketAddr,

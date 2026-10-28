@@ -1,5 +1,4 @@
-use std::fmt;
-use std::io;
+use std::{fmt, io};
 
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncReadExt};

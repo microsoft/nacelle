@@ -1,12 +1,15 @@
-use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::{
+    collections::HashMap, net::IpAddr,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
-use crate::error::{NacelleError, NacelleResourceLimitReason};
-use crate::peer_rate::{
-    DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
+use crate::{
+    error::{NacelleError, NacelleResourceLimitReason},
+    peer_rate::{
+        NacellePeerRateLimitResult, NacellePeerRateLimiter, DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
+    },
 };
 
 #[derive(Debug, Clone)]

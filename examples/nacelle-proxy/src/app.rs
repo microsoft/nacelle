@@ -1,19 +1,20 @@
 //! Proxy application composition, lifecycle, and Nacelle runtime assembly.
 
-use std::future::Future;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{future::Future, path::PathBuf, sync::Arc, time::Duration};
 
-use crate::config::{ConfigurationSnapshot, initial_tls_config, load_snapshot};
-use crate::reload::{ReloadPolicy, watch_configuration};
-use crate::wire::ProxyProtocol;
-use crate::{ProxyError, ProxyService};
-use nacelle::NacelleApp;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleLimits, NacelleShutdown};
-use nacelle::rustls::NacelleTlsConfig;
-use nacelle::tcp::{NacelleTcpLimits, TcpRequestContext, TcpServer};
+use nacelle::{
+    core::pipeline::handler_fn,
+    core::{NacelleError, NacelleLimits, NacelleShutdown},
+    rustls::NacelleTlsConfig,
+    tcp::{NacelleTcpLimits, TcpRequestContext, TcpServer},
+    NacelleApp,
+};
+
+use crate::{
+    config::{initial_tls_config, load_snapshot, ConfigurationSnapshot},
+    reload::{watch_configuration, ReloadPolicy},
+    wire::ProxyProtocol, ProxyError, ProxyService,
+};
 
 const DEFAULT_CONFIG_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.example.toml");
 

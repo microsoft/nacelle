@@ -1,24 +1,24 @@
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::collections::VecDeque;
-use std::fmt::Debug;
-use std::net::SocketAddr;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque, fmt::Debug, net::SocketAddr, str::FromStr, sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::BytesMut;
 use nacelle::core::NacelleError;
-use nacelle_stress_common::{STRESS_OPCODE, make_tcp_socket, read_response, write_request_frame};
+use nacelle_stress_common::{make_tcp_socket, read_response, write_request_frame, STRESS_OPCODE};
 #[cfg(feature = "rustls")]
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 #[cfg(feature = "rustls")]
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 #[cfg(feature = "rustls")]
 use rustls::{ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::Barrier;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
+    sync::Barrier,
+};
 
 const LATENCY_SAMPLE_STRIDE: u64 = 64;
 

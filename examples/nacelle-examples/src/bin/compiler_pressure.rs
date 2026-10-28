@@ -1,17 +1,17 @@
 #![recursion_limit = "256"]
 
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{rc::Rc, sync::Arc, time::Duration};
 
-use nacelle::NacelleApp;
-use nacelle::core::lifecycle::NacelleDrainDeadline;
-use nacelle::core::pipeline::{handler_fn, local_handler_fn};
-use nacelle::core::{NacelleError, NacelleShutdown};
-use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
-use nacelle::tcp::{
-    LocalTcpServer, NacelleTcpOptions, SerialTcpHandler, SerialTcpRequestContext, SerialTcpServer,
-    TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer,
+use nacelle::{
+    core::lifecycle::NacelleDrainDeadline,
+    core::pipeline::{handler_fn, local_handler_fn},
+    core::{NacelleError, NacelleShutdown},
+    http::{HttpRequestContext, HttpResponse, HyperServer},
+    tcp::{
+        LocalTcpServer, NacelleTcpOptions, SerialTcpHandler, SerialTcpRequestContext,
+        SerialTcpServer, TcpHandlerCompletion, TcpRequestContext, TcpResponse, TcpServer,
+    },
+    NacelleApp,
 };
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 

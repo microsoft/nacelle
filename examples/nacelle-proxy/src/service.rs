@@ -3,12 +3,16 @@
 use std::sync::{Arc, RwLock};
 
 use bytes::BytesMut;
-use nacelle::rustls::NacelleTlsConfig;
-use nacelle::tcp::{TcpHandlerCompletion, TcpRequestContext, TcpResponse};
+use nacelle::{
+    rustls::NacelleTlsConfig,
+    tcp::{TcpHandlerCompletion, TcpRequestContext, TcpResponse},
+};
 
-use crate::ProxyError;
-use crate::config::ProxyConfiguration;
-use crate::wire::{ProxyProtocol, ReferenceProtocolClient};
+use crate::{
+    config::ProxyConfiguration,
+    wire::{ProxyProtocol, ReferenceProtocolClient},
+    ProxyError,
+};
 
 /// TCP proxy behavior and its reloadable process state.
 #[derive(Debug, Clone)]

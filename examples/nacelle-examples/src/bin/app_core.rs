@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
-use nacelle::core::pipeline::{ConnectionInfo, handler_fn};
-use nacelle::prelude::*;
-use nacelle::tcp::{
-    FrameBuffer, Protocol, TcpCompletion, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
-    TcpServer,
+use nacelle::{
+    core::pipeline::{handler_fn, ConnectionInfo},
+    prelude::*,
+    tcp::{
+        FrameBuffer, Protocol, TcpCompletion, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
+        TcpServer,
+    },
 };
 use nacelle_reference_protocol::{
     FrameErrorContext, FrameRequest, FrameResponseContext, LengthDelimitedProtocol,

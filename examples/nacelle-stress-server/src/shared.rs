@@ -1,20 +1,17 @@
-// Shared service/config logic for the Tokio stress server.
-
-use std::net::SocketAddr;
 #[cfg(feature = "mimalloc-allocator")]
 use std::os::raw::c_long;
-use std::path::Path;
-use std::str::FromStr;
-use std::time::Duration;
+use std::{net::SocketAddr, path::Path, str::FromStr, time::Duration};
 
 use bytes::Bytes;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::core::telemetry::{NacelleTelemetryObserver, NoopObserver};
-use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry};
-use nacelle::tcp::{
-    NacelleTcpConfig, NacelleTcpLimits, ResponseWritePolicy, SerialTcpHandler,
-    SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpRequestContext, TcpResponse,
-    TcpServer,
+use nacelle::{
+    core::pipeline::handler_fn,
+    core::telemetry::{NacelleTelemetryObserver, NoopObserver},
+    core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry},
+    tcp::{
+        NacelleTcpConfig, NacelleTcpLimits, ResponseWritePolicy, SerialTcpHandler,
+        SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpRequestContext, TcpResponse,
+        TcpServer,
+    },
 };
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;

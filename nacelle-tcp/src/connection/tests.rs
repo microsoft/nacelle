@@ -1,36 +1,39 @@
-use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::{Context, Poll};
-use std::time::Duration;
+use std::{
+    pin::Pin, rc::Rc, sync::Arc,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    task::{Context, Poll},
+    time::Duration,
+};
 
-use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
 use metrics_util::debugging::DebuggingRecorder;
 use nacelle_codec::MessageDecoder;
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown};
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
-use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
-use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
-    NacelleTelemetryEventKind, NacelleTelemetryObserver,
+use nacelle_core::{
+    error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason},
+    lifecycle::{NacelleDrainDeadline, NacelleShutdown},
+    limits::{NacelleLimits, NacelleRuntimeState},
+    pipeline::{handler_fn, local_handler_fn, ConnectionInfo},
+    request::{NacelleBody, NacelleConnectionMeta},
+    telemetry::{
+        NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
+        NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    },
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-
-use crate::protocol::{
-    DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, ResponseAbortReason,
-    ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpRequestContext,
-    TcpCompletion, TcpRequestContext, TcpResponse,
-};
-use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
-use crate::server::TcpServer;
 
 use super::{
     serve_local_stream_without_connection_limit, serve_serial_stream_without_connection_limit,
     serve_stream_with_connection_meta,
+};
+use crate::{
+    config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode},
+    protocol::{
+        DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, ResponseAbortReason,
+        ResponseDeliveryOutcome, ResponseDeliveryPhase, SerialTcpHandler, SerialTcpRequestContext,
+        TcpCompletion, TcpRequestContext, TcpResponse,
+    },
+    serial_server::{LocalSerialTcpServer, SerialTcpServer},
+    server::TcpServer,
 };
 
 mod unified;

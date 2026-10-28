@@ -1,10 +1,12 @@
 use bytes::BytesMut;
 use http::StatusCode;
-use nacelle::NacelleApp;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::core::{NacelleError, NacelleTelemetry};
-use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
-use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
+use nacelle::{
+    core::pipeline::handler_fn,
+    core::{NacelleError, NacelleTelemetry},
+    http::{HttpRequestContext, HttpResponse, HyperServer},
+    tcp::{TcpRequestContext, TcpResponse, TcpServer},
+    NacelleApp,
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[derive(Debug)]

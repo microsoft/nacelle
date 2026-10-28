@@ -1,6 +1,5 @@
 use super::*;
-use crate::limits::NacelleTcpLimits;
-use crate::protocol::TcpHandlerCompletion;
+use crate::{limits::NacelleTcpLimits, protocol::TcpHandlerCompletion};
 
 #[derive(Clone, Default)]
 struct CustomProtocol {

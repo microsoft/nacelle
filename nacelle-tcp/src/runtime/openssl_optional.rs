@@ -1,24 +1,22 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use openssl::ssl::Ssl;
-
-use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions, NacelleTlsDetectionOptions};
-use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
-use crate::serial_server::SerialTcpServer;
-use crate::server::TcpServer;
-use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+use nacelle_core::{
+    error::{NacelleError, NacelleTimeoutReason},
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    request::NacelleConnectionMeta,
+    telemetry::{NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport},
 };
 use nacelle_openssl::NacelleOpenSslConfig;
+use openssl::ssl::Ssl;
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
     reap_finished_connections, record_connection_rejection,
+};
+use crate::{
+    options::{NacelleTcpBindOptions, NacelleTcpOptions, NacelleTlsDetectionOptions},
+    protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler},
+    serial_server::SerialTcpServer, server::TcpServer,
 };
 
 pub async fn serve_tcp_optional_openssl<P, H, Observer>(

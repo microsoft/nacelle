@@ -1,7 +1,8 @@
 use bytes::BytesMut;
-use nacelle::core::pipeline::handler_fn;
-use nacelle::prelude::*;
-use nacelle::tcp::{TcpRequestContext, TcpResponse, TcpServer};
+use nacelle::{
+    core::pipeline::handler_fn, prelude::*,
+    tcp::{TcpRequestContext, TcpResponse, TcpServer},
+};
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 
 #[tokio::main(flavor = "multi_thread")]

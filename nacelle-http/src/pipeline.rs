@@ -1,15 +1,15 @@
-use std::net::IpAddr;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{net::IpAddr, rc::Rc, sync::Arc};
 
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode, Uri};
-use nacelle_core::error::NacelleError;
-use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, Handler, LocalHandler, RequestContext, RequiredCompletion,
-    RequiredResponder, Respond,
+use nacelle_core::{
+    error::NacelleError,
+    pipeline::{
+        ConnectionContext, ConnectionInfo, Handler, LocalHandler, RequestContext,
+        RequiredCompletion, RequiredResponder, Respond,
+    },
+    request::NacelleBody,
 };
-use nacelle_core::request::NacelleBody;
 
 /// Typed application-facing HTTP request.
 pub struct HttpRequest {

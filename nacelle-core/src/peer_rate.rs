@@ -1,10 +1,12 @@
 //! Bounded lock-free per-peer fixed-window rate limiting.
 
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hash, Hasher};
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::{
+    collections::hash_map::RandomState,
+    hash::{BuildHasher, Hash, Hasher},
+    net::IpAddr,
+    sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
+    time::Instant,
+};
 
 const EMPTY: u64 = 0;
 const WRITING: u64 = 1;

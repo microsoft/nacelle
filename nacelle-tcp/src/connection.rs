@@ -27,23 +27,20 @@
 //! cargo run -p nacelle-examples --bin direct_tcp
 //! ```
 
-use std::ops::Deref;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{ops::Deref, rc::Rc, sync::Arc};
 
 use nacelle_codec::MessageReader;
+use nacelle_core::{
+    error::NacelleError, limits::NacelleRuntimeState, pipeline::ConnectionInfo,
+    request::NacelleConnectionMeta,
+    telemetry::{NacelleTelemetry, NacelleTelemetryObserver},
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::config::NacelleTcpConfig;
-use crate::limits::NacelleTcpLimits;
-use crate::protocol::{
-    LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedProtocol, TcpHandler,
+use crate::{
+    config::NacelleTcpConfig, limits::NacelleTcpLimits,
+    protocol::{LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedProtocol, TcpHandler},
 };
-use nacelle_core::error::NacelleError;
-use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::pipeline::ConnectionInfo;
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 
 mod body;
 mod framing;

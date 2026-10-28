@@ -1,6 +1,4 @@
-use std::sync::Arc;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{sync::Arc, sync::OnceLock, time::Duration};
 
 mod sink;
 pub use sink::{

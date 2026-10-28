@@ -1,6 +1,8 @@
-use std::error::Error as StdError;
-use std::fmt::{Display, Formatter};
-use std::io;
+use std::{
+    error::Error as StdError,
+    fmt::{Display, Formatter},
+    io,
+};
 
 pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 

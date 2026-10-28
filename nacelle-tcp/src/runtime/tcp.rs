@@ -1,21 +1,23 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
-use crate::serial_server::SerialTcpServer;
-use crate::server::TcpServer;
-use nacelle_core::error::NacelleError;
-use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleMetricsContext, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
+use nacelle_core::{
+    error::NacelleError,
+    lifecycle::{NacelleDrainDeadline, NacelleShutdownToken},
+    request::NacelleConnectionMeta,
+    telemetry::{
+        NacelleMetricsContext, NacelleTelemetryEventKind, NacelleTelemetryObserver,
+        NacelleTransport,
+    },
 };
 
 use super::common::{
     bind_tcp_listener, connection_rejection_reason, drain_connection_tasks, log_connection_result,
     reap_finished_connections, run_accept_loop,
+};
+use crate::{
+    options::{NacelleTcpBindOptions, NacelleTcpOptions},
+    protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler},
+    serial_server::SerialTcpServer, server::TcpServer,
 };
 
 /// Listen on `addr` and serve each accepted TCP connection in its own task.

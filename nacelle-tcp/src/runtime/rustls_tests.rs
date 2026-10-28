@@ -1,17 +1,18 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::error::NacelleError;
-use nacelle_core::lifecycle::NacelleDrainDeadline;
-use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
+use nacelle_core::{
+    error::NacelleError, lifecycle::NacelleDrainDeadline,
+    pipeline::{handler_fn, ConnectionInfo},
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse};
-use crate::server::TcpServer;
-
 use super::rustls::serve_tcp_tls_listener_with_shutdown_deadline;
+use crate::{
+    protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse},
+    server::TcpServer,
+};
 
 pub(super) fn test_certificate(pem: &[u8]) -> rustls::pki_types::CertificateDer<'static> {
     let parsed = nacelle_rustls::parse_pem_certificates(pem);

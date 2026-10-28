@@ -1,13 +1,9 @@
 use bytes::{Bytes, BytesMut};
-use tokio::io::AsyncRead;
-use tokio::sync::mpsc;
-
-use crate::config::NacelleTcpConfig;
-use crate::limits::NacelleTcpLimits;
-use nacelle_core::error::NacelleError;
-use nacelle_core::request::NacelleBody;
+use nacelle_core::{error::NacelleError, request::NacelleBody};
+use tokio::{io::AsyncRead, sync::mpsc};
 
 use super::io::read_buf_with_timeout;
+use crate::{config::NacelleTcpConfig, limits::NacelleTcpLimits};
 
 pub(super) async fn read_buffered_request_body<R>(
     reader: &mut R,

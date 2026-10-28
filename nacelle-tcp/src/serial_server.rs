@@ -1,20 +1,22 @@
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use nacelle_core::error::NacelleError;
-use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
+use nacelle_core::{
+    error::NacelleError, limits::NacelleRuntimeState, request::NacelleConnectionMeta,
+    telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver},
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::config::NacelleTcpConfig;
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit,
-    serve_serial_stream_without_connection_limit,
-};
-use crate::limits::NacelleTcpLimits;
-use crate::protocol::{
-    LocalAppStateHandler, LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedAppStateHandler,
+use crate::{
+    config::NacelleTcpConfig,
+    connection::{
+        serve_local_serial_stream_without_connection_limit,
+        serve_serial_stream_without_connection_limit,
+    },
+    limits::NacelleTcpLimits,
+    protocol::{
+        LocalAppStateHandler, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
+        SharedAppStateHandler,
+    },
 };
 
 /// Shared-runtime TCP server with exclusive mutable connection state.

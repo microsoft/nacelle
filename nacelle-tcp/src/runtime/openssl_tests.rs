@@ -1,23 +1,17 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use bytes::{Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
-use nacelle_core::error::NacelleError;
-use nacelle_core::lifecycle::NacelleDrainDeadline;
-use nacelle_core::pipeline::local_handler_fn;
-use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
+use nacelle_core::{
+    error::NacelleError, lifecycle::NacelleDrainDeadline, pipeline::local_handler_fn,
+    pipeline::{handler_fn, ConnectionInfo},
+};
 use nacelle_openssl::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-use crate::protocol::{
-    DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
-    SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
-};
-use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
-use crate::server::LocalTcpServer;
-use crate::server::TcpServer;
 
 #[cfg(feature = "experimental-openssl-detection")]
 use super::local::serve_local_serial_tcp_optional_openssl_listener;
@@ -30,6 +24,14 @@ use super::openssl::{
 use super::openssl_optional::{
     peeked_bytes_can_be_tls,
     serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline,
+};
+use crate::{
+    protocol::{
+        DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
+        SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
+    },
+    serial_server::{LocalSerialTcpServer, SerialTcpServer},
+    server::LocalTcpServer, server::TcpServer,
 };
 
 #[derive(Debug)]

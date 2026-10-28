@@ -3,8 +3,10 @@ use std::net::SocketAddr;
 use bytes::{Buf, BytesMut};
 use nacelle::core::NacelleError;
 use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpSocket;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpSocket,
+};
 
 pub const STRESS_OPCODE: u64 = 1;
 pub const SOCKET_BUFFER_BYTES: u32 = 4 * 1024 * 1024;

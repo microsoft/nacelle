@@ -1,23 +1,17 @@
-use bytes::BytesMut;
-use std::future::Future;
-use std::rc::Rc;
-use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use std::{future::Future, rc::Rc, sync::Arc};
 
-use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
-use crate::limits::NacelleTcpLimits;
-use crate::protocol::{
-    DecodedRequest, LocalSerialTcpHandler, LocalTcpHandler, Protocol, SerialTcpHandler,
-    SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpRequest, TcpResponder,
+use bytes::BytesMut;
+use nacelle_core::{
+    error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason},
+    limits::NacelleRuntimeState,
+    pipeline::{ConnectionContext, ConnectionInfo, OptionalResponder, RequestContext},
+    request::{NacelleBody, NacelleConnectionMeta},
+    telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver},
 };
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
-use nacelle_core::limits::NacelleRuntimeState;
-use nacelle_core::pipeline::{
-    ConnectionContext, ConnectionInfo, OptionalResponder, RequestContext,
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::mpsc,
 };
-use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::body::{buffered_request_body, pump_request_body, read_buffered_request_body};
 use super::metrics::{
@@ -25,6 +19,14 @@ use super::metrics::{
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
 use super::response::{GuardedResponseCompletion, ResponseDelivery, deliver_response, write_error};
+use crate::{
+    config::{NacelleTcpConfig, TcpRequestBodyMode},
+    limits::NacelleTcpLimits,
+    protocol::{
+        DecodedRequest, LocalSerialTcpHandler, LocalTcpHandler, Protocol, SerialTcpHandler,
+        SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpRequest, TcpResponder,
+    },
+};
 
 pub(super) trait ConnectionAccess<P>
 where

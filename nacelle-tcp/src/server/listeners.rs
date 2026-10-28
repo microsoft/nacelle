@@ -1,22 +1,22 @@
-use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::Path;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
-#[cfg(feature = "experimental-openssl-detection")]
-use crate::options::NacelleTlsDetectionOptions;
-#[cfg(unix)]
-use crate::options::NacelleUnixSocketOptions;
-use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::{SharedProtocol, TcpHandler};
-use nacelle_core::error::NacelleError;
-use nacelle_core::telemetry::NacelleTelemetryObserver;
+use nacelle_core::{error::NacelleError, telemetry::NacelleTelemetryObserver};
 #[cfg(feature = "openssl")]
 use nacelle_openssl::NacelleOpenSslConfig;
 #[cfg(feature = "rustls")]
 use nacelle_rustls::NacelleTlsConfig;
 
 use super::TcpServer;
+#[cfg(feature = "experimental-openssl-detection")]
+use crate::options::NacelleTlsDetectionOptions;
+#[cfg(unix)]
+use crate::options::NacelleUnixSocketOptions;
+use crate::{
+    options::{NacelleTcpBindOptions, NacelleTcpOptions},
+    protocol::{SharedProtocol, TcpHandler},
+};
 
 impl<P, H, Observer> TcpServer<P, H, Observer>
 where

@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
-use crate::protocol::Protocol;
-use nacelle_core::error::NacelleError;
-use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::{
-    NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport,
+use nacelle_core::{
+    error::NacelleError, request::NacelleConnectionMeta,
+    telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver, NacelleTransport},
 };
+
+use crate::protocol::Protocol;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TcpTelemetryPlan {
