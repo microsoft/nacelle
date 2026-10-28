@@ -297,7 +297,7 @@ where
             };
             if interrupted {
                 // A cancelled flush may have written a response prefix.
-                io.delivery.discard_pending();
+                io.delivery.interrupt();
                 *failure = Some(0);
             }
             result

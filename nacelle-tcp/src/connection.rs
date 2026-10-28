@@ -715,6 +715,12 @@ where
     }
     .await;
 
+    if response_delivery.is_interrupted() {
+        // A cancelled writer operation must not be resumed during cleanup.
+        connection_guard.finish(&result);
+        return result;
+    }
+
     let result = match response_delivery
         .flush(
             &mut writer,

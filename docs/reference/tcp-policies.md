@@ -95,6 +95,10 @@ the configured drain deadline, cancelling waits and dropping acquired permits.
 Panicking application policies have the same connection-task failure boundary
 as panicking handlers.
 
+If a policy rejects while a response write or flush is pending, Nacelle drops
+the connection without retrying delivery or graceful writer shutdown. This
+prevents cleanup I/O from extending the application's policy deadline.
+
 ## Example: application-owned connection admission
 
 This uses the repository's unpublished reference protocol fixture:

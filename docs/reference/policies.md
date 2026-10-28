@@ -110,6 +110,10 @@ time and waiter count. The decorator first polls the policy; immediately ready
 checks do not create a deadline. Saturated waiter capacity rejects immediately.
 Existing finite connection/request bounds must also cover waiting work.
 
+If admission rejects while a response write or flush is pending, Nacelle drops
+the connection without retrying delivery or graceful writer shutdown. Cleanup
+must not extend the admission wait indefinitely when write timeouts are disabled.
+
 Policies run before the corresponding I/O or handler operation, so those
 operation deadlines are not policy deadlines. Acquire resources in a consistent
 order; do not await capacity whose release depends on resources already held by
@@ -130,6 +134,11 @@ TCP uses its existing protocol error-response boundary. Socket and early
 connection rejection close the connection without a protocol response. After
 response commitment or during eviction, the transport closes rather than sending
 a second response.
+
+For a failed policy delivery barrier, request response-size metrics count the
+current response's cumulative written bytes, excluding earlier coalesced
+responses. Admission failures before response encoding record zero response bytes
+even if earlier responses were partially written while waiting.
 
 HTTP handler-error responses do not force connection closure after successful
 incoming-body EOF. Before successful EOF, handler errors still close the

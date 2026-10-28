@@ -29,7 +29,10 @@ use super::metrics::{
     TcpRequestMetricsGuard, TcpTelemetryPlan, finish_tcp_phase, record_core_request_completed,
     record_core_request_failed, record_tcp_error, start_tcp_phase,
 };
-use super::response::{GuardedResponseCompletion, ResponseDelivery, deliver_response, write_error};
+use super::response::{
+    GuardedResponseCompletion, ResponseDelivery, deliver_response,
+    delivered_bytes_after_flush_failure, write_error,
+};
 
 pub(super) trait ConnectionAccess<P>
 where
@@ -644,6 +647,7 @@ where
                 0
             };
             // Application leases must not be released with response bytes queued.
+            let pending_bytes = delivery.pending_bytes();
             if let Err(error) = policies
                 .flush(
                     policy_delivery_barrier
@@ -660,7 +664,14 @@ where
                 )
                 .await
             {
-                request_metrics.complete("error", policy_flush_failure.unwrap_or(0));
+                request_metrics.complete(
+                    "error",
+                    delivered_bytes_after_flush_failure(
+                        response_bytes,
+                        pending_bytes,
+                        policy_flush_failure.unwrap_or(0),
+                    ),
+                );
                 return Err(error);
             }
             #[cfg(feature = "policies")]
@@ -677,6 +688,7 @@ where
                     )
                     .await
             {
+                let error = error.with_cumulative_final_flush(response_bytes);
                 request_metrics.complete("error", error.delivered_bytes);
                 return Err(error.error);
             }
@@ -700,8 +712,8 @@ where
                 request_started,
                 &error,
             );
-            if let Some(delivered_bytes) = policy_flush_failure {
-                request_metrics.complete("error", delivered_bytes);
+            if policy_flush_failure.is_some() {
+                request_metrics.complete("error", 0);
                 return Err(error);
             }
             let response_bytes = match write_error::<P, W, Observer>(

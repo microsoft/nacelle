@@ -107,6 +107,7 @@ pub(super) struct ResponseDelivery {
     pending: BytesMut,
     base_capacity: usize,
     policy: ResponseWritePolicy,
+    interrupted: bool,
 }
 
 impl ResponseDelivery {
@@ -115,6 +116,7 @@ impl ResponseDelivery {
             pending: BytesMut::with_capacity(config.response_buffer_capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
+            interrupted: false,
         }
     }
 
@@ -136,8 +138,17 @@ impl ResponseDelivery {
         !self.pending.is_empty()
     }
 
-    pub(super) fn discard_pending(&mut self) {
+    pub(super) fn pending_bytes(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub(super) fn interrupt(&mut self) {
         self.pending.clear();
+        self.interrupted = true;
+    }
+
+    pub(super) fn is_interrupted(&self) -> bool {
+        self.interrupted
     }
 
     fn reset(&mut self) {
@@ -448,14 +459,20 @@ where
     Ok(response_bytes)
 }
 
-fn delivered_bytes_after_flush_failure(
+pub(super) fn delivered_bytes_after_flush_failure(
     response_bytes: usize,
-    error: &ResponseDeliveryError,
+    pending_bytes: usize,
+    delivered_bytes: usize,
 ) -> usize {
+    let pending_current = pending_bytes.min(response_bytes);
+    let pending_previous = pending_bytes.saturating_sub(pending_current);
     response_bytes
-        .saturating_sub(error.encoded_bytes)
-        .saturating_add(error.delivered_bytes)
-        .min(response_bytes)
+        .saturating_sub(pending_current)
+        .saturating_add(
+            delivered_bytes
+                .saturating_sub(pending_previous)
+                .min(pending_current),
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -680,8 +697,12 @@ impl ResponseDeliveryError {
         }
     }
 
-    fn with_cumulative_final_flush(mut self, response_bytes: usize) -> Self {
-        self.delivered_bytes = delivered_bytes_after_flush_failure(response_bytes, &self);
+    pub(super) fn with_cumulative_final_flush(mut self, response_bytes: usize) -> Self {
+        self.delivered_bytes = delivered_bytes_after_flush_failure(
+            response_bytes,
+            self.encoded_bytes,
+            self.delivered_bytes,
+        );
         self.encoded_bytes = response_bytes;
         self
     }

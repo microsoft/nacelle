@@ -696,6 +696,316 @@ async fn failed_flush_before_policy_wait_does_not_attempt_an_error_response() {
 
 struct PendingWrites<IO>(IO);
 
+struct PendingFlushIo {
+    reader: RecordingIo,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+impl AsyncRead for PendingFlushIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PendingFlushIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.reader).poll_write(cx, bytes)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn interrupted_admission_flush_skips_connection_cleanup() {
+    for checkpoint in ["before", "head", "handler"] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let runtime = NacelleRuntimeState::default();
+        let policy = |stage| {
+            bounded_wait(
+                WaitOnSecond {
+                    enabled: checkpoint == stage,
+                    entries: Arc::new(AtomicUsize::new(0)),
+                    gate: Arc::new(Semaphore::new(0)),
+                },
+                Duration::from_secs(1),
+                1,
+            )
+        };
+        let server = TcpServer::<StaticProtocol>::builder()
+            .protocol(StaticProtocol(PhantomData))
+            .handler(handler_fn(
+                |context: TcpRequestContext<StaticProtocol>| async move {
+                    context.respond(TcpResponse::bytes("ok")).await
+                },
+            ))
+            .runtime_state(runtime.clone())
+            .tcp_limits(
+                crate::limits::NacelleTcpLimits::default()
+                    .without_write_timeout()
+                    .without_shutdown_timeout(),
+            )
+            .tcp_config(
+                NacelleTcpConfig::default()
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .policies(
+                TcpPolicies::new()
+                    .on_transport_ready(ResourcePolicy(active.clone()))
+                    .before_request(policy("before"))
+                    .on_request_head(policy("head"))
+                    .around_handler(policy("handler")),
+            )
+            .build()
+            .unwrap();
+        let (reader, writes) = io(&[1, 0, 2, 0]);
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            server.serve_io(PendingFlushIo {
+                reader,
+                shutdowns: shutdowns.clone(),
+            }),
+        )
+        .await
+        .expect("admission timeout must not restart a blocked flush during cleanup");
+        assert!(matches!(result, Err(NacelleError::Timeout(_))));
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+        assert_eq!(*writes.lock().unwrap(), [b"ok".to_vec()]);
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.active_connections(), 0);
+        assert_eq!(runtime.active_requests(), 0);
+    }
+}
+
+struct DeliveryFailureIo {
+    reader: RecordingIo,
+    remaining: usize,
+    fail_flush: bool,
+}
+
+impl AsyncRead for DeliveryFailureIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for DeliveryFailureIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.remaining == 0 {
+            return Poll::Ready(Err(std::io::Error::other("test write failure")));
+        }
+        let written = bytes.len().min(self.remaining);
+        self.remaining -= written;
+        Pin::new(&mut self.reader).poll_write(cx, &bytes[..written])
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if self.fail_flush {
+            Poll::Ready(Err(std::io::Error::other("test flush failure")))
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn assert_error_response_size(recorder: &DebuggingRecorder, expected: f64) {
+    let (_, _, _, value) = recorder
+        .snapshotter()
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .find(|(key, _, _, _)| {
+            key.key().name() == "server.response.body.size"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "status" && label.value() == "error")
+        })
+        .expect("failed request must record its response size");
+    assert_eq!(
+        value,
+        metrics_util::debugging::DebugValue::Histogram(vec![expected.into()])
+    );
+}
+
+#[test]
+fn policy_barrier_failure_counts_current_response_bytes() {
+    for (write_policy, remaining, fail_flush, expected) in [
+        (ResponseWritePolicy::Immediate, usize::MAX, true, 4.0),
+        (ResponseWritePolicy::CoalesceBuffered, 2, false, 2.0),
+        (ResponseWritePolicy::CoalesceBuffered, usize::MAX, true, 4.0),
+    ] {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            let server = TcpServer::<StaticProtocol>::builder()
+                .protocol(StaticProtocol(PhantomData))
+                .handler(handler_fn(
+                    |context: TcpRequestContext<StaticProtocol>| async move {
+                        context.respond(TcpResponse::bytes("next")).await
+                    },
+                ))
+                .tcp_config(NacelleTcpConfig::default().with_response_write_policy(write_policy))
+                .policies(
+                    TcpPolicies::new()
+                        .on_request_head(ResourcePolicy(Arc::new(AtomicUsize::new(0)))),
+                )
+                .build()
+                .unwrap();
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(server.serve_io(DeliveryFailureIo {
+                    reader: io(&[1, 0]).0,
+                    remaining,
+                    fail_flush,
+                }));
+            assert!(matches!(result, Err(NacelleError::Io(_))));
+        });
+        assert_error_response_size(&recorder, expected);
+    }
+}
+
+#[test]
+fn policy_wait_flush_failure_excludes_previous_response_bytes() {
+    for checkpoint in ["head", "handler"] {
+        let recorder = DebuggingRecorder::new();
+        let handlers = Arc::new(AtomicUsize::new(0));
+        metrics::with_local_recorder(&recorder, || {
+            let called = handlers.clone();
+            let policy = |stage| WaitOnSecond {
+                enabled: checkpoint == stage,
+                entries: Arc::new(AtomicUsize::new(0)),
+                gate: Arc::new(Semaphore::new(0)),
+            };
+            let server = TcpServer::<PhaseProtocol>::builder()
+                .protocol(PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                })
+                .handler(handler_fn(
+                    move |context: TcpRequestContext<PhaseProtocol>| {
+                        called.fetch_add(1, Ordering::SeqCst);
+                        async move { context.respond(TcpResponse::bytes("prev")).await }
+                    },
+                ))
+                .tcp_config(
+                    NacelleTcpConfig::default()
+                        .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                )
+                .policies(
+                    TcpPolicies::new()
+                        .on_request_head(policy("head"))
+                        .around_handler(policy("handler")),
+                )
+                .build()
+                .unwrap();
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(server.serve_io(DeliveryFailureIo {
+                    reader: io(&[0, 0]).0,
+                    remaining: 2,
+                    fail_flush: false,
+                }));
+            assert!(matches!(result, Err(NacelleError::Io(_))));
+        });
+        assert_eq!(handlers.load(Ordering::SeqCst), 1);
+        assert_error_response_size(&recorder, 0.0);
+    }
+}
+
+#[cfg(feature = "policies")]
+struct LegacyLeaseOnSecond(AtomicUsize);
+
+#[cfg(feature = "policies")]
+impl crate::policy::TcpLifecyclePolicy<PhaseRequest, AuthState> for LegacyLeaseOnSecond {
+    type Permit = ();
+
+    async fn request_head(
+        &self,
+        _: &PhaseRequest,
+        _: usize,
+        _: &ConnectionInfo,
+        _: &AuthState,
+    ) -> Result<Option<()>, NacelleError> {
+        Ok((self.0.fetch_add(1, Ordering::SeqCst) == 1).then_some(()))
+    }
+}
+
+#[cfg(feature = "policies")]
+#[test]
+fn legacy_policy_barrier_failure_counts_current_response_bytes() {
+    type P = crate::policy::WithTcpPolicy<PhaseProtocol, LegacyLeaseOnSecond>;
+    for (write_policy, remaining, fail_flush, expected) in [
+        (ResponseWritePolicy::Immediate, usize::MAX, true, 4.0),
+        (ResponseWritePolicy::CoalesceBuffered, 2, false, 0.0),
+        (ResponseWritePolicy::CoalesceBuffered, 6, false, 2.0),
+        (ResponseWritePolicy::CoalesceBuffered, usize::MAX, true, 4.0),
+    ] {
+        let recorder = DebuggingRecorder::new();
+        metrics::with_local_recorder(&recorder, || {
+            let server = TcpServer::<P>::builder()
+                .protocol(
+                    PhaseProtocol {
+                        authenticated: true,
+                        request_wire_bytes: None,
+                        encoder_writes_then_errors: false,
+                    }
+                    .with_policy(LegacyLeaseOnSecond(AtomicUsize::new(0))),
+                )
+                .handler(handler_fn(|context: TcpRequestContext<P>| async move {
+                    context.respond(TcpResponse::bytes("next")).await
+                }))
+                .tcp_config(NacelleTcpConfig::default().with_response_write_policy(write_policy))
+                .build()
+                .unwrap();
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(server.serve_io(DeliveryFailureIo {
+                    reader: io(&[0, 0]).0,
+                    remaining,
+                    fail_flush,
+                }));
+            assert!(matches!(result, Err(NacelleError::Io(_))));
+        });
+        assert_error_response_size(&recorder, expected);
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn policy_deadline_is_polled_during_blocked_flush() {
     let mut writer = PendingWrites(tokio::io::empty());
