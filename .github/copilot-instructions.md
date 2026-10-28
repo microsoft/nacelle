@@ -7,7 +7,7 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 - Read `README.md` and `docs/topics/architecture.md` before changing public behavior or crate boundaries.
 - Keep transport-agnostic byte/message decoding, encoding, asynchronous reader/writer adapters, and reusable framing buffers in `nacelle-codec`.
 - Keep transport-neutral request, response, handler, lifecycle, limits, telemetry, and TLS primitives in `nacelle-core`.
-- Keep TCP and Unix socket behavior in `nacelle-tcp`, all http behavior in `nacelle-http`, and convenience re-exports plus the reference protocol in `nacelle`.
+- Keep TCP and Unix socket behavior in `nacelle-tcp`, all HTTP behavior in `nacelle-http`, and convenience re-exports plus the reference protocol in `nacelle`.
 - Treat TCP `Protocol` implementations as consumers of the `nacelle-codec` decoder contract and, together with HTTP conversion, as adapters around the transport-neutral `Handler` boundary.
 - Preserve public APIs, feature behavior, configuration defaults, and wire behavior unless the task explicitly requires a change. Update the corresponding reference docs when these contracts change.
 - Keep generated files, dependency updates, formatting churn, and metadata edits out of scope unless required. Allow Cargo to update `Cargo.lock` only when dependency resolution changes.
@@ -32,6 +32,14 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 - Follow `.github/instructions/rust.instructions.md` for Rust formatting, linting, and workspace tests.
 - Run `./scripts/validate-all.sh` when changes affect feature combinations, TLS providers, crate integration, or release readiness.
 - Build the mdBook documentation when changing documentation structure, links, or rendered content.
+
+## Agent Workflows and Style
+
+- Apply [communication style](instructions/style/communication-style.instructions.md) and [documentation style](instructions/style/documentation-style.instructions.md) throughout repository work, including responses, reviews, plans, comments, and documentation. These are general instructions, not opt-in skills.
+- Style must not change technical meaning or omit required errors, safety conditions, compatibility details, or validation evidence. Preserve exact identifiers, protocol tokens, quotations, and externally required wording. Nacelle's correctness, security, and compatibility requirements take precedence over presentation preferences.
+- For reviews, use the [general review workflow](skills/code-review/SKILL.md) with the [Nacelle review workflow](skills/nacelle-review/SKILL.md) for Rust, Cargo, transport, codec, and runtime changes, or the [documentation review workflow](skills/docs-review/SKILL.md) for documentation changes.
+- Follow [documentation instructions](instructions/docs.instructions.md) when changing Markdown, rustdoc, or mdBook configuration. Use the [planning workflow](skills/planning/SKILL.md) for broad or risky work; create plan files only when requested.
+- Review agents are optional tools for explicit requests or substantial independent review work, not mandatory steps for every change. Do not recursively delegate reviews.
 
 ## Commits
 
