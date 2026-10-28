@@ -63,6 +63,8 @@ mod openssl_tests;
 pub(crate) use openssl_tests::test_open_ssl_config;
 #[cfg(all(test, feature = "tls-self-signed"))]
 mod rustls_tests;
+#[cfg(all(test, feature = "tls-self-signed", feature = "policies"))]
+pub(crate) use rustls_tests::test_certificate;
 
 pub use local::*;
 #[cfg(feature = "openssl")]

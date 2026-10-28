@@ -13,7 +13,7 @@ use crate::server::TcpServer;
 
 use super::rustls::serve_tcp_tls_listener_with_shutdown_deadline;
 
-pub(super) fn test_certificate(pem: &[u8]) -> rustls::pki_types::CertificateDer<'static> {
+pub(crate) fn test_certificate(pem: &[u8]) -> rustls::pki_types::CertificateDer<'static> {
     let parsed = nacelle_rustls::parse_pem_certificates(pem);
     let certificates = match parsed {
         Ok(certificates) => certificates,

@@ -136,6 +136,10 @@ impl ResponseDelivery {
         !self.pending.is_empty()
     }
 
+    pub(super) fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
+
     fn reset(&mut self) {
         if self.pending.capacity() > self.base_capacity {
             drop(std::mem::take(&mut self.pending));

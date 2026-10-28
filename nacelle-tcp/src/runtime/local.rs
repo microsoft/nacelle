@@ -32,8 +32,15 @@ use super::openssl_optional::detect_tls_handshake;
 ///
 /// This function must run inside a Tokio [`tokio::task::LocalSet`]. Each
 /// accepted stream is spawned locally and remains on the accepting worker.
-pub async fn serve_local_tcp_listener<P, H, Observer, Policies>(
-    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_tcp_listener<P, H, Observer>(
+    server: Rc<
+        LocalTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -43,7 +50,6 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -127,8 +133,15 @@ where
 }
 
 /// Serve one worker-local serial TCP listener until shared shutdown.
-pub async fn serve_local_serial_tcp_listener<P, H, Observer, Policies>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_serial_tcp_listener<P, H, Observer>(
+    server: Rc<
+        LocalSerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -138,7 +151,6 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -223,8 +235,15 @@ where
 
 /// Serve one worker-local Rustls TCP listener until shared shutdown.
 #[cfg(feature = "rustls")]
-pub async fn serve_local_tcp_tls_listener<P, H, Observer, Policies>(
-    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_tcp_tls_listener<P, H, Observer>(
+    server: Rc<
+        LocalTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleTlsConfig,
@@ -235,7 +254,6 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -265,7 +283,7 @@ where
                         };
                         let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                             .with_listener(server.listener_label());
-                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+                        let tls_config = tls_config.clone();
                         let socket_lease = match server.policies().socket(&connection) {
                             Ok(lease) => lease,
                             Err(_) => {
@@ -284,6 +302,7 @@ where
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
                             let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                             let stream = match tokio::time::timeout(
                                 handshake_timeout,
                                 acceptor.accept(stream),
@@ -339,8 +358,15 @@ where
 
 /// Serve one worker-local required-OpenSSL TCP listener until shared shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_tcp_openssl_listener<P, H, Observer, Policies>(
-    server: Rc<LocalTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_tcp_openssl_listener<P, H, Observer>(
+    server: Rc<
+        LocalTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -351,7 +377,6 @@ where
     P: Protocol,
     H: LocalTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -459,8 +484,15 @@ where
 
 /// Serve one worker-local serial required-OpenSSL listener until shutdown.
 #[cfg(feature = "openssl")]
-pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer, Policies>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer>(
+    server: Rc<
+        LocalSerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -471,7 +503,6 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();
@@ -579,8 +610,15 @@ where
 /// Serve one worker-local serial plaintext-or-OpenSSL listener until shutdown.
 #[cfg(feature = "experimental-openssl-detection")]
 #[allow(clippy::too_many_arguments)]
-pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer, Policies>(
-    server: Rc<LocalSerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer>(
+    server: Rc<
+        LocalSerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     tls_config: NacelleOpenSslConfig,
@@ -592,7 +630,6 @@ where
     P: Protocol,
     H: LocalSerialTcpHandler<P> + 'static,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::LocalTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();

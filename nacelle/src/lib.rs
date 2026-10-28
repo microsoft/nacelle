@@ -34,28 +34,16 @@ mod thread_per_core;
 pub mod runtime {
     pub use crate::app::NacelleApp;
     pub use crate::host::NacelleHost;
-    #[cfg(all(
-        feature = "experimental-thread-per-core",
-        feature = "http",
-        feature = "rustls"
-    ))]
-    pub use crate::thread_per_core::run_local_http_tls_thread_per_core;
-    #[cfg(all(
-        feature = "experimental-thread-per-core",
-        feature = "experimental-openssl-detection"
-    ))]
-    pub use crate::thread_per_core::run_local_serial_tcp_optional_openssl_thread_per_core;
-    #[cfg(all(
-        feature = "experimental-thread-per-core",
-        feature = "tcp",
-        feature = "rustls"
-    ))]
-    pub use crate::thread_per_core::run_local_tcp_tls_thread_per_core;
     #[cfg(all(feature = "experimental-thread-per-core", feature = "http"))]
-    pub use crate::thread_per_core::{LocalHttpRuntimeConfig, run_local_http_thread_per_core};
+    pub use crate::thread_per_core::{
+        LocalHttpRuntimeConfig, run_local_http_thread_per_core,
+        run_local_http_thread_per_core_with_policies,
+    };
     #[cfg(all(feature = "experimental-thread-per-core", feature = "tcp"))]
     pub use crate::thread_per_core::{
-        LocalTcpRuntimeConfig, run_local_serial_tcp_thread_per_core, run_local_tcp_thread_per_core,
+        LocalTcpRuntimeConfig, run_local_serial_tcp_thread_per_core,
+        run_local_serial_tcp_thread_per_core_with_policies, run_local_tcp_thread_per_core,
+        run_local_tcp_thread_per_core_with_policies,
     };
     #[cfg(feature = "experimental-thread-per-core")]
     pub use crate::thread_per_core::{
@@ -64,11 +52,37 @@ pub mod runtime {
     };
     #[cfg(all(
         feature = "experimental-thread-per-core",
+        feature = "http",
+        feature = "rustls"
+    ))]
+    pub use crate::thread_per_core::{
+        run_local_http_tls_thread_per_core, run_local_http_tls_thread_per_core_with_policies,
+    };
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
         feature = "tcp",
         feature = "openssl"
     ))]
     pub use crate::thread_per_core::{
-        run_local_serial_tcp_openssl_thread_per_core, run_local_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_openssl_thread_per_core,
+        run_local_serial_tcp_openssl_thread_per_core_with_policies,
+        run_local_tcp_openssl_thread_per_core, run_local_tcp_openssl_thread_per_core_with_policies,
+    };
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
+        feature = "experimental-openssl-detection"
+    ))]
+    pub use crate::thread_per_core::{
+        run_local_serial_tcp_optional_openssl_thread_per_core,
+        run_local_serial_tcp_optional_openssl_thread_per_core_with_policies,
+    };
+    #[cfg(all(
+        feature = "experimental-thread-per-core",
+        feature = "tcp",
+        feature = "rustls"
+    ))]
+    pub use crate::thread_per_core::{
+        run_local_tcp_tls_thread_per_core, run_local_tcp_tls_thread_per_core_with_policies,
     };
     pub use nacelle_core::{NacelleShutdown, NacelleShutdownToken};
 }

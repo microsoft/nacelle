@@ -308,6 +308,9 @@ impl<S, A, R, H, E, C> HttpPolicies<S, A, R, H, E, C> {
 
     /// Append admission whose lease lasts only for the handler future.
     ///
+    /// Admission finishes before the handler timeout and request-body pumping
+    /// begin. Admission policies own their wait bounds.
+    ///
     /// The input and state types are validated when attaching the set.
     pub fn around_handler<P>(self, policy: P) -> HttpPolicies<S, A, R, H, Chain<E, P>, C> {
         HttpPolicies {
@@ -365,6 +368,9 @@ impl<S, A, R, H, E, C> HttpPolicies<S, A, R, H, E, C> {
     }
 
     /// Append a worker-local handler-scoped admission.
+    ///
+    /// Admission finishes before the handler timeout and request-body pumping
+    /// begin. Admission policies own their wait bounds.
     ///
     /// The input and state types are validated when attaching the set.
     pub fn around_local_handler<P>(self, policy: P) -> HttpPolicies<S, A, R, H, Chain<E, P>, C> {

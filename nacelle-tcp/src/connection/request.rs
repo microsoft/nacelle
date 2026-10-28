@@ -341,7 +341,7 @@ where
     let outcome = async {
         #[cfg(feature = "policies")]
         {
-            _head_policy_permit =
+            _head_policy_permit = super::checkpoint::await_admission(
                 protocol
                     .policy()
                     .request_head(
@@ -349,8 +349,14 @@ where
                         decoded.body_len,
                         handler.info(connection_context),
                         handler.state(connection_context),
-                    )
-                    .await
+                    ),
+                PolicyIo {
+                    writer, delivery, limits: tcp_limits, telemetry,
+                    metrics: metrics_context,
+                    phase_duration: telemetry_plan.phase_duration,
+                    failure: &mut policy_flush_failure,
+                },
+            ).await
                     .inspect_err(|error| {
                         record_tcp_error(telemetry, metrics_context, "policy_request_head", error);
                     })?;
@@ -392,11 +398,17 @@ where
             );
             #[cfg(feature = "policies")]
             {
-                _body_policy_permit =
+                _body_policy_permit = super::checkpoint::await_admission(
                     protocol
                         .policy()
-                        .body_complete(connection, decoded.body_len)
-                        .await
+                        .body_complete(connection, decoded.body_len),
+                    PolicyIo {
+                        writer, delivery, limits: tcp_limits, telemetry,
+                        metrics: metrics_context,
+                        phase_duration: telemetry_plan.phase_duration,
+                        failure: &mut policy_flush_failure,
+                    },
+                ).await
                         .inspect_err(|error| {
                             record_tcp_error(
                                 telemetry,
@@ -446,11 +458,17 @@ where
                 Ok(body) => {
                     #[cfg(feature = "policies")]
                     {
-                        _body_policy_permit =
+                        _body_policy_permit = super::checkpoint::await_admission(
                             protocol
                                 .policy()
-                                .body_complete(connection, decoded.body_len)
-                                .await
+                                .body_complete(connection, decoded.body_len),
+                            PolicyIo {
+                                writer, delivery, limits: tcp_limits, telemetry,
+                                metrics: metrics_context,
+                                phase_duration: telemetry_plan.phase_duration,
+                                failure: &mut policy_flush_failure,
+                            },
+                        ).await
                                 .inspect_err(|error| {
                                     record_tcp_error(
                                         telemetry,
@@ -482,6 +500,16 @@ where
                 Err(error) => Err(error),
             }
         } else {
+            #[cfg(feature = "policies")]
+            if delivery.has_pending() {
+                delivery.flush(
+                    writer, tcp_limits, telemetry, metrics_context,
+                    telemetry_plan.phase_duration,
+                ).await.map_err(|error| {
+                    policy_flush_failure = Some(error.delivered_bytes);
+                    error.error
+                })?;
+            }
             let _streaming_permit =
                 runtime_state
                     .acquire_streaming_task_tracked()

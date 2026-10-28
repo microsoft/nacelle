@@ -164,6 +164,39 @@ pub(super) struct TcpRequestMetricsGuard<'a, Observer: NacelleTelemetryObserver>
     completed: bool,
 }
 
+pub(super) struct TcpConnectionMetricsGuard<'a, Observer: NacelleTelemetryObserver> {
+    telemetry: &'a NacelleTelemetry<Observer>,
+    context: Option<&'a NacelleMetricsContext>,
+    transport: NacelleTransport,
+    reason: &'static str,
+}
+
+impl<'a, Observer: NacelleTelemetryObserver> TcpConnectionMetricsGuard<'a, Observer> {
+    pub(super) fn new(
+        telemetry: &'a NacelleTelemetry<Observer>,
+        context: Option<&'a NacelleMetricsContext>,
+        transport: NacelleTransport,
+    ) -> Self {
+        Self {
+            telemetry,
+            context,
+            transport,
+            reason: "cancelled",
+        }
+    }
+
+    pub(super) fn finish(&mut self, result: &Result<(), NacelleError>) {
+        self.reason = tcp_close_reason(result);
+    }
+}
+
+impl<Observer: NacelleTelemetryObserver> Drop for TcpConnectionMetricsGuard<'_, Observer> {
+    fn drop(&mut self) {
+        self.telemetry
+            .connection_closed(self.transport, self.context, self.reason);
+    }
+}
+
 impl<'a, Observer> TcpRequestMetricsGuard<'a, Observer>
 where
     Observer: NacelleTelemetryObserver,

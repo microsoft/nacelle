@@ -2,11 +2,12 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use nacelle::core::pipeline::handler_fn;
-use nacelle::core::policy::{RequestRate, map_input};
-use nacelle::core::{NacelleConnectionMeta, NacellePeerRateLimiter, NacelleShutdown};
+use nacelle::core::policy::{Rejection, RejectionKind, check_fn, map_input};
+use nacelle::core::{NacelleConnectionMeta, NacelleShutdown};
 use nacelle::http::{HttpPolicies, HttpRequestContext, HttpRequestHead, HttpResponse, HyperServer};
 use nacelle::tcp::policies::{TcpHead, TcpPolicies};
 use nacelle::tcp::{TcpRequestContext, TcpServer};
@@ -22,11 +23,20 @@ fn http_peer(input: &HttpRequestHead<'_>) -> Option<IpAddr> {
 }
 
 #[tokio::test]
-async fn tcp_and_http_share_one_initialized_request_rate_budget() {
+async fn tcp_and_http_share_one_initialized_request_budget() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let rate = RequestRate::new(Arc::new(NacellePeerRateLimiter::new(16)), 1);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let shared_attempts = attempts.clone();
+        let budget = Arc::new(check_fn(move |peer: &Option<IpAddr>| {
+            assert!(peer.is_some());
+            if shared_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(())
+            } else {
+                Err(Rejection::new(RejectionKind::RateLimited, "test_budget"))
+            }
+        }));
         let tcp = TcpServer::<LengthDelimitedProtocol>::builder()
             .protocol(LengthDelimitedProtocol)
             .handler(handler_fn(
@@ -34,7 +44,7 @@ async fn tcp_and_http_share_one_initialized_request_rate_budget() {
                     Ok(context.complete())
                 },
             ))
-            .policies(TcpPolicies::new().on_request_head(map_input(tcp_peer, rate.clone())))
+            .policies(TcpPolicies::new().on_request_head(map_input(tcp_peer, budget.clone())))
             .build()
             .unwrap();
         let http = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
@@ -42,7 +52,7 @@ async fn tcp_and_http_share_one_initialized_request_rate_budget() {
                 .respond(HttpResponse::bytes(http::StatusCode::OK, "unexpected"))
                 .await
         }))
-        .with_policies(HttpPolicies::new().on_request_head(map_input(http_peer, rate)));
+        .with_policies(HttpPolicies::new().on_request_head(map_input(http_peer, budget)));
 
         let (mut client, io) = tokio::io::duplex(128);
         let frame = LengthDelimitedProtocol
@@ -70,6 +80,7 @@ async fn tcp_and_http_share_one_initialized_request_rate_budget() {
             response.starts_with(b"HTTP/1.1 429"),
             "shared rate budget must include TCP requests"
         );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     })
     .await
     .expect("cross-transport policy test must finish");

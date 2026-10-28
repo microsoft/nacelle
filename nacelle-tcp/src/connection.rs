@@ -27,8 +27,6 @@
 //! cargo run -p nacelle-examples --bin direct_tcp
 //! ```
 
-#[cfg(feature = "policies")]
-use std::future::Future;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -68,7 +66,7 @@ mod tests;
 use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
 use io::shutdown_with_timeout;
-use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_close_reason, tcp_metrics_context};
+use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_metrics_context};
 use request::{
     LocalRequestDispatch, LocalSerialRequestDispatch, RequestDispatch, SerialRequestDispatch,
     SharedRequestDispatch, run_request,
@@ -469,6 +467,8 @@ where
         telemetry.connection_accepted(connection_metrics);
     }
     telemetry.connection_opened(transport);
+    let mut connection_guard =
+        metrics::TcpConnectionMetricsGuard::new(&telemetry, connection_metrics.as_ref(), transport);
 
     #[cfg(feature = "policies")]
     let mut legacy_policy_permit = None;
@@ -482,24 +482,40 @@ where
                 async {
                     #[cfg(feature = "policies")]
                     if legacy_policy_permit.is_none() {
+                        let mut failure = None;
                         legacy_policy_permit = Some(
-                            protocol
-                                .policy()
-                                .before_request(
+                            checkpoint::await_admission(
+                                protocol.policy().before_request(
                                     handler.info(&connection_context),
                                     handler.state(&connection_context),
-                                )
-                                .await
-                                .inspect_err(|error| {
-                                    crate::policy::record_error(
-                                        protocol.deref(),
-                                        &connection,
-                                        &telemetry,
-                                        "policy_before_request",
-                                        error,
-                                    );
-                                })
-                                .map_err(framing::MessageReadFailure::policy)?,
+                                ),
+                                checkpoint::Io {
+                                    writer: &mut writer,
+                                    delivery: &mut response_delivery,
+                                    limits: &tcp_limits,
+                                    telemetry: &telemetry,
+                                    metrics: connection_metrics.as_ref(),
+                                    phase_duration: telemetry_plan.phase_duration,
+                                    failure: &mut failure,
+                                },
+                            )
+                            .await
+                            .inspect_err(|error| {
+                                crate::policy::record_error(
+                                    protocol.deref(),
+                                    &connection,
+                                    &telemetry,
+                                    "policy_before_request",
+                                    error,
+                                );
+                            })
+                            .map_err(|error| {
+                                if failure.is_some() {
+                                    framing::MessageReadFailure::delivery(error)
+                                } else {
+                                    framing::MessageReadFailure::policy(error)
+                                }
+                            })?,
                         );
                     }
                     if request_policy_permit.is_none() {
@@ -519,7 +535,13 @@ where
                                     },
                                 )
                                 .await
-                                .map_err(framing::MessageReadFailure::policy)?,
+                                .map_err(|error| {
+                                    if failure.is_some() {
+                                        framing::MessageReadFailure::delivery(error)
+                                    } else {
+                                        framing::MessageReadFailure::policy(error)
+                                    }
+                                })?,
                         );
                     }
                     read_message_with_timeout(&mut request_reader, &tcp_limits).await
@@ -597,31 +619,23 @@ where
                                 handler.info(&connection_context),
                                 handler.state(&connection_context),
                             );
-                            tokio::pin!(admission);
-                            let result = std::future::poll_fn(|cx| {
-                                std::task::Poll::Ready(admission.as_mut().poll(cx))
-                            })
+                            let mut failure = None;
+                            let result = checkpoint::await_admission(
+                                admission,
+                                checkpoint::Io {
+                                    writer: &mut writer,
+                                    delivery: &mut response_delivery,
+                                    limits: &tcp_limits,
+                                    telemetry: &telemetry,
+                                    metrics: connection_metrics.as_ref(),
+                                    phase_duration: telemetry_plan.phase_duration,
+                                    failure: &mut failure,
+                                },
+                            )
                             .await;
-                            let result = match result {
-                                std::task::Poll::Ready(result) => result,
-                                std::task::Poll::Pending => {
-                                    // Admission must not strand the previous response.
-                                    if let Err(error) = response_delivery
-                                        .flush(
-                                            &mut writer,
-                                            &tcp_limits,
-                                            &telemetry,
-                                            connection_metrics.as_ref(),
-                                            telemetry_plan.phase_duration,
-                                        )
-                                        .await
-                                    {
-                                        can_respond = false;
-                                        return Err(error.error);
-                                    }
-                                    admission.await
-                                }
-                            };
+                            if failure.is_some() {
+                                can_respond = false;
+                            }
                             legacy_policy_permit = Some(result.inspect_err(|error| {
                                 crate::policy::record_error(
                                     protocol.deref(),
@@ -727,11 +741,7 @@ where
         Ok(()) => shutdown_result,
         Err(error) => Err(error),
     };
-    telemetry.connection_closed(
-        transport,
-        connection_metrics.as_ref(),
-        tcp_close_reason(&result),
-    );
+    connection_guard.finish(&result);
     result
 }
 

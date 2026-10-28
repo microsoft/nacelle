@@ -249,16 +249,60 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
+    await_admission(async { admission.await.map_err(Rejection::into_error) }, io).await
+}
+
+pub(super) async fn await_admission<F, Lease, W, Observer>(
+    admission: F,
+    io: Io<'_, W, Observer>,
+) -> Result<Lease, NacelleError>
+where
+    F: Future<Output = Result<Lease, NacelleError>>,
+    W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
+{
     tokio::pin!(admission);
     let first = std::future::poll_fn(|cx| Poll::Ready(admission.as_mut().poll(cx))).await;
-    let result = match first {
+    match first {
         Poll::Ready(result) => result,
         Poll::Pending => {
-            flush_delivery(io).await?;
-            admission.await
+            let failure = io.failure;
+            let mut interrupted = false;
+            let result = {
+                let flushing = flush_delivery(Io {
+                    delivery: &mut *io.delivery,
+                    failure: &mut *failure,
+                    ..io
+                });
+                tokio::pin!(flushing);
+                tokio::select! {
+                    biased;
+                    result = &mut flushing => {
+                        result?;
+                        admission.await
+                    }
+                    result = &mut admission => {
+                        match result {
+                            Ok(lease) => {
+                                flushing.await?;
+                                Ok(lease)
+                            }
+                            Err(error) => {
+                                interrupted = true;
+                                Err(error)
+                            }
+                        }
+                    }
+                }
+            };
+            if interrupted {
+                // A cancelled flush may have written a response prefix.
+                io.delivery.discard_pending();
+                *failure = Some(0);
+            }
+            result
         }
-    };
-    result.map_err(Rejection::into_error)
+    }
 }
 
 async fn flush_delivery<W, Observer>(io: Io<'_, W, Observer>) -> Result<(), NacelleError>

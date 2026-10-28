@@ -12,8 +12,15 @@ use nacelle_rustls::NacelleTlsConfig;
 use super::common::{bind_tcp_listener, run_accept_loop};
 
 /// Listen on `addr` and serve framed TCP connections over Rustls.
-pub async fn serve_tcp_tls<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_tls<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
 ) -> Result<(), NacelleError>
@@ -21,15 +28,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_tls_with_shutdown(server, addr, tls_config, token).await
 }
 
 /// Serve Rustls TCP connections until shutdown is requested.
-pub async fn serve_tcp_tls_with_shutdown<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_tls_with_shutdown<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -38,15 +51,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_tls_with_shutdown_timeout(server, addr, tls_config, shutdown, Duration::from_secs(30))
         .await
 }
 
 /// Serve Rustls TCP connections, then drain for at most `drain_timeout`.
-pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -56,7 +75,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_tls_with_shutdown_deadline(
         server,
@@ -69,8 +87,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -80,7 +105,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let listener = bind_tcp_listener(addr, &Default::default())?;
     serve_tcp_tls_listener_with_shutdown_deadline(
@@ -94,8 +118,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tls_config: NacelleTlsConfig,
     shutdown: NacelleShutdownToken,
@@ -105,7 +136,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     run_accept_loop(
@@ -119,7 +149,7 @@ where
             Ok(())
         },
         move |server, stream, connection, connection_permit| {
-            let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+            let tls_config = tls_config.clone();
             async move {
                 server
                     .policies()
@@ -139,6 +169,7 @@ where
                             .accepted(&mut connection)
                             .await
                             .map_err(nacelle_core::policy::Rejection::into_error)?;
+                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                         let stream =
                             match tokio::time::timeout(handshake_timeout, acceptor.accept(stream))
                                 .await

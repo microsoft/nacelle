@@ -51,6 +51,7 @@ where
     Observer: NacelleTelemetryObserver,
 {
     type HeadLease: PolicyLease + 'static;
+    type HandlerLease: PolicyLease + 'static;
 
     fn connection_info(&self) -> &ConnectionInfo;
 
@@ -61,10 +62,16 @@ where
         body_len: Option<usize>,
     ) -> impl Future<Output = Result<Self::HeadLease, Rejection>>;
 
+    fn admit_handler(
+        &mut self,
+        request: &mut HttpRequest,
+    ) -> impl Future<Output = Result<Self::HandlerLease, Rejection>>;
+
     fn call(
         &mut self,
         request: HttpRequest,
-    ) -> impl Future<Output = Result<Result<HttpHandlerCompletion, NacelleError>, Rejection>>;
+        lease: Self::HandlerLease,
+    ) -> impl Future<Output = Result<HttpHandlerCompletion, NacelleError>>;
 }
 
 struct SharedHttpDispatch<'a, H, State, Policies> {
@@ -92,6 +99,7 @@ where
     Policies: HttpPolicySet<State>,
 {
     type HeadLease = Policies::HeadLease;
+    type HandlerLease = Policies::HandlerLease;
 
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
@@ -114,24 +122,30 @@ where
             .await
     }
 
-    async fn call(
+    async fn admit_handler(
         &mut self,
-        mut request: HttpRequest,
-    ) -> Result<Result<HttpHandlerCompletion, NacelleError>, Rejection> {
-        let _handler_lease = self
-            .policies
+        request: &mut HttpRequest,
+    ) -> Result<Self::HandlerLease, Rejection> {
+        self.policies
             .handler(&mut HttpHandlerInput {
-                request: &mut request,
+                request,
                 connection: &mut self.connection,
                 state_type: std::marker::PhantomData,
             })
-            .await?;
+            .await
+    }
+
+    async fn call(
+        &mut self,
+        request: HttpRequest,
+        _handler_lease: Self::HandlerLease,
+    ) -> Result<HttpHandlerCompletion, NacelleError> {
         let context = HttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        Ok(nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context).await)
+        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context).await
     }
 }
 
@@ -161,6 +175,7 @@ where
     Policies: LocalHttpPolicySet<State>,
 {
     type HeadLease = Policies::HeadLease;
+    type HandlerLease = Policies::HandlerLease;
 
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
@@ -183,24 +198,30 @@ where
             .await
     }
 
-    async fn call(
+    async fn admit_handler(
         &mut self,
-        mut request: HttpRequest,
-    ) -> Result<Result<HttpHandlerCompletion, NacelleError>, Rejection> {
-        let _handler_lease = self
-            .policies
+        request: &mut HttpRequest,
+    ) -> Result<Self::HandlerLease, Rejection> {
+        self.policies
             .handler(&mut LocalHttpHandlerInput {
-                request: &mut request,
+                request,
                 connection: &mut self.connection,
                 state_type: std::marker::PhantomData,
             })
-            .await?;
+            .await
+    }
+
+    async fn call(
+        &mut self,
+        request: HttpRequest,
+        _handler_lease: Self::HandlerLease,
+    ) -> Result<HttpHandlerCompletion, NacelleError> {
         let context = LocalHttpRequestContext::without_app_state(
             request,
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        Ok(nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context).await)
+        nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context).await
     }
 }
 
@@ -624,9 +645,10 @@ where
                     server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
                     let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
                         .with_listener(server.runtime.listener.clone());
-                    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+                    let tls_config = tls_config.clone();
                     let server = server.clone();
                     let transport = move |connection: NacelleConnectionMeta| async move {
+                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                         let stream = match tokio::time::timeout(
                             handshake_timeout,
                             acceptor.accept(stream),
@@ -1128,8 +1150,9 @@ where
                         local_addr,
                     )
                     .with_listener(server.runtime.listener.clone());
-                    let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
+                    let tls_config = tls_config.clone();
                     let transport = move |connection: NacelleConnectionMeta| async move {
+                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                         let tls_stream = match tokio::time::timeout(
                             handshake_timeout,
                             acceptor.accept(stream),
@@ -1202,6 +1225,8 @@ where
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
         let uri = request.uri().clone();
+        let version = request.version();
+        let body_is_empty = request.body().is_end_stream();
         let (effective_peer_ip, peer_resolution_reason) =
             self.effective_peer_ip(dispatch.connection_info().peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
@@ -1217,11 +1242,10 @@ where
                 reason: Some(rejection.reason),
                 peer_resolution_reason,
             });
-            return response_to_http_with_lease(
-                close_response(HttpResponse::bytes(rejection.status, rejection.reason)),
-                self.runtime_state.clone(),
-                self.telemetry.clone(),
-                &self.http_policy,
+            return self.error_response(
+                HttpResponse::bytes(rejection.status, rejection.reason),
+                version,
+                !body_is_empty,
                 None,
             );
         }
@@ -1241,11 +1265,10 @@ where
                     reason: Some(reason),
                     peer_resolution_reason,
                 });
-                return response_to_http_with_lease(
-                    close_response(HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason)),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
+                return self.error_response(
+                    HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
+                    version,
+                    !body_is_empty,
                     None,
                 );
             }
@@ -1274,14 +1297,10 @@ where
                 reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
                 peer_resolution_reason,
             });
-            return response_to_http_with_lease(
-                close_response(HttpResponse::bytes(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    error.to_string(),
-                )),
-                self.runtime_state.clone(),
-                self.telemetry.clone(),
-                &self.http_policy,
+            return self.error_response(
+                HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
+                version,
+                true,
                 None,
             );
         }
@@ -1303,14 +1322,10 @@ where
                     reason: Some("in_flight_requests"),
                     peer_resolution_reason,
                 });
-                return response_to_http_with_lease(
-                    close_response(HttpResponse::bytes(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        error.to_string(),
-                    )),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
+                return self.error_response(
+                    HttpResponse::bytes(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
+                    version,
+                    !body_is_empty,
                     None,
                 );
             }
@@ -1323,6 +1338,7 @@ where
             Err(rejection) => {
                 return self.policy_rejection_response(
                     rejection,
+                    version,
                     None,
                     HttpAccessLog {
                         method: &method,
@@ -1346,14 +1362,34 @@ where
             self.http_limits,
             self.telemetry.clone(),
         );
-        let request = HttpRequest::new(
+        let mut request = HttpRequest::new(
             parts.method,
             parts.uri,
             parts.headers,
             effective_peer_ip,
             body,
         );
-        let handler_future = dispatch.call(request);
+        let handler_lease = match dispatch.admit_handler(&mut request).await {
+            Ok(lease) => lease,
+            Err(rejection) => {
+                return self.policy_rejection_response(
+                    rejection,
+                    version,
+                    Some(head_lease),
+                    HttpAccessLog {
+                        method: &method,
+                        uri: &uri,
+                        peer_ip: effective_peer_ip,
+                        status: policy_rejection_status(rejection),
+                        request_bytes: 0,
+                        elapsed: elapsed_since(request_started),
+                        reason: Some(rejection.reason()),
+                        peer_resolution_reason,
+                    },
+                );
+            }
+        };
+        let handler_future = dispatch.call(request, handler_lease);
         let handler_with_body = async {
             tokio::pin!(handler_future);
             tokio::pin!(body_pump);
@@ -1370,25 +1406,6 @@ where
             handler_with_body.await
         };
 
-        let handler_result = match handler_result {
-            Ok(result) => result,
-            Err(rejection) => {
-                return self.policy_rejection_response(
-                    rejection,
-                    Some(head_lease),
-                    HttpAccessLog {
-                        method: &method,
-                        uri: &uri,
-                        peer_ip: effective_peer_ip,
-                        status: policy_rejection_status(rejection),
-                        request_bytes: request_body_bytes.load(Ordering::Relaxed),
-                        elapsed: elapsed_since(request_started),
-                        reason: Some(rejection.reason()),
-                        peer_resolution_reason,
-                    },
-                );
-            }
-        };
         match handler_result {
             Ok(completion) => {
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
@@ -1426,14 +1443,10 @@ where
                     &error,
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
-                let response = response_to_http_with_lease(
-                    close_response(HttpResponse::bytes(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal server error",
-                    )),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
+                let response = self.error_response(
+                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
+                    version,
+                    !body_is_empty,
                     Some(head_lease),
                 );
                 if let Ok(response) = &response {
@@ -1462,22 +1475,43 @@ where
     fn policy_rejection_response<Lease>(
         &self,
         rejection: Rejection,
+        version: http::Version,
         lease: Option<Lease>,
         log: HttpAccessLog<'_>,
     ) -> Result<Response<HttpBody<Observer, Lease>>, NacelleError> {
         self.telemetry
             .request_rejected(NacelleTransport::new("http"), rejection.reason());
         self.access_log(log);
-        response_to_http_with_lease(
-            close_response(HttpResponse::bytes(
-                policy_rejection_status(rejection),
-                rejection.reason(),
-            )),
+        self.error_response(
+            HttpResponse::bytes(policy_rejection_status(rejection), rejection.reason()),
+            version,
+            true,
+            lease,
+        )
+    }
+
+    fn error_response<Lease>(
+        &self,
+        response: HttpResponse,
+        version: http::Version,
+        close: bool,
+        lease: Option<Lease>,
+    ) -> Result<Response<HttpBody<Observer, Lease>>, NacelleError> {
+        let response = if close {
+            close_response(response)
+        } else {
+            response
+        };
+        let mut response = response_to_http_with_lease(
+            response,
             self.runtime_state.clone(),
             self.telemetry.clone(),
             &self.http_policy,
             lease,
-        )
+        )?;
+        // Hyper uses the response version when deciding HTTP/1.0 persistence.
+        *response.version_mut() = version;
+        Ok(response)
     }
 
     fn request_timing_enabled(&self) -> bool {
@@ -3031,6 +3065,72 @@ mod tests {
         assert!(response.contains("internal server error"));
         assert!(!response.contains("boom"));
         server_task.abort();
+    }
+
+    #[cfg(all(feature = "tls-self-signed", feature = "policies"))]
+    #[tokio::test]
+    async fn tls_reload_after_accepted_policy_wait_uses_current_certificate() {
+        use nacelle_core::policy::Admission;
+        struct WaitAccepted {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+        impl Admission<HttpConnection<'_>> for WaitAccepted {
+            type Lease = ();
+            async fn enter<'a>(&'a self, _: &'a mut HttpConnection<'_>) -> Result<(), Rejection> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(())
+            }
+        }
+        let original = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+        let replacement = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+        let certificate = test_certificate(replacement.certificate_pem.as_bytes());
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate).unwrap();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            context.respond(HttpResponse::empty(StatusCode::OK)).await
+        }))
+        .with_policies(crate::HttpPolicies::new().on_accepted(WaitAccepted {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = original.tls_config.clone();
+        let (shutdown, token) = nacelle_core::NacelleShutdown::pair();
+        let task = tokio::spawn(server.serve_tls_listener_with_shutdown(
+            listener,
+            original.tls_config,
+            token,
+        ));
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        entered.notified().await;
+        config.replace_server_config_arc(replacement.tls_config.server_config());
+        release.notify_one();
+        let mut client = connector
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                stream,
+            )
+            .await
+            .expect("handshake must trust the replacement certificate");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        shutdown.shutdown();
+        task.await.unwrap().unwrap();
     }
 
     #[cfg(feature = "tls-self-signed")]

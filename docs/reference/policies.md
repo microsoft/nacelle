@@ -38,6 +38,14 @@ HTTP bootstrap helpers can return `impl HttpPolicySet<State>` or
 from `nacelle::tcp::policies`. Callers do not need to name the checkpoint chains
 or response-lease adapter types.
 
+Shared TCP attachment stores the registered set in an `Arc`, so cloning a
+server for its listener methods shares initialized policy state without
+requiring the policies themselves to implement `Clone`. This allocation occurs
+once at attachment; default servers do not allocate policy storage.
+Worker-local thread-per-core factories with policies use the corresponding
+`run_local_*_thread_per_core_with_policies` function. The original factory
+entry points retain their generic arguments and accept servers without a set.
+
 | Registration | Checkpoint |
 | --- | --- |
 | `.on_socket(...)` | Synchronous admission before spawning a connection task. |
@@ -126,7 +134,7 @@ a second response.
 
 Dispatch, futures, and lease storage are concrete. The design avoids policy
 registry lookups, framework boxing, and per-hook tasks. Empty sets and ready
-predicates require no policy heap allocation. Enabled policies still pay for
+predicates require no per-admission heap allocation. Enabled policies still pay for
 their own comparisons, shared accounting, clock reads, waits, and guard drops.
 Static composition can increase future size and generated code size. Use the
 [performance comparison guide](../how-to/compare-performance.md) rather than

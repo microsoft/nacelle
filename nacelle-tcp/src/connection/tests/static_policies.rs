@@ -168,6 +168,11 @@ async fn opaque_policy_factories_attach_to_builders_and_servers() {
         .policies(shared_bootstrap())
         .build()
         .unwrap();
+    drop(server.serve_tcp("127.0.0.1:0".parse().unwrap()));
+    drop(crate::runtime::serve_tcp::<_, _, _>(
+        Arc::new(server.clone()),
+        "127.0.0.1:0".parse().unwrap(),
+    ));
     server.serve_io(io(&[1, 0]).0).await.unwrap();
 
     let server = TcpServer::<StaticProtocol>::builder()
@@ -180,6 +185,7 @@ async fn opaque_policy_factories_attach_to_builders_and_servers() {
         .build()
         .unwrap()
         .with_policies(shared_bootstrap());
+    drop(server.serve_tcp("127.0.0.1:0".parse().unwrap()));
     server.serve_io(io(&[1, 0]).0).await.unwrap();
 
     let local = LocalSerialTcpServer::new(LocalOnlyProtocol, LocalOnlyHandler)
@@ -395,6 +401,7 @@ async fn wait_for(counter: &AtomicUsize, count: usize) {
 
 #[tokio::test]
 async fn cancellation_interrupts_wait_once_and_releases_connection_leases() {
+    let observer = NacelleInMemoryObserver::new();
     let active = Arc::new(AtomicUsize::new(0));
     let entries = Arc::new(AtomicUsize::new(0));
     let gate = Arc::new(Semaphore::new(0));
@@ -408,6 +415,7 @@ async fn cancellation_interrupts_wait_once_and_releases_connection_leases() {
             },
         ))
         .runtime_state(runtime.clone())
+        .telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
         .policies(
             TcpPolicies::new()
                 .on_transport_ready(ResourcePolicy(active.clone()))
@@ -437,6 +445,13 @@ async fn cancellation_interrupts_wait_once_and_releases_connection_leases() {
     assert_eq!(active.load(Ordering::SeqCst), 0);
     assert_eq!(runtime.active_connections(), 0);
     assert_eq!(runtime.active_requests(), 0);
+    let closed = observer
+        .events()
+        .into_iter()
+        .filter(|event| event.kind == NacelleTelemetryEventKind::ConnectionClosed)
+        .collect::<Vec<_>>();
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].reason, Some("cancelled"));
     gate.add_permits(1);
     assert_eq!(gate.available_permits(), 1);
 }
@@ -680,6 +695,111 @@ async fn failed_flush_before_policy_wait_does_not_attempt_an_error_response() {
 }
 
 struct PendingWrites<IO>(IO);
+
+#[tokio::test(start_paused = true)]
+async fn policy_deadline_is_polled_during_blocked_flush() {
+    let mut writer = PendingWrites(tokio::io::empty());
+    let mut delivery = super::super::response::ResponseDelivery::new(&NacelleTcpConfig::default());
+    let mut failure = None;
+    let limits = crate::limits::NacelleTcpLimits::default().without_write_timeout();
+    let telemetry = NacelleTelemetry::default();
+    let started = tokio::time::Instant::now();
+    let policy = bounded_wait(
+        WaitingPolicy {
+            entries: Arc::new(AtomicUsize::new(0)),
+            gate: Arc::new(Semaphore::new(0)),
+        },
+        Duration::from_secs(1),
+        1,
+    );
+    let result = super::super::checkpoint::await_admission(
+        async {
+            Admission::enter(&policy, &mut ())
+                .await
+                .map_err(Rejection::into_error)
+        },
+        super::super::checkpoint::Io {
+            writer: &mut writer,
+            delivery: &mut delivery,
+            limits: &limits,
+            telemetry: &telemetry,
+            metrics: None,
+            phase_duration: false,
+            failure: &mut failure,
+        },
+    )
+    .await;
+    assert!(matches!(result, Err(NacelleError::Timeout(_))));
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert!(failure.is_some());
+    let mut input = ();
+    let next = Admission::enter(&policy, &mut input);
+    tokio::pin!(next);
+    assert!(
+        std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx)))
+            .await
+            .is_pending(),
+        "timed-out admission must release its waiter slot"
+    );
+}
+
+#[tokio::test]
+async fn initial_before_policy_flush_failure_does_not_encode_error() {
+    let encoded = Arc::new(AtomicUsize::new(0));
+    let encoded_errors = encoded.clone();
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::bytes("unexpected")).await
+            },
+        ))
+        .policies(TcpPolicies::new().before_request(WaitingPolicy {
+            entries: Arc::new(AtomicUsize::new(0)),
+            gate: Arc::new(Semaphore::new(0)),
+        }))
+        .build()
+        .unwrap();
+    struct FailingFlush {
+        writes: Arc<AtomicUsize>,
+    }
+    impl AsyncRead for FailingFlush {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+    impl AsyncWrite for FailingFlush {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(bytes.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::other("flush failed")))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    let result = server
+        .serve_io(FailingFlush {
+            writes: encoded_errors,
+        })
+        .await;
+    assert!(matches!(result, Err(NacelleError::Io(_))));
+    assert_eq!(encoded.load(Ordering::SeqCst), 0);
+}
 
 impl<IO: AsyncRead + Unpin> AsyncRead for PendingWrites<IO> {
     fn poll_read(

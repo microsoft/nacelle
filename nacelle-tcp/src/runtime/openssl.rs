@@ -22,8 +22,15 @@ use super::common::{
 };
 
 /// Listen on `addr` and serve framed TCP connections over OpenSSL.
-pub async fn serve_tcp_openssl<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
@@ -31,15 +38,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
 /// Serve OpenSSL TCP connections until shutdown is requested.
-pub async fn serve_tcp_openssl_with_shutdown<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_shutdown<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -48,7 +61,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_shutdown_timeout(
         server,
@@ -61,8 +73,15 @@ where
 }
 
 /// Serve OpenSSL TCP connections, then drain for at most `drain_timeout`.
-pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -72,7 +91,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_shutdown_deadline(
         server,
@@ -85,8 +103,15 @@ where
 }
 
 /// Serve OpenSSL TCP connections with explicit socket options.
-pub async fn serve_tcp_openssl_with_options<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_options<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -95,15 +120,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_openssl_with_options_and_shutdown(server, addr, tls_config, tcp_options, token).await
 }
 
 /// Serve OpenSSL TCP connections with socket options until shutdown.
-pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -113,7 +144,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_options_and_shutdown_timeout(
         server,
@@ -127,8 +157,15 @@ where
 }
 
 /// Serve OpenSSL TCP connections with socket options and a bounded drain.
-pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -139,7 +176,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_options_and_shutdown_deadline(
         server,
@@ -153,8 +189,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -164,7 +207,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -178,8 +220,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -190,7 +239,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -204,8 +252,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -216,7 +271,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_openssl_listener_with_options_and_shutdown_deadline(
@@ -231,8 +285,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -242,7 +303,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_openssl_listener_with_options_and_shutdown_deadline(
         server,
@@ -256,13 +316,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<
-    P,
-    H,
-    Observer,
-    Policies,
->(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_openssl_listener_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -273,7 +335,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let handshake_timeout = tls_config.handshake_timeout();
     run_accept_loop(
@@ -343,8 +404,15 @@ where
 }
 
 /// Listen on `addr` and serve serial mutable-state connections over OpenSSL.
-pub async fn serve_serial_tcp_openssl<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
 ) -> Result<(), NacelleError>
@@ -353,15 +421,21 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_tcp_openssl_with_shutdown(server, addr, tls_config, token).await
 }
 
 /// Listen on `addr` for serial OpenSSL connections until shutdown is requested.
-pub async fn serve_serial_tcp_openssl_with_shutdown<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_shutdown<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -371,7 +445,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -385,8 +458,15 @@ where
 }
 
 /// Listen for serial OpenSSL connections with a bounded shutdown drain.
-pub async fn serve_serial_tcp_openssl_with_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -397,7 +477,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_shutdown_deadline(
         server,
@@ -410,8 +489,15 @@ where
 }
 
 /// Listen for serial OpenSSL connections with explicit TCP options.
-pub async fn serve_serial_tcp_openssl_with_options<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_options<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -421,7 +507,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_tcp_openssl_with_options_and_shutdown(server, addr, tls_config, tcp_options, token)
@@ -429,8 +514,15 @@ where
 }
 
 /// Listen for serial OpenSSL connections with TCP options until shutdown.
-pub async fn serve_serial_tcp_openssl_with_options_and_shutdown<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_options_and_shutdown<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -441,7 +533,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_options_and_shutdown_timeout(
         server,
@@ -455,8 +546,15 @@ where
 }
 
 /// Listen for serial OpenSSL connections with options and bounded drain.
-pub async fn serve_serial_tcp_openssl_with_options_and_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_options_and_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -468,7 +566,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_options_and_shutdown_deadline(
         server,
@@ -482,8 +579,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_openssl_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -494,7 +598,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -508,8 +611,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_openssl_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -521,7 +631,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline(
         server,
@@ -535,13 +644,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline<
-    P,
-    H,
-    Observer,
-    Policies,
->(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_with_bind_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     tls_config: NacelleOpenSslConfig,
     bind_options: NacelleTcpBindOptions,
@@ -553,7 +664,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline(
@@ -568,13 +678,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline<
-    P,
-    H,
-    Observer,
-    Policies,
->(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     tcp_options: NacelleTcpOptions,
@@ -586,7 +698,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let handshake_timeout = tls_config.handshake_timeout();
@@ -693,8 +804,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_openssl_listener_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_openssl_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tls_config: NacelleOpenSslConfig,
     shutdown: NacelleShutdownToken,
@@ -705,7 +823,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline(
         server,

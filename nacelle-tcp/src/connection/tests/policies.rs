@@ -122,6 +122,86 @@ impl<Request, State> TcpLifecyclePolicy<Request, State> for RecordingPolicy {
 
 type PolicyProtocol = WithTcpPolicy<PhaseProtocol, RecordingPolicy>;
 
+struct WaitLater {
+    body: bool,
+    calls: AtomicUsize,
+    gate: Arc<Semaphore>,
+}
+
+impl WaitLater {
+    async fn enter(&self, body: bool) -> Result<Option<()>, NacelleError> {
+        if self.body == body && self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            self.gate.acquire().await.unwrap().forget();
+        }
+        Ok(None)
+    }
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for WaitLater {
+    type Permit = ();
+
+    fn request_head(
+        &self,
+        _: &PhaseRequest,
+        _: usize,
+        _: &ConnectionInfo,
+        _: &AuthState,
+    ) -> impl Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(false)
+    }
+
+    fn body_complete(
+        &self,
+        _: &NacelleConnectionMeta,
+        _: usize,
+    ) -> impl Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(true)
+    }
+}
+
+#[tokio::test]
+async fn pending_legacy_head_and_body_hooks_flush_prior_responses() {
+    type P = WithTcpPolicy<PhaseProtocol, WaitLater>;
+    for body in [false, true] {
+        let gate = Arc::new(Semaphore::new(0));
+        let server = TcpServer::<P>::builder()
+            .protocol(
+                PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }
+                .with_policy(WaitLater {
+                    body,
+                    calls: AtomicUsize::new(0),
+                    gate: gate.clone(),
+                }),
+            )
+            .handler(handler_fn(|context: TcpRequestContext<P>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            }))
+            .tcp_config(
+                NacelleTcpConfig::default()
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .build()
+            .unwrap();
+        let (mut client, stream) = tokio::io::duplex(128);
+        let task = tokio::spawn(async move { server.serve_io(stream).await });
+        client.write_all(&[0, 0]).await.unwrap();
+        let mut response = [0; 2];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&response, b"ok");
+        gate.add_permits(1);
+        client.shutdown().await.unwrap();
+        client.read_exact(&mut response).await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+}
+
 #[tokio::test]
 async fn server_registration_runs_legacy_then_new_hooks_once() {
     use crate::{TcpHead, TcpPolicies, TcpTransport};
@@ -356,6 +436,14 @@ async fn listener_drain_deadline_cancels_policy_waits_and_releases_permits() {
                 },
             ))
             .listener_label("policy-test")
+            .policies(
+                crate::TcpPolicies::new().on_socket(nacelle_core::policy::check_fn(
+                    |meta: &NacelleConnectionMeta| {
+                        assert_eq!(&*meta.listener, "policy-test");
+                        Ok(())
+                    },
+                )),
+            )
             .build()
             .unwrap()
             .with_runtime_state(runtime_state.clone())
@@ -419,6 +507,14 @@ async fn unix_policies_preserve_hook_order_and_release_permits_after_rejection()
                 },
             ))
             .listener_label("policy-test")
+            .policies(
+                crate::TcpPolicies::new().on_socket(nacelle_core::policy::check_fn(
+                    |meta: &NacelleConnectionMeta| {
+                        assert_eq!(&*meta.listener, "policy-test");
+                        Ok(())
+                    },
+                )),
+            )
             .build()
             .unwrap()
             .with_runtime_state(runtime_state.clone());
@@ -488,19 +584,26 @@ async fn openssl_policies_cover_handshake_order_plaintext_detection_and_cleanup(
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let (shutdown, token) = NacelleShutdown::pair();
-            let server = Arc::new(
-                TcpServer::<PolicyProtocol>::builder()
-                    .protocol(protocol(policy))
-                    .handler(handler_fn(
-                        |context: TcpRequestContext<PolicyProtocol>| async move {
-                            context.respond(TcpResponse::bytes("ok")).await
-                        },
-                    ))
-                    .listener_label("policy-test")
-                    .build()
-                    .unwrap()
-                    .with_runtime_state(runtime_state.clone()),
-            );
+            let server =
+                Arc::new(
+                    TcpServer::<PolicyProtocol>::builder()
+                        .protocol(protocol(policy))
+                        .handler(handler_fn(
+                            |context: TcpRequestContext<PolicyProtocol>| async move {
+                                context.respond(TcpResponse::bytes("ok")).await
+                            },
+                        ))
+                        .listener_label("policy-test")
+                        .policies(crate::TcpPolicies::new().on_socket(
+                            nacelle_core::policy::check_fn(|meta: &NacelleConnectionMeta| {
+                                assert_eq!(&*meta.listener, "policy-test");
+                                Ok(())
+                            }),
+                        ))
+                        .build()
+                        .unwrap()
+                        .with_runtime_state(runtime_state.clone()),
+                );
             let config = config.clone();
             let task = tokio::spawn(async move {
                 #[cfg(feature = "experimental-openssl-detection")]
@@ -1083,6 +1186,67 @@ async fn policies_preserve_worker_local_non_send_serial_state() {
             .count(),
         2
     );
+}
+
+#[cfg(feature = "tls-self-signed")]
+#[tokio::test]
+async fn tls_reload_during_accepted_admission_applies_to_the_handshake() {
+    let original = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+    let replacement = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+    let certificate = crate::runtime::test_certificate(replacement.certificate_pem.as_bytes());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(certificate).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+    let gate = Arc::new(Semaphore::new(0));
+    let policy = RecordingPolicy {
+        gate: Some(("accepted", gate.clone())),
+        ..Default::default()
+    };
+    let state = policy.state.clone();
+    let server = TcpServer::<PolicyProtocol>::builder()
+        .protocol(protocol(policy))
+        .handler(handler_fn(
+            |context: TcpRequestContext<PolicyProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .listener_label("policy-test")
+        .build()
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let config = original.tls_config.clone();
+    let (shutdown, token) = NacelleShutdown::pair();
+    let task = tokio::spawn(
+        crate::runtime::serve_tcp_tls_listener_with_shutdown_deadline(
+            Arc::new(server),
+            listener,
+            original.tls_config,
+            token,
+            NacelleDrainDeadline::new(Duration::ZERO),
+        ),
+    );
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    state.wait_for("accepted", 1).await;
+    config.replace_server_config_arc(replacement.tls_config.server_config());
+    gate.add_permits(1);
+    let mut client = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            stream,
+        )
+        .await
+        .expect("handshake must trust the replacement certificate");
+    client.write_all(&[0]).await.unwrap();
+    let mut response = [0; 2];
+    client.read_exact(&mut response).await.unwrap();
+    assert_eq!(&response, b"ok");
+    shutdown.shutdown();
+    task.await.unwrap().unwrap();
 }
 
 #[cfg(feature = "tls-self-signed")]

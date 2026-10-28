@@ -19,23 +19,36 @@ use super::common::{
 };
 
 /// Listen on `addr` and serve each accepted TCP connection in its own task.
-pub async fn serve_tcp<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_shutdown(server, addr, token).await
 }
 
 /// Listen on `addr` until shutdown is requested.
-pub async fn serve_tcp_with_shutdown<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_shutdown<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -43,15 +56,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_with_shutdown_timeout(server, addr, shutdown, Duration::from_secs(30)).await
 }
 
 /// Listen on `addr` until shutdown is requested, then drain or abort active
 /// connection tasks after `drain_timeout`.
-pub async fn serve_tcp_with_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_timeout: Duration,
@@ -60,7 +79,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_with_shutdown_deadline(
         server,
@@ -72,8 +90,15 @@ where
 }
 
 /// Listen on `addr` with explicit TCP socket options.
-pub async fn serve_tcp_with_options<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_options<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
 ) -> Result<(), NacelleError>
@@ -81,15 +106,21 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_tcp_with_options_and_shutdown(server, addr, tcp_options, token).await
 }
 
 /// Listen on `addr` with explicit TCP socket options until shutdown is requested.
-pub async fn serve_tcp_with_options_and_shutdown<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_options_and_shutdown<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -98,7 +129,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_with_options_and_shutdown_timeout(
         server,
@@ -112,8 +142,15 @@ where
 
 /// Listen on `addr` with explicit TCP socket options, then drain or abort active
 /// connection tasks after `drain_timeout`.
-pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -123,7 +160,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_with_options_and_shutdown_deadline(
         server,
@@ -136,8 +172,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     bind_options: NacelleTcpBindOptions,
     shutdown: NacelleShutdownToken,
@@ -147,7 +190,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -161,8 +203,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -171,7 +220,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let listener = bind_tcp_listener(addr, &NacelleTcpBindOptions::default())?;
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -185,8 +233,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     addr: SocketAddr,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -196,7 +251,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     let bind_options = NacelleTcpBindOptions::from(tcp_options.clone());
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -211,8 +265,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_listener_with_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_listener_with_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     shutdown: NacelleShutdownToken,
     drain_deadline: NacelleDrainDeadline,
@@ -221,7 +282,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     serve_tcp_listener_with_options_and_shutdown_deadline(
         server,
@@ -234,8 +294,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<TcpServer<P, H, Observer, Policies>>,
+pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        TcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     shutdown: NacelleShutdownToken,
@@ -245,7 +312,6 @@ where
     P: SharedProtocol,
     H: TcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, std::sync::Arc<P::ConnectionState>>,
 {
     run_accept_loop(
         server,
@@ -286,8 +352,15 @@ where
 }
 
 /// Listen on `addr` and serve serial mutable-state connections.
-pub async fn serve_serial_tcp<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
 ) -> Result<(), NacelleError>
 where
@@ -295,15 +368,21 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     serve_serial_tcp_with_shutdown(server, addr, token).await
 }
 
 /// Listen on `addr` for serial connections until shutdown is requested.
-pub async fn serve_serial_tcp_with_shutdown<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_with_shutdown<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     shutdown: NacelleShutdownToken,
 ) -> Result<(), NacelleError>
@@ -312,7 +391,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     serve_serial_tcp_with_bind_options_and_shutdown_deadline(
         server,
@@ -325,8 +403,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_with_bind_options_and_shutdown_deadline<P, H, Observer, Policies>(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_with_bind_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     addr: SocketAddr,
     bind_options: NacelleTcpBindOptions,
     shutdown: NacelleShutdownToken,
@@ -337,7 +422,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
     serve_serial_tcp_listener_with_options_and_shutdown_deadline(
@@ -351,13 +435,15 @@ where
 }
 
 #[doc(hidden)]
-pub async fn serve_serial_tcp_listener_with_options_and_shutdown_deadline<
-    P,
-    H,
-    Observer,
-    Policies,
->(
-    server: Arc<SerialTcpServer<P, H, Observer, Policies>>,
+pub async fn serve_serial_tcp_listener_with_options_and_shutdown_deadline<P, H, Observer>(
+    server: Arc<
+        SerialTcpServer<
+            P,
+            H,
+            Observer,
+            impl crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
+        >,
+    >,
     listener: tokio::net::TcpListener,
     tcp_options: NacelleTcpOptions,
     mut shutdown: NacelleShutdownToken,
@@ -368,7 +454,6 @@ where
     P::ConnectionState: Send,
     H: SerialTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
-    Policies: crate::policies::SharedTcpPolicySet<P::Request, P::ConnectionState>,
 {
     let transport = NacelleTransport::new("tcp");
     let local_addr = listener.local_addr().ok();

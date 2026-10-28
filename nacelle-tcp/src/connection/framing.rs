@@ -162,6 +162,13 @@ pub(super) struct MessageReadFailure {
 }
 
 impl MessageReadFailure {
+    pub(super) const fn delivery(error: NacelleError) -> Self {
+        Self {
+            error,
+            can_respond: false,
+        }
+    }
+
     pub(super) const fn policy(error: NacelleError) -> Self {
         Self {
             error,

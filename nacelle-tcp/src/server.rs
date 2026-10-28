@@ -318,7 +318,7 @@ impl<P> TcpServer<P, (), NoopObserver> {
 
 impl<P, H, Observer> TcpServer<P, H, Observer> {
     /// Attach one server-owned checkpoint set without changing handler types.
-    pub fn with_policies<Next>(self, policies: Next) -> TcpServer<P, H, Observer, Next>
+    pub fn with_policies<Next>(self, policies: Next) -> TcpServer<P, H, Observer, Arc<Next>>
     where
         P: SharedProtocol,
         Next: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
@@ -331,7 +331,7 @@ impl<P, H, Observer> TcpServer<P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-            policies,
+            policies: Arc::new(policies),
         }
     }
 }
@@ -703,7 +703,10 @@ where
 
 impl<PS, HS, P, H, Observer> TcpServerBuilder<PS, HS, P, H, Observer> {
     /// Attach a checkpoint set once; later registration appends within that set.
-    pub fn policies<Next>(self, policies: Next) -> TcpServerBuilder<PS, HS, P, H, Observer, Next>
+    pub fn policies<Next>(
+        self,
+        policies: Next,
+    ) -> TcpServerBuilder<PS, HS, P, H, Observer, Arc<Next>>
     where
         P: SharedProtocol,
         Next: SharedTcpPolicySet<P::Request, Arc<P::ConnectionState>>,
@@ -716,7 +719,7 @@ impl<PS, HS, P, H, Observer> TcpServerBuilder<PS, HS, P, H, Observer> {
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-            policies,
+            policies: Arc::new(policies),
             _protocol: PhantomData,
             _handler: PhantomData,
         }
