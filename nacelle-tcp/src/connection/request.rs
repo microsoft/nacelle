@@ -786,24 +786,42 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    let handler_lease = policies
-        .handler(
-            &mut request,
-            body_len,
-            handler.context_mut(connection_context),
-            PolicyIo {
-                writer,
-                delivery,
-                limits: tcp_limits,
-                telemetry,
-                metrics: metrics_context,
-                phase_duration: phase_duration_metrics,
-                failure: policy_flush_failure,
-            },
+    let flush_prior_responses = flush_prior_responses && delivery.has_pending();
+    // Streaming admission and its handler must progress alongside the same flush.
+    let handler_lease = if flush_prior_responses {
+        None
+    } else {
+        Some(
+            policies
+                .handler(
+                    &mut request,
+                    body_len,
+                    handler.context_mut(connection_context),
+                    PolicyIo {
+                        writer,
+                        delivery,
+                        limits: tcp_limits,
+                        telemetry,
+                        metrics: metrics_context,
+                        phase_duration: phase_duration_metrics,
+                        failure: policy_flush_failure,
+                    },
+                )
+                .await?,
         )
-        .await?;
+    };
     let handling = async {
-        let _handler_lease = handler_lease;
+        let _handler_lease = match handler_lease {
+            Some(lease) => lease,
+            None => policies
+                .admit_handler(
+                    &mut request,
+                    body_len,
+                    handler.context_mut(connection_context),
+                )
+                .await
+                .map_err(nacelle_core::policy::Rejection::into_error)?,
+        };
         let handler_started = start_tcp_phase(phase_duration_metrics && metrics_context.is_some());
         let result = execute_handler(
             handler,
@@ -824,7 +842,7 @@ where
                 .map(GuardedResponseCompletion::new)
         })
     };
-    if flush_prior_responses && delivery.has_pending() {
+    if flush_prior_responses {
         let flushing = async {
             delivery
                 .flush(

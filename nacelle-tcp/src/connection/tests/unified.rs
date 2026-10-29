@@ -7,6 +7,7 @@ struct CustomProtocol {
     errors: Arc<std::sync::Mutex<Vec<Option<u8>>>>,
     encodes: Arc<AtomicUsize>,
     error_outcomes: Option<Arc<std::sync::Mutex<Vec<CapturedOutcome>>>>,
+    streaming_errors: bool,
     silent_errors: bool,
     fail_encoding: bool,
 }
@@ -127,10 +128,19 @@ impl Protocol for CustomProtocol {
             NacelleError::UnexpectedEof => "eof",
             error => panic!("unexpected error hook input: {error}"),
         };
+        let body = if self.streaming_errors {
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let bytes = Bytes::from(format!("custom:{reason}"));
+            let len = bytes.len();
+            sender.try_send(Ok(bytes)).unwrap();
+            NacelleBody::new(receiver, len)
+        } else {
+            NacelleBody::bytes(format!("custom:{reason}"))
+        };
         let completion = TcpCompletion::new(
             CustomResponse {
                 tag: context.copied().unwrap_or(b'-'),
-                body: NacelleBody::bytes(format!("custom:{reason}")),
+                body,
             },
             // The ordinary apply_response hook must replace this sentinel.
             u8::MAX,
@@ -147,6 +157,88 @@ impl Protocol for CustomProtocol {
             }
             None => completion,
         })
+    }
+}
+
+#[test]
+fn rejected_response_isolation_failure_excludes_prior_response_bytes() {
+    use super::static_policies::{DeliveryFailureIo, assert_error_response_size, io};
+    use crate::policies::{TcpHead, TcpPolicies};
+    use nacelle_core::policy::{Rejection, RejectionKind, check_fn};
+
+    for streaming in [false, true] {
+        for checkpoint in ["head", "handler"] {
+            for (remaining, fail_flush) in [(1, false), (usize::MAX, true)] {
+                let recorder = DebuggingRecorder::new();
+                let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let encodes = Arc::new(AtomicUsize::new(0));
+                metrics::with_local_recorder(&recorder, || {
+                    let policy = |stage| {
+                        check_fn(move |head: &TcpHead<'_, u8, Arc<()>>| {
+                            if checkpoint == stage && *head.request() == 2 {
+                                Err(Rejection::new(RejectionKind::Denied, "test_rejection"))
+                            } else {
+                                Ok(())
+                            }
+                        })
+                    };
+                    let server = TcpServer::<CustomProtocol>::builder()
+                        .protocol(CustomProtocol {
+                            encodes: encodes.clone(),
+                            error_outcomes: (!streaming).then(|| outcomes.clone()),
+                            streaming_errors: streaming,
+                            ..Default::default()
+                        })
+                        .handler(handler_fn(
+                            |context: TcpRequestContext<CustomProtocol>| async move {
+                                context
+                                    .respond(CustomResponse {
+                                        tag: b'P',
+                                        body: NacelleBody::bytes("prev"),
+                                    })
+                                    .await
+                            },
+                        ))
+                        .tcp_config(
+                            NacelleTcpConfig::default()
+                                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                        )
+                        .policies(
+                            TcpPolicies::new()
+                                .on_request_head(policy("head"))
+                                .around_handler(policy("handler")),
+                        )
+                        .build()
+                        .unwrap();
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                        .block_on(server.serve_io(DeliveryFailureIo {
+                            reader: io(&[1, 0, 2, 0]).0,
+                            remaining,
+                            fail_flush,
+                        }));
+                    assert!(matches!(result, Err(NacelleError::Io(_))));
+                });
+                assert_eq!(encodes.load(Ordering::SeqCst), 1);
+                assert_error_response_size(&recorder, 0.0);
+                if !streaming {
+                    assert_eq!(
+                        *outcomes.lock().unwrap(),
+                        [CapturedOutcome::Failed {
+                            phase: if fail_flush {
+                                ResponseDeliveryPhase::SocketFlush
+                            } else {
+                                ResponseDeliveryPhase::SocketWrite
+                            },
+                            encoded_wire_bytes: 0,
+                            written_wire_bytes: 0,
+                        }]
+                    );
+                }
+            }
+        }
     }
 }
 

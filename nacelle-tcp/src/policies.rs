@@ -537,6 +537,13 @@ pub(crate) trait PolicyDispatch<Request, Storage> {
         &'a self,
         input: &'a mut NacelleConnectionMeta,
     ) -> impl Future<Output = Result<Self::ReadyLease, Rejection>> + 'a;
+
+    fn admit_handler<'a>(
+        &'a self,
+        request: &'a mut Request,
+        body_len: usize,
+        connection: &'a mut ConnectionContext<Storage>,
+    ) -> impl Future<Output = Result<Self::HandlerLease, Rejection>> + 'a;
 }
 
 pub(crate) trait DeliveryDispatch<Request, Storage, W, Observer>:
@@ -585,6 +592,14 @@ macro_rules! dispatch {
                 input: &'a mut NacelleConnectionMeta,
             ) -> impl Future<Output = Result<Self::ReadyLease, Rejection>> $(+ $send)? + 'a {
                 self.0.ready(input)
+            }
+            fn admit_handler<'a>(
+                &'a self,
+                request: &'a mut Request,
+                body_len: usize,
+                connection: &'a mut ConnectionContext<Storage>,
+            ) -> impl Future<Output = Result<Self::HandlerLease, Rejection>> $(+ $send)? + 'a {
+                self.0.handler(request, body_len, connection)
             }
         }
         #[allow(refining_impl_trait)]

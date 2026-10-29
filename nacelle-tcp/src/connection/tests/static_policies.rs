@@ -93,7 +93,7 @@ impl<State: Default + 'static> Protocol for StaticProtocol<State> {
     }
 }
 
-fn io(input: &[u8]) -> (RecordingIo, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+pub(super) fn io(input: &[u8]) -> (RecordingIo, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
     let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
     (
         RecordingIo {
@@ -838,9 +838,22 @@ async fn streaming_body_failure_does_not_replay_a_partially_written_response() {
     }
 }
 
+struct YieldingAdmission(bool);
+
+impl<I: ?Sized + Send> Admission<I> for YieldingAdmission {
+    type Lease = ();
+
+    async fn enter<'a>(&'a self, _: &'a mut I) -> Result<(), Rejection> {
+        if self.0 {
+            tokio::task::yield_now().await;
+        }
+        Ok(())
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
-    for attached in [false, true] {
+    for (attached, waiting) in [(false, false), (true, false), (true, true)] {
         let active = Arc::new(AtomicUsize::new(0));
         let handler_active = active.clone();
         let handled = Arc::new(AtomicUsize::new(0));
@@ -889,6 +902,7 @@ async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
                     .with_policies(
                         TcpPolicies::new()
                             .on_transport_ready(ResourcePolicy(policy_active.clone()))
+                            .around_handler(YieldingAdmission(waiting))
                             .around_handler(ResourcePolicy(policy_active)),
                     )
                     .serve_io(stream)
@@ -1015,10 +1029,10 @@ async fn interrupted_admission_flush_skips_connection_cleanup() {
     }
 }
 
-struct DeliveryFailureIo {
-    reader: RecordingIo,
-    remaining: usize,
-    fail_flush: bool,
+pub(super) struct DeliveryFailureIo {
+    pub(super) reader: RecordingIo,
+    pub(super) remaining: usize,
+    pub(super) fail_flush: bool,
 }
 
 impl AsyncRead for DeliveryFailureIo {
@@ -1058,7 +1072,7 @@ impl AsyncWrite for DeliveryFailureIo {
     }
 }
 
-fn assert_error_response_size(recorder: &DebuggingRecorder, expected: f64) {
+pub(super) fn assert_error_response_size(recorder: &DebuggingRecorder, expected: f64) {
     let (_, _, _, value) = recorder
         .snapshotter()
         .snapshot()

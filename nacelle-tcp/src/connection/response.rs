@@ -422,6 +422,7 @@ where
             )
             .await
     {
+        let error = error.without_response_bytes();
         if let Some(guard) = guard {
             guard.fail(error.phase_enum(), 0, 0, &error.error);
         }
@@ -574,7 +575,8 @@ where
             metrics_context,
             phase_duration_metrics,
         )
-        .await?;
+        .await
+        .map_err(ResponseDeliveryError::without_response_bytes)?;
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
@@ -704,6 +706,12 @@ where
 }
 
 impl ResponseDeliveryError {
+    fn without_response_bytes(mut self) -> Self {
+        self.encoded_bytes = 0;
+        self.delivered_bytes = 0;
+        self
+    }
+
     fn before_delivery(error: NacelleError) -> Self {
         Self {
             error,

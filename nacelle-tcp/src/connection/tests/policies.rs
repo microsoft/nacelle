@@ -1254,10 +1254,7 @@ async fn tls_reload_during_accepted_admission_applies_to_the_handshake() {
 async fn tls_policies_run_before_handshake_and_after_negotiated_metadata() {
     for reject in ["accepted", "ready"] {
         let generated = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
-        let certificate =
-            nacelle_rustls::parse_pem_certificates(generated.certificate_pem.as_bytes())
-                .unwrap()
-                .remove(0);
+        let certificate = crate::runtime::test_certificate(generated.certificate_pem.as_bytes());
         let mut roots = rustls::RootCertStore::empty();
         roots.add(certificate).unwrap();
         let connector = tokio_rustls::TlsConnector::from(Arc::new(
