@@ -63,6 +63,10 @@ Retained costs are scoped by ownership:
 - TCP response coalescing is opt-in. It queues only complete bounded frames and
 	restores socket backpressure at thresholds, streaming waits, and socket-read
 	boundaries.
+  Streaming request bodies also flush the underlying writer concurrently with
+  handler admission and execution, even when Nacelle's frame queue is empty.
+  This flush boundary preserves progress for buffered writers and applies to
+  immediate delivery as well as coalescing.
 - App listener installers and worker thread closures erase startup-only closure
 	types; they are not involved in request dispatch.
 - Optional tracing, Hyper, Tokio, TLS providers, allocators, and metrics

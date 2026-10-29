@@ -115,11 +115,12 @@ a streaming-body failure, Nacelle drops the connection without retrying delivery
 or graceful writer shutdown. Cleanup must not replay a partially written response
 or extend the admission wait indefinitely when write timeouts are disabled.
 
-While a streaming request body is being pumped, earlier coalesced responses flush
-concurrently with the admitted handler. The handler can consume the bounded body
-channel even when response writes are blocked. Handler leases still end when the
-handler finishes, not when that earlier flush completes. This scheduling does not
-depend on the `policies` feature.
+While a streaming request body is being pumped, earlier response output flushes
+concurrently with handler admission and the admitted handler, including output
+retained by the underlying writer after Nacelle's frame queue has drained. The
+handler can consume the bounded body channel even when response writes are
+blocked. Handler leases still end when the handler finishes, not when that earlier
+flush completes. This scheduling does not depend on the `policies` feature.
 
 Policies run before the corresponding I/O or handler operation, so those
 operation deadlines are not policy deadlines. Acquire resources in a consistent

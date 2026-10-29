@@ -786,7 +786,7 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    let flush_prior_responses = flush_prior_responses && delivery.has_pending();
+    // The writer can retain earlier output even when the frame queue is empty.
     // Streaming admission and its handler must progress alongside the same flush.
     let handler_lease = if flush_prior_responses {
         None

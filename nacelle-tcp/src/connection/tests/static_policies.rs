@@ -852,8 +852,17 @@ impl<I: ?Sized + Send> Admission<I> for YieldingAdmission {
 }
 
 #[tokio::test(start_paused = true)]
-async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
-    for (attached, waiting) in [(false, false), (true, false), (true, true)] {
+async fn streaming_body_and_response_delivery_make_full_duplex_progress() {
+    for (write_policy, write_capacity, attached, waiting) in [
+        (ResponseWritePolicy::CoalesceBuffered, 0, false, false),
+        (ResponseWritePolicy::CoalesceBuffered, 0, true, false),
+        (ResponseWritePolicy::CoalesceBuffered, 0, true, true),
+        (ResponseWritePolicy::Immediate, 32, false, false),
+        (ResponseWritePolicy::Immediate, 32, true, false),
+        (ResponseWritePolicy::Immediate, 32, true, true),
+        (ResponseWritePolicy::CoalesceBuffered, 32, true, true),
+        (ResponseWritePolicy::FlushAtBytes(16), 32, true, true),
+    ] {
         let active = Arc::new(AtomicUsize::new(0));
         let handler_active = active.clone();
         let handled = Arc::new(AtomicUsize::new(0));
@@ -889,11 +898,12 @@ async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
                     .with_request_body_mode(TcpRequestBodyMode::Streaming)
                     .with_request_body_chunk_size(1)
                     .with_request_body_channel_capacity(1)
-                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                    .with_response_write_policy(write_policy),
             )
             .build()
             .unwrap();
         let (mut client, stream) = tokio::io::duplex(8);
+        let stream = tokio::io::BufStream::with_capacity(8, write_capacity, stream);
         client.write_all(&[1, 0, 2, 64]).await.unwrap();
         let policy_active = active.clone();
         let task = tokio::spawn(async move {
@@ -924,7 +934,12 @@ async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
             task.await.unwrap().unwrap();
         })
         .await
-        .expect("response delivery must not prevent streaming body consumption");
+        .unwrap_or_else(|_| {
+            panic!(
+                "response delivery blocked body consumption: {write_policy:?}, \
+                 write_capacity={write_capacity}, attached={attached}, waiting={waiting}"
+            )
+        });
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(runtime.active_connections(), 0);
         assert_eq!(runtime.active_requests(), 0);

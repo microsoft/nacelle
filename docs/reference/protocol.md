@@ -210,9 +210,12 @@ in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler.
-Earlier coalesced responses flush concurrently with the admitted streaming handler
-and body pump, so blocked response writes do not prevent the handler from draining
-the bounded body channel. This behavior is independent of the `policies` feature.
+For streaming request bodies, earlier response output flushes concurrently with
+handler admission, the admitted handler, and the body pump. This includes output
+retained by the underlying writer after Nacelle's frame queue has drained.
+Blocked response writes therefore do not prevent an admitted handler from
+draining the bounded body channel. This behavior is independent of the `policies`
+feature.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers
