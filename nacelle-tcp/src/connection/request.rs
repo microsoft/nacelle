@@ -739,6 +739,7 @@ where
                 )
                 .await
             {
+                let failure = failure.with_cumulative_final_flush(response_bytes);
                 request_metrics.complete("error", failure.delivered_bytes);
                 return Err(failure.error);
             }

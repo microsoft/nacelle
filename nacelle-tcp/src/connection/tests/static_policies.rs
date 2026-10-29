@@ -1167,6 +1167,135 @@ fn policy_wait_flush_failure_excludes_previous_response_bytes() {
     }
 }
 
+#[test]
+fn rejection_flush_failure_without_error_response_excludes_previous_bytes() {
+    for checkpoint in ["head", "handler"] {
+        for (remaining, fail_flush) in [(2, false), (usize::MAX, true)] {
+            let recorder = DebuggingRecorder::new();
+            let handlers = Arc::new(AtomicUsize::new(0));
+            metrics::with_local_recorder(&recorder, || {
+                let called = handlers.clone();
+                let policy = |stage| {
+                    check_fn(move |head: &TcpHead<'_, Cell<u8>, Arc<()>>| {
+                        if checkpoint == stage && head.request().get() == 2 {
+                            Err(Rejection::new(RejectionKind::Denied, "test_rejection"))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                };
+                let server = TcpServer::<StaticProtocol>::builder()
+                    .protocol(StaticProtocol(PhantomData))
+                    .handler(handler_fn(
+                        move |context: TcpRequestContext<StaticProtocol>| {
+                            called.fetch_add(1, Ordering::SeqCst);
+                            async move { context.respond(TcpResponse::bytes("prev")).await }
+                        },
+                    ))
+                    .tcp_config(
+                        NacelleTcpConfig::default()
+                            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                    )
+                    .policies(
+                        TcpPolicies::new()
+                            .on_request_head(policy("head"))
+                            .around_handler(policy("handler")),
+                    )
+                    .build()
+                    .unwrap();
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(server.serve_io(DeliveryFailureIo {
+                        reader: io(&[1, 0, 2, 0]).0,
+                        remaining,
+                        fail_flush,
+                    }));
+                assert!(matches!(result, Err(NacelleError::Io(_))));
+            });
+            assert_eq!(handlers.load(Ordering::SeqCst), 1);
+            assert_error_response_size(&recorder, 0.0);
+        }
+    }
+}
+
+#[test]
+fn rejection_flush_failure_with_error_response_counts_current_bytes() {
+    let response_bytes = Rejection::new(RejectionKind::Denied, "test_rejection")
+        .into_error()
+        .to_string()
+        .len() as f64;
+    for checkpoint in ["head", "handler"] {
+        for (write_policy, remaining, fail_flush, expected) in [
+            (ResponseWritePolicy::CoalesceBuffered, 2, false, 0.0),
+            (ResponseWritePolicy::CoalesceBuffered, 6, false, 2.0),
+            (
+                ResponseWritePolicy::CoalesceBuffered,
+                usize::MAX,
+                true,
+                response_bytes,
+            ),
+            (
+                ResponseWritePolicy::Immediate,
+                usize::MAX,
+                true,
+                response_bytes,
+            ),
+        ] {
+            let recorder = DebuggingRecorder::new();
+            let handlers = Arc::new(AtomicUsize::new(0));
+            metrics::with_local_recorder(&recorder, || {
+                let called = handlers.clone();
+                let policy = |stage| {
+                    let entries = AtomicUsize::new(0);
+                    check_fn(move |_: &TcpHead<'_, PhaseRequest, Arc<AuthState>>| {
+                        if checkpoint == stage && entries.fetch_add(1, Ordering::SeqCst) == 1 {
+                            Err(Rejection::new(RejectionKind::Denied, "test_rejection"))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                };
+                let server = TcpServer::<PhaseProtocol>::builder()
+                    .protocol(PhaseProtocol {
+                        authenticated: true,
+                        request_wire_bytes: None,
+                        encoder_writes_then_errors: false,
+                    })
+                    .handler(handler_fn(
+                        move |context: TcpRequestContext<PhaseProtocol>| {
+                            called.fetch_add(1, Ordering::SeqCst);
+                            async move { context.respond(TcpResponse::bytes("prev")).await }
+                        },
+                    ))
+                    .tcp_config(
+                        NacelleTcpConfig::default().with_response_write_policy(write_policy),
+                    )
+                    .policies(
+                        TcpPolicies::new()
+                            .on_request_head(policy("head"))
+                            .around_handler(policy("handler")),
+                    )
+                    .build()
+                    .unwrap();
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(server.serve_io(DeliveryFailureIo {
+                        reader: io(&[0, 0]).0,
+                        remaining,
+                        fail_flush,
+                    }));
+                assert!(matches!(result, Err(NacelleError::Io(_))));
+            });
+            assert_eq!(handlers.load(Ordering::SeqCst), 1);
+            assert_error_response_size(&recorder, expected);
+        }
+    }
+}
+
 #[cfg(feature = "policies")]
 struct LegacyLeaseOnSecond(AtomicUsize);
 

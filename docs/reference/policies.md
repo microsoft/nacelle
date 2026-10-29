@@ -142,10 +142,11 @@ connection rejection close the connection without a protocol response. After
 response commitment or during eviction, the transport closes rather than sending
 a second response.
 
-For a failed policy delivery barrier, request response-size metrics count the
-current response's cumulative written bytes, excluding earlier coalesced
-responses. Admission failures before response encoding record zero response bytes
-even if earlier responses were partially written while waiting.
+For a failed policy delivery barrier or final flush after rejection, request
+response-size metrics count the current response's cumulative written bytes,
+excluding earlier coalesced responses. If no current response has been encoded,
+including when `Protocol::error_response` returns `None`, the request records zero
+response bytes even if flushing earlier responses writes a prefix.
 
 HTTP handler-error responses do not force connection closure after successful
 incoming-body EOF. Before successful EOF, handler errors still close the
