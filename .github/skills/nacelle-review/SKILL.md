@@ -46,6 +46,9 @@ relevant.
   borrowed value is either necessary or safe.
 - Check encoding and partial writes for dropped, duplicated, reordered, or
   incorrectly flushed data.
+- Treat Nacelle's pending-frame queue and buffering inside `AsyncWrite`
+  independently. An empty frame queue does not prove the underlying writer is
+  flushed; account for both when tracing admission and streaming progress.
 - Distinguish encoded, buffered, socket-written, and flushed bytes, and track
   which response owns each count. A failed coalesced flush must not attribute
   earlier responses' bytes to the current request, or lose current-response
@@ -71,6 +74,12 @@ relevant.
   transfers and every exit. Check their documented release boundaries when
   body pumping, handler completion, admission, and response delivery progress
   independently; do not assume one joined future's lifetime matches another's.
+- For coupled admission, body-pump, handler, and delivery futures, record progress
+  dependencies at concrete call sites in the evidence ledger: each bounded
+  queue's producer and consumer, what each pending operation awaits, and which
+  operation can cancel it. Check saturated queues and terminal failure paths.
+  Failure reporting must reach the driver without awaiting capacity owned by
+  work that the failure needs to cancel.
 - Require deterministic coverage for changed timing behavior where practical;
   follow existing paused-time tests rather than adding sleep-based assumptions.
 
@@ -88,6 +97,12 @@ relevant.
   compilation alone does not establish equivalent behavior.
 - Keep peer-controlled data out of metric labels. Preserve low cardinality,
   stable rejection reasons, and opt-in diagnostic overhead.
+- At each affected rejection checkpoint, compare legacy/static policies and
+  listener/direct entry points across applicable shared, serial, and local
+  paths. Trace the returned error, response-or-close behavior, lease release,
+  operation phase, and actual observer-event/counter emission. Check metric
+  switches, including the error domain, independently of observer delivery.
+  Stable labels do not establish that an event is emitted or counted once.
 - For hot-path changes, identify allocations, retained buffers, locks, timers,
   and instrumentation. Require comparable measurements before accepting a
   throughput, latency, or memory improvement claim.
@@ -112,11 +127,13 @@ from the invariants, not only from the tests already present:
 - Relevant feature configurations, bounded-channel backpressure, response order,
   per-request byte attribution, and lease release.
 
-For each applicable case, cite test coverage, source-backed reasoning or a
-counterexample, or an explicit evidence gap. Justify irrelevant cases; do not
-require an unrelated Cartesian product. Favor deterministic partial-progress
-fixtures and paused time when tests are authorized. Passing existing tests must
-not be treated as proof that untested failure paths preserve these contracts.
+Use this matrix as the behavioral part of the general review evidence ledger.
+For each applicable case, cite concrete call sites and exercised coverage,
+source-backed reasoning or a counterexample, or an explicit evidence gap.
+Justify irrelevant cases; do not require an unrelated Cartesian product. Favor
+deterministic partial-progress fixtures and paused time when tests are
+authorized. Passing existing tests must not be treated as proof that untested
+failure paths preserve these contracts.
 
 Use the Rust instructions for formatting, lint, and test gates. Feature wiring,
 TLS, cross-crate changes, and readiness work require the broader

@@ -39,9 +39,8 @@ from staged and unstaged changes; include the latter only when requested. State
 any unavailable refs or differences between the checkout and the requested PR.
 
 Inventory added, modified, deleted, and renamed files, including tests,
-manifests, tooling, and documentation. Keep a compact coverage record in session
-state: reviewed areas and critical paths, delegated owners, and deferred areas
-with reasons. Account for every changed file or coherent file group; a partial
+manifests, tooling, and documentation. Account for every changed file or coherent
+file group, its review owner, and any deferred scope with reasons. A partial
 review must not be reported as a whole-branch review.
 
 Read the diff and relevant implementation before adopting the author's account
@@ -50,6 +49,33 @@ invariants, then trace callers, consumers, helpers, sibling implementations, and
 tests where they can change the conclusion. Use history when it resolves a
 specific compatibility question or explains a surprising constraint, not as a
 mandatory scan of every file.
+
+#### Maintain an Evidence Ledger
+
+Keep a compact behavioral evidence ledger, not only a file inventory. Record:
+
+- The requested target, exact base/head and merge-base, included working-tree
+  changes, and relevant feature/configuration choices.
+- Each high-risk invariant, triggering condition or state transition, and
+  expected observable outcome, with its review owner.
+- Concrete production call sites, affected callers/consumers, and error or
+  cleanup exits that establish or contradict the invariant.
+- Evidence marked **exercised**, **source-backed**, or **unresolved**, with
+  locations, commands/results where applicable, finding provenance, decisions,
+  and deferred cases with reasons. An inspected test is source-backed evidence,
+  not an executed result.
+
+For small, single-session reviews, session state is sufficient. For larger
+reviews, repeated review rounds, or long-running PRs, persist the ledger and
+relevant provenance under `.github/ledger/`, named for the PR or branch.
+Session state may supplement it but must not be the only handoff record.
+Keep records concise and free of secrets. Never stage, commit, force-add, or
+create ignore exceptions for ledger files.
+
+Read and update the existing ledger when resuming a review. Tie evidence to the
+revision and configuration it describes. When the target changes, retain prior
+evidence as history and re-establish affected rows; do not silently carry
+forward a previous coverage conclusion.
 
 #### Coordinate Independent Reviews
 
@@ -115,7 +141,9 @@ Before reporting a finding:
 When reviewing a fix or follow-up, inspect sibling paths for the same defect
 family and check that the correction does not move the failure elsewhere.
 Preserve the requested branch scope rather than narrowing it to the latest
-regression test or changed line.
+regression test or changed line. Use the ledger to account for affected
+callers, consumers, and failure/cleanup exits, including regressions the fix
+could introduce. A passing reproducer alone does not close the defect family.
 
 Do not treat an unproven scenario, unmeasured optimization, or personal style
 preference as a verified defect. Keep unresolved evidence gaps separate from
@@ -140,6 +168,11 @@ relevant failed checks rather than assuming CI will catch them, and avoid
 duplicating routine formatter diagnostics as separate review findings.
 
 ### 5. Report Results
+
+Before declaring the requested scope complete, reconcile the high-risk ledger
+rows against concrete production paths and evidence. Resolve or explicitly
+defer remaining cases and qualify the conclusion accordingly. A reviewed-file
+list, green suite, or reviewer count is not a substitute for this gate.
 
 Lead with the findings, ordered by severity and then confidence:
 
