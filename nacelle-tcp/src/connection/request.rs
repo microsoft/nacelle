@@ -345,24 +345,28 @@ where
         #[cfg(feature = "policies")]
         {
             _head_policy_permit = super::checkpoint::await_admission(
-                protocol
-                    .policy()
-                    .request_head(
-                        &request,
-                        decoded.body_len,
-                        handler.info(connection_context),
-                        handler.state(connection_context),
-                    ),
+                protocol.policy().request_head(
+                    &request,
+                    decoded.body_len,
+                    handler.info(connection_context),
+                    handler.state(connection_context),
+                ),
                 PolicyIo {
-                    writer, delivery, limits: tcp_limits, telemetry,
+                    writer,
+                    delivery,
+                    limits: tcp_limits,
+                    telemetry,
                     metrics: metrics_context,
                     phase_duration: telemetry_plan.phase_duration,
                     failure: &mut policy_flush_failure,
                 },
-            ).await
-                    .inspect_err(|error| {
-                        record_tcp_error(telemetry, metrics_context, "policy_request_head", error);
-                    })?;
+            )
+            .await
+            .inspect_err(|error| {
+                if policy_flush_failure.is_none() {
+                    record_tcp_error(telemetry, metrics_context, "policy_request_head", error);
+                }
+            })?;
         }
         if decoded.body_len > max_request_body_bytes {
             let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
@@ -377,16 +381,22 @@ where
             }
         });
         head_lease = Some(
-            policies.head(
-                &mut request, decoded.body_len, handler.context_mut(connection_context),
-                PolicyIo {
-                    writer, delivery, limits: tcp_limits, telemetry,
-                    metrics: metrics_context,
-                    phase_duration: telemetry_plan.phase_duration,
-                    failure: &mut policy_flush_failure,
-                },
-            )
-            .await?,
+            policies
+                .head(
+                    &mut request,
+                    decoded.body_len,
+                    handler.context_mut(connection_context),
+                    PolicyIo {
+                        writer,
+                        delivery,
+                        limits: tcp_limits,
+                        telemetry,
+                        metrics: metrics_context,
+                        phase_duration: telemetry_plan.phase_duration,
+                        failure: &mut policy_flush_failure,
+                    },
+                )
+                .await?,
         );
         let use_buffered_body = use_buffered_body(decoded.body_len, read_buf.len());
         if use_buffered_body {
@@ -406,20 +416,21 @@ where
                         .policy()
                         .body_complete(connection, decoded.body_len),
                     PolicyIo {
-                        writer, delivery, limits: tcp_limits, telemetry,
+                        writer,
+                        delivery,
+                        limits: tcp_limits,
+                        telemetry,
                         metrics: metrics_context,
                         phase_duration: telemetry_plan.phase_duration,
                         failure: &mut policy_flush_failure,
                     },
-                ).await
-                        .inspect_err(|error| {
-                            record_tcp_error(
-                                telemetry,
-                                metrics_context,
-                                "policy_body_complete",
-                                error,
-                            );
-                        })?;
+                )
+                .await
+                .inspect_err(|error| {
+                    if policy_flush_failure.is_none() {
+                        record_tcp_error(telemetry, metrics_context, "policy_body_complete", error);
+                    }
+                })?;
             }
             execute_handler_with_metrics(
                 handler,
@@ -443,19 +454,30 @@ where
         } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
             let body_started = start_tcp_phase(telemetry_plan.phase_duration);
             let body_result = super::checkpoint::continue_input(
-                read_buffered_request_body(reader, read_buf, decoded.body_len, tcp_limits),
+                async {
+                    read_buffered_request_body(reader, read_buf, decoded.body_len, tcp_limits)
+                        .await
+                        .inspect_err(|error| {
+                            record_tcp_error(
+                                telemetry,
+                                metrics_context,
+                                "request_body_read",
+                                error,
+                            );
+                        })
+                },
                 PolicyIo {
-                    writer, delivery, limits: tcp_limits, telemetry,
+                    writer,
+                    delivery,
+                    limits: tcp_limits,
+                    telemetry,
                     metrics: metrics_context,
                     phase_duration: telemetry_plan.phase_duration,
                     failure: &mut policy_flush_failure,
                 },
                 std::convert::identity,
             )
-            .await
-            .inspect_err(|error| {
-                record_tcp_error(telemetry, metrics_context, "request_body_read", error)
-            });
+            .await;
             finish_tcp_phase(
                 telemetry,
                 metrics_context,
@@ -471,20 +493,26 @@ where
                                 .policy()
                                 .body_complete(connection, decoded.body_len),
                             PolicyIo {
-                                writer, delivery, limits: tcp_limits, telemetry,
+                                writer,
+                                delivery,
+                                limits: tcp_limits,
+                                telemetry,
                                 metrics: metrics_context,
                                 phase_duration: telemetry_plan.phase_duration,
                                 failure: &mut policy_flush_failure,
                             },
-                        ).await
-                                .inspect_err(|error| {
-                                    record_tcp_error(
-                                        telemetry,
-                                        metrics_context,
-                                        "policy_body_complete",
-                                        error,
-                                    );
-                                })?;
+                        )
+                        .await
+                        .inspect_err(|error| {
+                            if policy_flush_failure.is_none() {
+                                record_tcp_error(
+                                    telemetry,
+                                    metrics_context,
+                                    "policy_body_complete",
+                                    error,
+                                );
+                            }
+                        })?;
                     }
                     execute_handler_with_metrics(
                         handler,
@@ -544,7 +572,10 @@ where
                     config,
                     tcp_limits,
                 )
-                .await?;
+                .await
+                .inspect_err(|error| {
+                    record_tcp_error(telemetry, metrics_context, "request_body_read", error);
+                })?;
                 #[cfg(feature = "policies")]
                 {
                     protocol
@@ -577,15 +608,7 @@ where
                             }
                             handler_future.await
                         }
-                        Err(error) => {
-                            record_tcp_error(
-                                telemetry,
-                                metrics_context,
-                                "request_body_read",
-                                &error,
-                            );
-                            Err(error)
-                        }
+                        Err(error) => Err(error),
                     }
                 }
                 handler_result = &mut handler_future => {
@@ -599,9 +622,6 @@ where
                                 "request_body_read",
                                 body_started,
                             );
-                            if let Err(error) = &pump_result {
-                                record_tcp_error(telemetry, metrics_context, "request_body_read", error);
-                            }
                             #[cfg(feature = "policies")]
                             {
                                 _body_policy_permit = pump_result?;

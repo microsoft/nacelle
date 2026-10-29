@@ -87,7 +87,12 @@ async fn policy_rejection_closes_http10_head_keep_alive() {
     }
 }
 
-async fn legacy_error_connection_reuse(bodyless: bool) {
+async fn legacy_error_connection_reuse(bodyless: bool, version: http::Version) {
+    let wire_version = match version {
+        http::Version::HTTP_10 => "HTTP/1.0",
+        http::Version::HTTP_11 => "HTTP/1.1",
+        _ => unreachable!("HTTP/1 test versions"),
+    };
     for failure in ["handler", "request_limit", "edge", "peer_rate"] {
         let runtime = NacelleRuntimeState::new(
             nacelle_core::NacelleLimits::default().with_max_in_flight_requests(1),
@@ -99,11 +104,16 @@ async fn legacy_error_connection_reuse(bodyless: bool) {
             "peer_rate" => NacelleHttpPolicy::new().with_max_requests_per_peer_per_second(1),
             _ => NacelleHttpPolicy::default(),
         };
-        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
-            if context.request().uri.path() == "/fail" {
-                Err(NacelleError::protocol("handler failure"))
-            } else {
-                context.respond(HttpResponse::empty(StatusCode::OK)).await
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler_calls = calls.clone();
+        let server = HyperServer::new(handler_fn(move |context: HttpRequestContext<()>| {
+            handler_calls.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if context.request().uri.path() == "/fail" {
+                    Err(NacelleError::protocol("handler failure"))
+                } else {
+                    context.respond(HttpResponse::empty(StatusCode::OK)).await
+                }
             }
         }))
         .with_runtime_state(runtime.clone())
@@ -117,14 +127,31 @@ async fn legacy_error_connection_reuse(bodyless: bool) {
             );
         }
         let (mut client, task) = duplex_http(server);
-        let request = if bodyless {
-            b"GET /fail HTTP/1.1\r\nHost: localhost\r\n\r\n\
-              GET /ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-                .as_slice()
+        let keep_alive = if version == http::Version::HTTP_10 {
+            "Connection: keep-alive\r\n"
         } else {
-            b"POST /fail HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\n\r\n".as_slice()
+            ""
         };
-        client.write_all(request).await.expect("requests");
+        let request = if bodyless {
+            let method = if version == http::Version::HTTP_10 {
+                "HEAD"
+            } else {
+                "GET"
+            };
+            format!(
+                "{method} /fail {wire_version}\r\nHost: localhost\r\n{keep_alive}\r\n\
+                 GET /ok {wire_version}\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            )
+        } else {
+            format!(
+                "POST /fail {wire_version}\r\nHost: localhost\r\n\
+                 Content-Length: 1\r\n{keep_alive}\r\n"
+            )
+        };
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("requests");
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
             .await
@@ -133,24 +160,39 @@ async fn legacy_error_connection_reuse(bodyless: bool) {
         task.await.expect("join").expect("connection");
         let response = String::from_utf8(response).expect("HTTP response");
         let expected_status = match failure {
-            "handler" => "HTTP/1.1 500",
-            "request_limit" => "HTTP/1.1 503",
-            "edge" => "HTTP/1.1 414",
-            "peer_rate" => "HTTP/1.1 429",
+            "handler" => StatusCode::INTERNAL_SERVER_ERROR,
+            "request_limit" => StatusCode::SERVICE_UNAVAILABLE,
+            "edge" => StatusCode::URI_TOO_LONG,
+            "peer_rate" => StatusCode::TOO_MANY_REQUESTS,
             _ => unreachable!("known failure"),
         };
         assert!(
-            response.starts_with(expected_status),
+            response.starts_with(&format!("{wire_version} {}", expected_status.as_u16())),
             "{failure}: {response}"
         );
         assert_eq!(
-            response.matches("HTTP/1.1 ").count(),
+            response.matches(&format!("{wire_version} ")).count(),
             if bodyless { 2 } else { 1 },
             "{failure}: {response}"
         );
         if bodyless && matches!(failure, "handler" | "edge") {
-            assert!(response.contains("HTTP/1.1 200"), "{failure}: {response}");
+            assert!(
+                response.contains(&format!("{wire_version} 200")),
+                "{failure}: {response}"
+            );
         }
+        let expected_calls = match failure {
+            "handler" => {
+                if bodyless {
+                    2
+                } else {
+                    1
+                }
+            }
+            "edge" => usize::from(bodyless),
+            _ => 0,
+        };
+        assert_eq!(calls.load(Ordering::Relaxed), expected_calls, "{failure}");
         if !bodyless {
             assert!(
                 response.contains("connection: close"),
@@ -165,12 +207,19 @@ async fn legacy_error_connection_reuse(bodyless: bool) {
 
 #[tokio::test]
 async fn legacy_bodyless_errors_preserve_connection_reuse() {
-    legacy_error_connection_reuse(true).await;
+    legacy_error_connection_reuse(true, http::Version::HTTP_11).await;
+}
+
+#[tokio::test]
+async fn legacy_http10_bodyless_errors_preserve_connection_reuse() {
+    legacy_error_connection_reuse(true, http::Version::HTTP_10).await;
 }
 
 #[tokio::test]
 async fn legacy_errors_close_connections_with_unread_bodies() {
-    legacy_error_connection_reuse(false).await;
+    for version in [http::Version::HTTP_10, http::Version::HTTP_11] {
+        legacy_error_connection_reuse(false, version).await;
+    }
 }
 
 #[tokio::test]

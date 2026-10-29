@@ -272,6 +272,542 @@ fn legacy_pre_head_rejections_record_only_the_policy_phase() {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum OriginMetrics {
+    Default,
+    ErrorOnly,
+    ErrorsDisabled,
+    Disabled,
+}
+
+impl OriginMetrics {
+    const ALL: [Self; 4] = [
+        Self::Default,
+        Self::ErrorOnly,
+        Self::ErrorsDisabled,
+        Self::Disabled,
+    ];
+
+    fn telemetry(self) -> NacelleTelemetry {
+        match self {
+            Self::Default => NacelleTelemetry::new(),
+            Self::ErrorOnly => NacelleTelemetry::new()
+                .with_connection_metrics(false)
+                .with_runtime_metrics(false)
+                .with_request_metrics(NacelleRequestMetricsConfig {
+                    started: false,
+                    completed: false,
+                    in_flight: false,
+                    duration_ms: false,
+                    byte_counts: false,
+                }),
+            Self::ErrorsDisabled => NacelleTelemetry::new().with_error_metrics(false),
+            Self::Disabled => NacelleTelemetry::new().with_metrics(false),
+        }
+    }
+
+    fn assert_phase(self, recorder: &DebuggingRecorder, phase: &str, resource: bool) {
+        use metrics_util::debugging::DebugValue;
+
+        let snapshot = recorder.snapshotter().snapshot().into_vec();
+        let enabled = matches!(self, Self::Default | Self::ErrorOnly);
+        for (name, expected) in [
+            ("server.errors", usize::from(enabled)),
+            (
+                "server.resource_limit.rejections",
+                usize::from(enabled && resource),
+            ),
+        ] {
+            let counters: Vec<_> = snapshot
+                .iter()
+                .filter(|(key, _, _, _)| key.key().name() == name)
+                .collect();
+            assert_eq!(counters.len(), expected, "{name}, {self:?}, {phase}");
+            for (key, _, _, value) in counters {
+                assert_eq!(*value, DebugValue::Counter(1), "{name}, {self:?}, {phase}");
+                assert!(
+                    key.key()
+                        .labels()
+                        .any(|label| { label.key() == "phase" && label.value() == phase }),
+                    "{name}, {self:?}, {phase}"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OriginHook {
+    Head,
+    Body,
+}
+
+impl OriginHook {
+    fn phase(self) -> &'static str {
+        match self {
+            Self::Head => "policy_request_head",
+            Self::Body => "policy_body_complete",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum OriginFailure {
+    PolicyResource,
+    PolicyTimeout,
+    ReadEof,
+    ReadIo,
+    ReadTimeout,
+}
+
+impl OriginFailure {
+    fn policy(self) -> bool {
+        matches!(self, Self::PolicyResource | Self::PolicyTimeout)
+    }
+}
+
+#[derive(Default)]
+struct OriginState {
+    handler_done: AtomicBool,
+    reader_waker: std::sync::Mutex<Option<std::task::Waker>>,
+    hooks: AtomicUsize,
+}
+
+struct OriginPolicy {
+    hook: OriginHook,
+    failure: OriginFailure,
+    state: Arc<OriginState>,
+}
+
+impl OriginPolicy {
+    async fn enter(&self, hook: OriginHook) -> Result<Option<()>, NacelleError> {
+        if self.failure.policy() && hook == self.hook {
+            self.state.hooks.fetch_add(1, Ordering::SeqCst);
+            return Err(match self.failure {
+                OriginFailure::PolicyResource => {
+                    NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("origin_fixture"))
+                }
+                _ => NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead),
+            });
+        }
+        Ok(None)
+    }
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for OriginPolicy {
+    type Permit = ();
+
+    fn request_head(
+        &self,
+        _: &PhaseRequest,
+        _: usize,
+        _: &ConnectionInfo,
+        _: &AuthState,
+    ) -> impl std::future::Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(OriginHook::Head)
+    }
+
+    fn body_complete(
+        &self,
+        _: &NacelleConnectionMeta,
+        _: usize,
+    ) -> impl std::future::Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(OriginHook::Body)
+    }
+}
+
+struct OriginIo {
+    heads: Vec<u8>,
+    heads_read: bool,
+    body_read: bool,
+    handler_first: bool,
+    failure: OriginFailure,
+    state: Arc<OriginState>,
+    writes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    remaining: usize,
+    admission_done: Option<Arc<AtomicBool>>,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+impl AsyncRead for OriginIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.heads_read {
+            buf.put_slice(&self.heads);
+            self.heads_read = true;
+            return Poll::Ready(Ok(()));
+        }
+        if self.handler_first && !self.state.handler_done.load(Ordering::SeqCst) {
+            *self.state.reader_waker.lock().unwrap() = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        if self.body_read {
+            return Poll::Ready(Ok(()));
+        }
+        match self.failure {
+            OriginFailure::ReadEof => Poll::Ready(Ok(())),
+            OriginFailure::ReadIo => Poll::Ready(Err(std::io::Error::other("origin_fixture"))),
+            OriginFailure::ReadTimeout => Poll::Pending,
+            _ => {
+                buf.put_slice(b"x");
+                self.body_read = true;
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+}
+
+impl AsyncWrite for OriginIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.remaining == 0 {
+            if self
+                .admission_done
+                .as_ref()
+                .is_some_and(|done| !done.load(Ordering::SeqCst))
+            {
+                return Poll::Pending;
+            }
+            return Poll::Ready(Err(std::io::Error::other("origin_fixture")));
+        }
+        let written = bytes.len().min(self.remaining);
+        self.remaining -= written;
+        self.writes.lock().unwrap().push(bytes[..written].to_vec());
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Ok(()))
+    }
+}
+
+struct OriginCase {
+    hook: OriginHook,
+    failure: OriginFailure,
+    body_mode: TcpRequestBodyMode,
+    read_ahead: bool,
+    handler_first: bool,
+}
+
+fn assert_request_error_origin(case: OriginCase, mode: OriginMetrics) {
+    type P = WithTcpPolicy<PhaseProtocol, OriginPolicy>;
+    let recorder = DebuggingRecorder::new();
+    let state = Arc::new(OriginState::default());
+    let handler_state = state.clone();
+    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let runtime = NacelleRuntimeState::default();
+    metrics::with_local_recorder(&recorder, || {
+        let server = TcpServer::<P>::builder()
+            .protocol(
+                PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }
+                .with_policy(OriginPolicy {
+                    hook: case.hook,
+                    failure: case.failure,
+                    state: state.clone(),
+                }),
+            )
+            .handler(handler_fn(move |context: TcpRequestContext<P>| {
+                let state = handler_state.clone();
+                async move {
+                    if !case.handler_first {
+                        return std::future::pending().await;
+                    }
+                    state.handler_done.store(true, Ordering::SeqCst);
+                    if let Some(waker) = state.reader_waker.lock().unwrap().take() {
+                        waker.wake();
+                    }
+                    Ok(context.complete())
+                }
+            }))
+            .telemetry(mode.telemetry())
+            .runtime_state(runtime.clone())
+            .tcp_config(NacelleTcpConfig::default().with_request_body_mode(case.body_mode))
+            .tcp_limits(
+                crate::limits::NacelleTcpLimits::default()
+                    .with_read_timeout(Duration::from_secs(1)),
+            )
+            .build()
+            .unwrap();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    server.serve_io(OriginIo {
+                        heads: if case.read_ahead {
+                            vec![1, b'x']
+                        } else {
+                            vec![1]
+                        },
+                        heads_read: false,
+                        body_read: case.read_ahead,
+                        handler_first: case.handler_first,
+                        failure: case.failure,
+                        state: state.clone(),
+                        writes: writes.clone(),
+                        remaining: usize::MAX,
+                        admission_done: None,
+                        shutdowns: Arc::new(AtomicUsize::new(0)),
+                    }),
+                )
+                .await
+                .expect("request failure must terminate the connection")
+            });
+        let error = result.expect_err("the selected request source must fail");
+        match case.failure {
+            OriginFailure::PolicyResource => assert!(matches!(
+                error,
+                NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("origin_fixture"))
+            )),
+            OriginFailure::PolicyTimeout | OriginFailure::ReadTimeout => assert!(matches!(
+                error,
+                NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead)
+            )),
+            OriginFailure::ReadEof => assert!(matches!(error, NacelleError::UnexpectedEof)),
+            OriginFailure::ReadIo => assert!(matches!(error, NacelleError::Io(_))),
+        }
+        assert_eq!(
+            writes.lock().unwrap().concat(),
+            error.to_string().as_bytes()
+        );
+    });
+    assert_eq!(
+        state.handler_done.load(Ordering::SeqCst),
+        case.handler_first
+    );
+    assert_eq!(
+        state.hooks.load(Ordering::SeqCst),
+        usize::from(case.failure.policy())
+    );
+    assert_eq!(runtime.active_connections(), 0);
+    assert_eq!(runtime.active_requests(), 0);
+    assert_eq!(runtime.active_streaming_tasks(), 0);
+    mode.assert_phase(
+        &recorder,
+        if case.failure.policy() {
+            case.hook.phase()
+        } else {
+            "request_body_read"
+        },
+        matches!(case.failure, OriginFailure::PolicyResource),
+    );
+}
+
+#[test]
+fn streaming_request_errors_keep_their_source_phase_on_both_branches() {
+    for handler_first in [false, true] {
+        for failure in [
+            OriginFailure::PolicyResource,
+            OriginFailure::PolicyTimeout,
+            OriginFailure::ReadEof,
+            OriginFailure::ReadIo,
+            OriginFailure::ReadTimeout,
+        ] {
+            for mode in OriginMetrics::ALL {
+                assert_request_error_origin(
+                    OriginCase {
+                        hook: OriginHook::Body,
+                        failure,
+                        body_mode: TcpRequestBodyMode::Streaming,
+                        read_ahead: false,
+                        handler_first,
+                    },
+                    mode,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn buffered_request_errors_keep_their_source_phase_with_and_without_read_ahead() {
+    for hook in [OriginHook::Head, OriginHook::Body] {
+        for read_ahead in [false, true] {
+            for failure in [OriginFailure::PolicyResource, OriginFailure::PolicyTimeout] {
+                for mode in OriginMetrics::ALL {
+                    assert_request_error_origin(
+                        OriginCase {
+                            hook,
+                            failure,
+                            body_mode: TcpRequestBodyMode::Buffered,
+                            read_ahead,
+                            handler_first: false,
+                        },
+                        mode,
+                    );
+                }
+            }
+        }
+    }
+    for failure in [
+        OriginFailure::ReadEof,
+        OriginFailure::ReadIo,
+        OriginFailure::ReadTimeout,
+    ] {
+        for mode in OriginMetrics::ALL {
+            assert_request_error_origin(
+                OriginCase {
+                    hook: OriginHook::Body,
+                    failure,
+                    body_mode: TcpRequestBodyMode::Buffered,
+                    read_ahead: false,
+                    handler_first: false,
+                },
+                mode,
+            );
+        }
+    }
+}
+
+struct DeliveryOriginPolicy {
+    hook: OriginHook,
+    calls: AtomicUsize,
+    admission_done: Option<Arc<AtomicBool>>,
+}
+
+impl DeliveryOriginPolicy {
+    async fn enter(&self, hook: OriginHook) -> Result<Option<()>, NacelleError> {
+        if hook == self.hook && self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            if let Some(done) = &self.admission_done {
+                tokio::task::yield_now().await;
+                done.store(true, Ordering::SeqCst);
+            } else {
+                return std::future::pending().await;
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for DeliveryOriginPolicy {
+    type Permit = ();
+
+    fn request_head(
+        &self,
+        _: &PhaseRequest,
+        _: usize,
+        _: &ConnectionInfo,
+        _: &AuthState,
+    ) -> impl std::future::Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(OriginHook::Head)
+    }
+
+    fn body_complete(
+        &self,
+        _: &NacelleConnectionMeta,
+        _: usize,
+    ) -> impl std::future::Future<Output = Result<Option<()>, NacelleError>> + Send {
+        self.enter(OriginHook::Body)
+    }
+}
+
+#[test]
+fn saved_output_failures_keep_the_delivery_phase_across_request_checkpoints() {
+    type P = WithTcpPolicy<PhaseProtocol, DeliveryOriginPolicy>;
+    for (hook, resume_input) in [
+        (OriginHook::Head, false),
+        (OriginHook::Body, false),
+        (OriginHook::Head, true),
+    ] {
+        for read_ahead in [false, true] {
+            if resume_input && read_ahead {
+                continue;
+            }
+            for mode in OriginMetrics::ALL {
+                let recorder = DebuggingRecorder::new();
+                let runtime = NacelleRuntimeState::default();
+                let handled = Arc::new(AtomicUsize::new(0));
+                let handler_calls = handled.clone();
+                let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let shutdowns = Arc::new(AtomicUsize::new(0));
+                let admission_done = resume_input.then(|| Arc::new(AtomicBool::new(false)));
+                metrics::with_local_recorder(&recorder, || {
+                    let server = TcpServer::<P>::builder()
+                        .protocol(
+                            PhaseProtocol {
+                                authenticated: true,
+                                request_wire_bytes: None,
+                                encoder_writes_then_errors: false,
+                            }
+                            .with_policy(DeliveryOriginPolicy {
+                                hook,
+                                calls: AtomicUsize::new(0),
+                                admission_done: admission_done.clone(),
+                            }),
+                        )
+                        .handler(handler_fn(move |context: TcpRequestContext<P>| {
+                            handler_calls.fetch_add(1, Ordering::SeqCst);
+                            async move { context.respond(TcpResponse::bytes("prev")).await }
+                        }))
+                        .telemetry(mode.telemetry())
+                        .runtime_state(runtime.clone())
+                        .tcp_config(
+                            NacelleTcpConfig::default()
+                                .with_request_body_mode(TcpRequestBodyMode::Buffered)
+                                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                        )
+                        .build()
+                        .unwrap();
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .start_paused(true)
+                        .build()
+                        .unwrap()
+                        .block_on(async {
+                            tokio::time::timeout(
+                                Duration::from_secs(2),
+                                server.serve_io(OriginIo {
+                                    heads: if read_ahead {
+                                        vec![0, 1, b'x']
+                                    } else {
+                                        vec![0, 1]
+                                    },
+                                    heads_read: false,
+                                    body_read: read_ahead,
+                                    handler_first: false,
+                                    failure: OriginFailure::PolicyResource,
+                                    state: Arc::new(OriginState::default()),
+                                    writes: writes.clone(),
+                                    remaining: 2,
+                                    admission_done,
+                                    shutdowns: shutdowns.clone(),
+                                }),
+                            )
+                            .await
+                            .expect("delivery failure must terminate the connection")
+                        });
+                    assert!(matches!(result, Err(NacelleError::Io(_))));
+                });
+                assert_eq!(handled.load(Ordering::SeqCst), 1);
+                assert_eq!(writes.lock().unwrap().concat(), b"pr");
+                assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+                assert_eq!(runtime.active_connections(), 0);
+                assert_eq!(runtime.active_requests(), 0);
+                assert_eq!(runtime.active_streaming_tasks(), 0);
+                mode.assert_phase(&recorder, "socket_write", false);
+            }
+        }
+    }
+}
+
 struct WaitLater {
     body: bool,
     calls: AtomicUsize,

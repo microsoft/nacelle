@@ -1513,8 +1513,11 @@ where
             &self.http_policy,
             lease,
         )?;
-        // Hyper uses the response version when deciding HTTP/1.0 persistence.
-        *response.version_mut() = version;
+        // Keep Hyper's default version for reusable responses so it can negotiate
+        // HTTP/1.0 persistence. Forced-close responses retain the request version.
+        if close {
+            *response.version_mut() = version;
+        }
         Ok(response)
     }
 
