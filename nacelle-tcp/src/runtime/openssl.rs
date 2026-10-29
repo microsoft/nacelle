@@ -364,11 +364,18 @@ where
                         )
                         .await?;
                         let mut connection = connection;
-                        let _accepted_lease = server
-                            .policies()
-                            .accepted(&mut connection)
-                            .await
-                            .map_err(nacelle_core::policy::Rejection::into_error)?;
+                        let _accepted_lease =
+                            server.policies().accepted(&mut connection).await.map_err(
+                                |rejection| {
+                                    crate::policies::reject_connection(
+                                        server.protocol(),
+                                        &connection,
+                                        server.telemetry(),
+                                        "policy_accepted",
+                                        rejection.into_error(),
+                                    )
+                                },
+                            )?;
                         let acceptor = tls_config.acceptor();
                         let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                         let mut stream = tokio_openssl::SslStream::new(ssl, stream)
@@ -758,7 +765,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol(), &connection, server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)

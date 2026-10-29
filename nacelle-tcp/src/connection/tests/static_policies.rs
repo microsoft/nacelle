@@ -10,6 +10,8 @@ use nacelle_core::policy::{
 };
 use tokio::sync::Semaphore;
 
+mod telemetry;
+
 struct StaticProtocol<State = ()>(PhantomData<fn() -> State>);
 struct StaticDecoder;
 

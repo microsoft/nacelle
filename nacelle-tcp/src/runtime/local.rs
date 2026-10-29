@@ -95,7 +95,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             serve_local_io_with_policies(
                                 stream,
                                 server.protocol(),
@@ -196,7 +198,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             serve_local_serial_io_with_policies(
                                 stream,
                                 server.protocol(),
@@ -301,7 +305,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                             let stream = match tokio::time::timeout(
                                 handshake_timeout,
@@ -424,7 +430,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
@@ -552,7 +560,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let acceptor = tls_config.acceptor();
                             let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                             let mut stream = tokio_openssl::SslStream::new(ssl, stream)
@@ -681,7 +691,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol().as_ref(), &connection, &server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol().as_ref(), &connection, &server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                                 Ok(is_tls) => is_tls,
                                 Err(error) => {

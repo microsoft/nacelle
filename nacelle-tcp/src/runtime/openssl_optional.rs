@@ -344,7 +344,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol(), &connection, server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                                 Ok(is_tls) => is_tls,
                                 Err(error) => {
@@ -760,7 +762,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol(), &connection, server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                                 Ok(is_tls) => is_tls,
                                 Err(error) => {

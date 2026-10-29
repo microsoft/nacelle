@@ -498,6 +498,7 @@ async fn unix_policies_preserve_hook_order_and_release_permits_after_rejection()
         };
         let state = policy.state.clone();
         let runtime_state = NacelleRuntimeState::default();
+        let observer = NacelleInMemoryObserver::new();
         let (shutdown, token) = NacelleShutdown::pair();
         let server = TcpServer::<PolicyProtocol>::builder()
             .protocol(protocol(policy))
@@ -517,7 +518,8 @@ async fn unix_policies_preserve_hook_order_and_release_permits_after_rejection()
             )
             .build()
             .unwrap()
-            .with_runtime_state(runtime_state.clone());
+            .with_runtime_state(runtime_state.clone())
+            .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()));
         let task = tokio::spawn(crate::runtime::serve_unix_listener_with_shutdown_deadline(
             Arc::new(server),
             listener,
@@ -561,6 +563,19 @@ async fn unix_policies_preserve_hook_order_and_release_permits_after_rejection()
         assert_eq!(state.active.load(Ordering::SeqCst), 0);
         assert_eq!(runtime_state.active_connections(), 0);
         assert_eq!(runtime_state.active_requests(), 0);
+        let rejected: Vec<_> = observer
+            .events()
+            .into_iter()
+            .filter(|event| event.kind == NacelleTelemetryEventKind::ConnectionRejected)
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            usize::from(matches!(reject, Some("accepted" | "ready")))
+        );
+        for event in rejected {
+            assert_eq!(event.reason, Some("policy"));
+            assert_eq!(event.count, 1);
+        }
     }
 }
 

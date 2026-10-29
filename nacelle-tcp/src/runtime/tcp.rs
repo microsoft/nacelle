@@ -339,7 +339,15 @@ where
                         .policies()
                         .accepted(&mut connection)
                         .await
-                        .map_err(nacelle_core::policy::Rejection::into_error)?;
+                        .map_err(|rejection| {
+                            crate::policies::reject_connection(
+                                server.protocol(),
+                                &connection,
+                                server.telemetry(),
+                                "policy_accepted",
+                                rejection.into_error(),
+                            )
+                        })?;
                     server
                         .serve_io_without_connection_limit(stream, connection)
                         .await
@@ -511,7 +519,9 @@ where
                             let _policy_permit =
                                 crate::policy::accept(server.protocol(), &connection, server.telemetry()).await?;
                             let mut connection = connection;
-                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(nacelle_core::policy::Rejection::into_error)?;
+                            let _accepted_lease = server.policies().accepted(&mut connection).await.map_err(|rejection| {
+                                crate::policies::reject_connection(server.protocol(), &connection, server.telemetry(), "policy_accepted", rejection.into_error())
+                            })?;
                             server.serve_io_without_connection_limit(stream, connection).await
 
                             }).await.map_err(nacelle_core::policy::Rejection::into_error)?

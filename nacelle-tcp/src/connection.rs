@@ -425,20 +425,24 @@ where
         .policy()
         .transport_ready(&connection)
         .await
-        .inspect_err(|_error| {
-            crate::policy::record_error(
+        .map_err(|error| {
+            crate::policies::reject_connection(
                 protocol.deref(),
                 &connection,
                 &telemetry,
                 "policy_transport_ready",
-                _error,
-            );
-            telemetry.connection_rejected(connection.transport, "policy");
+                error,
+            )
         })?;
-    let _ready_lease = policies
-        .ready(&mut connection)
-        .await
-        .map_err(Rejection::into_error)?;
+    let _ready_lease = policies.ready(&mut connection).await.map_err(|rejection| {
+        crate::policies::reject_connection(
+            protocol.deref(),
+            &connection,
+            &telemetry,
+            "policy_transport_ready",
+            rejection.into_error(),
+        )
+    })?;
     let mut response_delivery = ResponseDelivery::new(&config);
     let transport = connection.transport;
     let connection_info = ConnectionInfo::from(&connection);
@@ -501,7 +505,7 @@ where
                             )
                             .await
                             .inspect_err(|error| {
-                                crate::policy::record_error(
+                                crate::policies::record_error(
                                     protocol.deref(),
                                     &connection,
                                     &telemetry,
@@ -637,7 +641,7 @@ where
                                 can_respond = false;
                             }
                             legacy_policy_permit = Some(result.inspect_err(|error| {
-                                crate::policy::record_error(
+                                crate::policies::record_error(
                                     protocol.deref(),
                                     &connection,
                                     &telemetry,

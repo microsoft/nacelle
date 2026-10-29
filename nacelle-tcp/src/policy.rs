@@ -6,7 +6,7 @@ use bytes::Bytes;
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::ConnectionInfo;
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
-use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 
 use crate::protocol::{FrameBuffer, Protocol, TcpCompletion};
 
@@ -206,24 +206,6 @@ where
     }
 }
 
-pub(crate) fn record_error<P: Protocol, Observer: NacelleTelemetryObserver>(
-    protocol: &P,
-    connection: &NacelleConnectionMeta,
-    telemetry: &NacelleTelemetry<Observer>,
-    stage: &'static str,
-    error: &NacelleError,
-) {
-    if telemetry.context_metrics_enabled() {
-        let context = NacelleMetricsContext::new(
-            connection.transport,
-            connection.listener.clone(),
-            protocol.name(),
-            connection.tls.as_ref().map_or("none", |tls| tls.provider),
-        );
-        telemetry.operation_error(&context, stage, error);
-    }
-}
-
 pub(crate) async fn accept<P: Protocol, Observer: NacelleTelemetryObserver>(
     protocol: &P,
     connection: &NacelleConnectionMeta,
@@ -233,8 +215,13 @@ pub(crate) async fn accept<P: Protocol, Observer: NacelleTelemetryObserver>(
         .policy()
         .accepted(connection)
         .await
-        .inspect_err(|error| {
-            record_error(protocol, connection, telemetry, "policy_accepted", error);
-            telemetry.connection_rejected(connection.transport, "policy");
+        .map_err(|error| {
+            crate::policies::reject_connection(
+                protocol,
+                connection,
+                telemetry,
+                "policy_accepted",
+                error,
+            )
         })
 }

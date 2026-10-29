@@ -4,16 +4,48 @@ use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{ConnectionContext, ConnectionInfo};
 use nacelle_core::policy::{
     Admission, Cancellation, Chain, Control, LocalAdmission, LocalSocketAdmission, NoControl,
     NoPolicy, PolicyLease, Rejection, SocketAdmission,
 };
 use nacelle_core::request::NacelleConnectionMeta;
-use nacelle_core::telemetry::NacelleTelemetryObserver;
+use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 use tokio::io::AsyncWrite;
 
 use crate::connection::checkpoint::{Combine, Empty, FlushMode, Io, Mode, Slot};
+use crate::protocol::Protocol;
+
+pub(crate) fn record_error<P: Protocol, Observer: NacelleTelemetryObserver>(
+    protocol: &P,
+    connection: &NacelleConnectionMeta,
+    telemetry: &NacelleTelemetry<Observer>,
+    stage: &'static str,
+    error: &NacelleError,
+) {
+    if telemetry.context_metrics_enabled() {
+        let context = NacelleMetricsContext::new(
+            connection.transport,
+            connection.listener.clone(),
+            protocol.name(),
+            connection.tls_label(),
+        );
+        telemetry.operation_error(&context, stage, error);
+    }
+}
+
+pub(crate) fn reject_connection<P: Protocol, Observer: NacelleTelemetryObserver>(
+    protocol: &P,
+    connection: &NacelleConnectionMeta,
+    telemetry: &NacelleTelemetry<Observer>,
+    stage: &'static str,
+    error: NacelleError,
+) -> NacelleError {
+    record_error(protocol, connection, telemetry, stage, &error);
+    telemetry.connection_rejected(connection.transport, "policy");
+    error
+}
 
 /// Read-only accepted or negotiated transport metadata.
 pub struct TcpTransport<'a> {

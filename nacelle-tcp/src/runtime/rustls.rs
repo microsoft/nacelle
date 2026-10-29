@@ -164,11 +164,18 @@ where
                         )
                         .await?;
                         let mut connection = connection;
-                        let _accepted_lease = server
-                            .policies()
-                            .accepted(&mut connection)
-                            .await
-                            .map_err(nacelle_core::policy::Rejection::into_error)?;
+                        let _accepted_lease =
+                            server.policies().accepted(&mut connection).await.map_err(
+                                |rejection| {
+                                    crate::policies::reject_connection(
+                                        server.protocol(),
+                                        &connection,
+                                        server.telemetry(),
+                                        "policy_accepted",
+                                        rejection.into_error(),
+                                    )
+                                },
+                            )?;
                         let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                         let stream =
                             match tokio::time::timeout(handshake_timeout, acceptor.accept(stream))

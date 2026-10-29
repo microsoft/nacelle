@@ -143,6 +143,13 @@ connection rejection close the connection without a protocol response. After
 response commitment or during eviction, the transport closes rather than sending
 a second response.
 
+TCP accepted and transport-ready rejections each emit one `ConnectionRejected`
+observer event with reason `policy`, including when metrics are disabled. When
+error metrics are enabled, they also record the mapped error at
+`policy_accepted` or `policy_transport_ready` and increment the connection
+rejection counter. The mapped error retains the policy's static reason.
+These early rejections do not emit connection-open or connection-close events.
+
 For a failed policy delivery barrier or final flush after rejection, request
 response-size metrics count the current response's cumulative written bytes,
 excluding earlier coalesced responses. If no current response has been encoded,
