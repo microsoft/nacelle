@@ -1033,6 +1033,589 @@ struct PendingFlushIo {
     shutdowns: Arc<AtomicUsize>,
 }
 
+struct YieldOnSecond {
+    enabled: bool,
+    entries: Arc<AtomicUsize>,
+}
+
+impl<I: ?Sized + Send> Admission<I> for YieldOnSecond {
+    type Lease = ();
+
+    async fn enter<'a>(&'a self, _: &'a mut I) -> Result<(), Rejection> {
+        let second = self.entries.fetch_add(1, Ordering::SeqCst) == 1;
+        if self.enabled && second {
+            tokio::task::yield_now().await;
+        }
+        Ok(())
+    }
+}
+
+struct CheckpointCase {
+    body_mode: TcpRequestBodyMode,
+    write_policy: ResponseWritePolicy,
+    write_capacity: usize,
+    fragmented_head: bool,
+}
+
+async fn assert_checkpoint_full_duplex<P, Policies>(
+    protocol: P,
+    policies: Policies,
+    case: CheckpointCase,
+    before_entries: Arc<AtomicUsize>,
+    active: Arc<AtomicUsize>,
+) where
+    P: crate::protocol::SharedProtocol<
+            Request = Cell<u8>,
+            Response = TcpResponse,
+            ConnectionState = (),
+            ResponseContext = (),
+        >,
+    Policies: SharedTcpPolicySet<Cell<u8>, Arc<()>> + Send + Sync,
+{
+    let CheckpointCase {
+        body_mode,
+        write_policy,
+        write_capacity,
+        fragmented_head,
+    } = case;
+    let handler_active = active.clone();
+    let handled = Arc::new(AtomicUsize::new(0));
+    let handler_done = handled.clone();
+    let runtime = NacelleRuntimeState::new(NacelleLimits::default().without_handler_timeout());
+    let server = TcpServer::<P>::builder()
+        .protocol(protocol)
+        .handler(handler_fn(move |mut context: TcpRequestContext<P>| {
+            let active = handler_active.clone();
+            let done = handler_done.clone();
+            async move {
+                if context.request().head.get() == 1 {
+                    return context
+                        .respond(TcpResponse::bytes(Bytes::from_static(&[b'p'; 16])))
+                        .await;
+                }
+                let mut received = 0;
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    received += chunk?.len();
+                }
+                assert_eq!(received, 64);
+                assert_eq!(active.load(Ordering::SeqCst), 2);
+                done.store(1, Ordering::SeqCst);
+                context.respond(TcpResponse::bytes("ok")).await
+            }
+        }))
+        .runtime_state(runtime.clone())
+        .tcp_limits(crate::limits::NacelleTcpLimits::default().without_write_timeout())
+        .tcp_config(
+            NacelleTcpConfig::default()
+                .with_request_body_mode(body_mode)
+                .with_request_body_chunk_size(1)
+                .with_request_body_channel_capacity(1)
+                .with_response_write_policy(write_policy),
+        )
+        .policies(policies)
+        .build()
+        .unwrap();
+    let (mut client, stream) = tokio::io::duplex(8);
+    let stream = tokio::io::BufStream::with_capacity(8, write_capacity, stream);
+    let heads = if fragmented_head {
+        &b"\x01\x00\x02"[..]
+    } else {
+        &b"\x01\x00\x02\x40"[..]
+    };
+    client.write_all(heads).await.unwrap();
+    let task = tokio::spawn(async move { server.serve_io(stream).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        if fragmented_head {
+            wait_for(&before_entries, 2).await;
+            client.write_all(&[64]).await.unwrap();
+        }
+        client.write_all(&[b'x'; 64]).await.unwrap();
+        wait_for(&handled, 1).await;
+        client.shutdown().await.unwrap();
+        let mut responses = Vec::new();
+        client.read_to_end(&mut responses).await.unwrap();
+        let mut expected = vec![b'p'; 16];
+        expected.extend_from_slice(b"ok");
+        assert_eq!(responses, expected);
+        task.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "admitted checkpoint blocked body input: {body_mode:?}, {write_policy:?}, \
+             write_capacity={write_capacity}, fragmented_head={fragmented_head}"
+        )
+    });
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.active_connections(), 0);
+    assert_eq!(runtime.active_requests(), 0);
+    assert_eq!(runtime.active_streaming_tasks(), 0);
+    assert_eq!(before_entries.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_static_checkpoints_preserve_full_duplex_progress() {
+    for checkpoint in ["before", "head"] {
+        for body_mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+            for (write_policy, write_capacity, fragmented_head) in [
+                (ResponseWritePolicy::CoalesceBuffered, 0, false),
+                (ResponseWritePolicy::Immediate, 32, false),
+                (ResponseWritePolicy::CoalesceBuffered, 0, true),
+                (ResponseWritePolicy::Immediate, 32, true),
+            ] {
+                if fragmented_head && checkpoint != "before" {
+                    continue;
+                }
+                let active = Arc::new(AtomicUsize::new(0));
+                let before_entries = Arc::new(AtomicUsize::new(0));
+                let policy = |stage| YieldOnSecond {
+                    enabled: checkpoint == stage,
+                    entries: if stage == "before" {
+                        before_entries.clone()
+                    } else {
+                        Arc::new(AtomicUsize::new(0))
+                    },
+                };
+                assert_checkpoint_full_duplex(
+                    StaticProtocol(PhantomData),
+                    TcpPolicies::new()
+                        .on_transport_ready(ResourcePolicy(active.clone()))
+                        .before_request(policy("before"))
+                        .on_request_head(policy("head"))
+                        .around_handler(ResourcePolicy(active.clone())),
+                    CheckpointCase {
+                        body_mode,
+                        write_policy,
+                        write_capacity,
+                        fragmented_head,
+                    },
+                    before_entries,
+                    active,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_checkpoint_then_body_failure_does_not_restart_delivery() {
+    for checkpoint in ["before", "head"] {
+        for body_mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+            for body_timeout in [false, true] {
+                let active = Arc::new(AtomicUsize::new(0));
+                let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let flushes = Arc::new(AtomicUsize::new(0));
+                let shutdowns = Arc::new(AtomicUsize::new(0));
+                let runtime = NacelleRuntimeState::default();
+                let policy = |stage| YieldOnSecond {
+                    enabled: checkpoint == stage,
+                    entries: Arc::new(AtomicUsize::new(0)),
+                };
+                let server = TcpServer::<StaticProtocol>::builder()
+                    .protocol(StaticProtocol(PhantomData))
+                    .handler(handler_fn(
+                        |context: TcpRequestContext<StaticProtocol>| async move {
+                            context.respond(TcpResponse::bytes("prev")).await
+                        },
+                    ))
+                    .runtime_state(runtime.clone())
+                    .tcp_limits(
+                        crate::limits::NacelleTcpLimits::default()
+                            .with_read_timeout(Duration::from_secs(1))
+                            .without_write_timeout()
+                            .without_shutdown_timeout(),
+                    )
+                    .tcp_config(
+                        NacelleTcpConfig::default()
+                            .with_request_body_mode(body_mode)
+                            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                    )
+                    .policies(
+                        TcpPolicies::new()
+                            .on_transport_ready(ResourcePolicy(active.clone()))
+                            .before_request(policy("before"))
+                            .on_request_head(policy("head")),
+                    )
+                    .build()
+                    .unwrap();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    server.serve_io(StreamingBodyFailureIo {
+                        headers_read: false,
+                        body_failed: false,
+                        body_timeout,
+                        body_waker: None,
+                        output: output.clone(),
+                        flushes: flushes.clone(),
+                        shutdowns: shutdowns.clone(),
+                    }),
+                )
+                .await
+                .expect("body failure must terminate the saved delivery operation");
+                if body_timeout {
+                    assert!(matches!(
+                        result,
+                        Err(NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead))
+                    ));
+                } else {
+                    assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
+                }
+                assert_eq!(&*output.lock().unwrap(), b"pr");
+                assert_eq!(flushes.load(Ordering::SeqCst), 0);
+                assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+                assert_eq!(active.load(Ordering::SeqCst), 0);
+                assert_eq!(runtime.active_connections(), 0);
+                assert_eq!(runtime.active_requests(), 0);
+                assert_eq!(runtime.active_streaming_tasks(), 0);
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_pre_head_wait_keeps_read_deadline_and_skips_interrupted_cleanup() {
+    struct BlockedIo(Arc<AtomicUsize>);
+
+    impl AsyncRead for BlockedIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for BlockedIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    let writes_or_shutdowns = Arc::new(AtomicUsize::new(0));
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |_: TcpRequestContext<PhaseProtocol>| async move {
+                panic!("a silent peer must not reach the handler")
+            },
+        ))
+        .tcp_limits(
+            crate::limits::NacelleTcpLimits::default()
+                .with_idle_timeout(Duration::from_secs(1))
+                .without_write_timeout()
+                .without_shutdown_timeout(),
+        )
+        .policies(TcpPolicies::new().before_request(YieldingAdmission(true)))
+        .build()
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.serve_io(BlockedIo(writes_or_shutdowns.clone())),
+    )
+    .await
+    .expect("a saved flush must not block the configured read deadline");
+    assert!(matches!(
+        result,
+        Err(NacelleError::Timeout(NacelleTimeoutReason::Idle))
+    ));
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    assert_eq!(writes_or_shutdowns.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn successful_pre_head_wait_then_decode_failure_skips_interrupted_cleanup() {
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn(
+            |context: TcpRequestContext<PhaseProtocol>| async move {
+                context.respond(TcpResponse::bytes("prev")).await
+            },
+        ))
+        .tcp_limits(
+            crate::limits::NacelleTcpLimits::default()
+                .without_write_timeout()
+                .without_shutdown_timeout(),
+        )
+        .tcp_config(
+            NacelleTcpConfig::default()
+                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+        )
+        .policies(TcpPolicies::new().before_request(YieldOnSecond {
+            enabled: true,
+            entries: Arc::new(AtomicUsize::new(0)),
+        }))
+        .build()
+        .unwrap();
+    let (reader, writes) = io(&[0, u8::MAX]);
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        server.serve_io(PendingFlushIo {
+            reader,
+            shutdowns: shutdowns.clone(),
+        }),
+    )
+    .await
+    .expect("decode failure must terminate the saved delivery operation");
+    assert!(matches!(result, Err(NacelleError::InvalidFrame(_))));
+    assert_eq!(*writes.lock().unwrap(), [b"prev".to_vec()]);
+    assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(feature = "policies")]
+struct YieldingLegacyCheckpoint {
+    before: YieldOnSecond,
+    head: YieldOnSecond,
+    body: YieldOnSecond,
+}
+
+#[cfg(feature = "policies")]
+impl crate::policy::TcpLifecyclePolicy<Cell<u8>, ()> for YieldingLegacyCheckpoint {
+    type Permit = ();
+
+    async fn before_request(&self, _: &ConnectionInfo, _: &()) -> Result<Option<()>, NacelleError> {
+        Admission::enter(&self.before, &mut ())
+            .await
+            .map_err(Rejection::into_error)?;
+        Ok(None)
+    }
+
+    fn request_head(
+        &self,
+        _: &Cell<u8>,
+        _: usize,
+        _: &ConnectionInfo,
+        _: &(),
+    ) -> impl Future<Output = Result<Option<()>, NacelleError>> + Send {
+        let admission = &self.head;
+        async move {
+            Admission::enter(admission, &mut ())
+                .await
+                .map_err(Rejection::into_error)?;
+            Ok(None)
+        }
+    }
+
+    async fn body_complete(
+        &self,
+        _: &NacelleConnectionMeta,
+        _: usize,
+    ) -> Result<Option<()>, NacelleError> {
+        Admission::enter(&self.body, &mut ())
+            .await
+            .map_err(Rejection::into_error)?;
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "policies")]
+struct RejectDuringLegacyFlush {
+    buffered: bool,
+    entries: AtomicUsize,
+}
+
+#[cfg(feature = "policies")]
+impl crate::policy::TcpLifecyclePolicy<Cell<u8>, ()> for RejectDuringLegacyFlush {
+    type Permit = ();
+
+    async fn before_request(&self, _: &ConnectionInfo, _: &()) -> Result<Option<()>, NacelleError> {
+        if self.entries.fetch_add(1, Ordering::SeqCst) == usize::from(self.buffered) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Other("test_rejection"),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "policies")]
+fn assert_single_operation_phase(recorder: &DebuggingRecorder, phase: &str) {
+    let errors: Vec<_> = recorder
+        .snapshotter()
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter(|(key, _, _, _)| key.key().name() == "server.errors")
+        .collect();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .0
+            .key()
+            .labels()
+            .any(|label| { label.key() == "phase" && label.value() == phase })
+    );
+    assert_eq!(errors[0].3, metrics_util::debugging::DebugValue::Counter(1));
+}
+
+#[cfg(feature = "policies")]
+#[test]
+fn legacy_rejection_during_blocked_flush_keeps_policy_error_origin() {
+    type P = crate::policy::WithTcpPolicy<StaticProtocol, RejectDuringLegacyFlush>;
+    for buffered in [false, true] {
+        let recorder = DebuggingRecorder::new();
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        metrics::with_local_recorder(&recorder, || {
+            let server = TcpServer::<P>::builder()
+                .protocol(
+                    StaticProtocol(PhantomData).with_policy(RejectDuringLegacyFlush {
+                        buffered,
+                        entries: AtomicUsize::new(0),
+                    }),
+                )
+                .handler(handler_fn(|context: TcpRequestContext<P>| async move {
+                    context.respond(TcpResponse::bytes("prev")).await
+                }))
+                .tcp_limits(
+                    crate::limits::NacelleTcpLimits::default()
+                        .without_write_timeout()
+                        .without_shutdown_timeout(),
+                )
+                .tcp_config(
+                    NacelleTcpConfig::default()
+                        .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                )
+                .build()
+                .unwrap();
+            let (reader, writes) = io(&[1, 0, 2, 0]);
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .start_paused(true)
+                .build()
+                .unwrap()
+                .block_on(async {
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        server.serve_io(PendingFlushIo {
+                            reader,
+                            shutdowns: shutdowns.clone(),
+                        }),
+                    )
+                    .await
+                });
+            assert!(matches!(result, Ok(Err(NacelleError::ResourceLimit(_)))));
+            assert_eq!(writes.lock().unwrap().len(), usize::from(buffered));
+        });
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+        assert_single_operation_phase(&recorder, "policy_before_request");
+    }
+}
+
+#[cfg(feature = "policies")]
+#[test]
+fn buffered_legacy_delivery_failure_is_not_a_policy_error() {
+    type P = crate::policy::WithTcpPolicy<StaticProtocol, YieldingLegacyCheckpoint>;
+    let recorder = DebuggingRecorder::new();
+    metrics::with_local_recorder(&recorder, || {
+        let policy = |enabled| YieldOnSecond {
+            enabled,
+            entries: Arc::new(AtomicUsize::new(0)),
+        };
+        let server = TcpServer::<P>::builder()
+            .protocol(
+                StaticProtocol(PhantomData).with_policy(YieldingLegacyCheckpoint {
+                    before: policy(true),
+                    head: policy(false),
+                    body: policy(false),
+                }),
+            )
+            .handler(handler_fn(|context: TcpRequestContext<P>| async move {
+                context.respond(TcpResponse::bytes("prev")).await
+            }))
+            .tcp_config(
+                NacelleTcpConfig::default()
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .build()
+            .unwrap();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(server.serve_io(DeliveryFailureIo {
+                reader: io(&[1, 0, 2, 0]).0,
+                remaining: 2,
+                fail_flush: false,
+            }));
+        assert!(matches!(result, Err(NacelleError::Io(_))));
+    });
+    assert_single_operation_phase(&recorder, "socket_write");
+}
+
+#[cfg(feature = "policies")]
+#[tokio::test(start_paused = true)]
+async fn successful_legacy_checkpoints_preserve_full_duplex_progress() {
+    for checkpoint in ["before", "head", "body"] {
+        for body_mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+            for (write_policy, write_capacity, fragmented_head) in [
+                (ResponseWritePolicy::CoalesceBuffered, 0, false),
+                (ResponseWritePolicy::Immediate, 32, false),
+                (ResponseWritePolicy::CoalesceBuffered, 0, true),
+                (ResponseWritePolicy::Immediate, 32, true),
+            ] {
+                if fragmented_head && checkpoint != "before" {
+                    continue;
+                }
+                let active = Arc::new(AtomicUsize::new(0));
+                let before_entries = Arc::new(AtomicUsize::new(0));
+                let policy = |stage| YieldOnSecond {
+                    enabled: checkpoint == stage,
+                    entries: if stage == "before" {
+                        before_entries.clone()
+                    } else {
+                        Arc::new(AtomicUsize::new(0))
+                    },
+                };
+                assert_checkpoint_full_duplex(
+                    StaticProtocol::<()>(PhantomData).with_policy(YieldingLegacyCheckpoint {
+                        before: policy("before"),
+                        head: policy("head"),
+                        body: policy("body"),
+                    }),
+                    TcpPolicies::new()
+                        .on_transport_ready(ResourcePolicy(active.clone()))
+                        .around_handler(ResourcePolicy(active.clone())),
+                    CheckpointCase {
+                        body_mode,
+                        write_policy,
+                        write_capacity,
+                        fragmented_head,
+                    },
+                    before_entries,
+                    active,
+                )
+                .await;
+            }
+        }
+    }
+}
+
 impl AsyncRead for PendingFlushIo {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -1502,7 +2085,11 @@ async fn policy_deadline_is_polled_during_blocked_flush() {
     .await;
     assert!(matches!(result, Err(NacelleError::Timeout(_))));
     assert_eq!(started.elapsed(), Duration::from_secs(1));
-    assert!(failure.is_some());
+    assert!(
+        failure.is_none(),
+        "policy rejection is not a delivery failure"
+    );
+    assert!(delivery.is_interrupted());
     let mut input = ();
     let next = Admission::enter(&policy, &mut input);
     tokio::pin!(next);

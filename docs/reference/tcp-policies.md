@@ -83,8 +83,14 @@ synchronously before constructing an asynchronous policy wait.
 Acquired request permits create a response-delivery barrier: pending response
 bytes are flushed before releasing request permits. This can reduce response
 coalescing compared with the no-op policy. Even a policy without permits may
-wait before the next pipelined request; pending responses are flushed before
-waiting so they cannot be stranded behind admission for the next request.
+wait before the next pipelined request; earlier output is delivered concurrently
+with the wait so it cannot be stranded behind admission for the next request.
+If admission succeeds while output is blocked, head/body reads and the handler
+can continue for buffered and streaming request bodies. Delivery retains its
+partial-write position and original write/flush deadlines across those steps.
+The current response waits for that earlier output to finish, preserving order.
+This applies to `before_request`, `request_head`, and buffered `body_complete`
+waits; streaming `body_complete` runs alongside the handler and delivery.
 
 Policy waits are not covered by the socket-read, TLS-handshake, or handler
 deadlines: those operations have not started at their corresponding admission

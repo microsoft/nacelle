@@ -72,6 +72,7 @@ pub struct Io<'a, W, Observer> {
     pub(super) telemetry: &'a NacelleTelemetry<Observer>,
     pub(super) metrics: Option<&'a NacelleMetricsContext>,
     pub(super) phase_duration: bool,
+    // Delivery errors only; input/admission cancellation uses `interrupt`.
     pub(super) failure: &'a mut Option<usize>,
 }
 
@@ -264,45 +265,75 @@ where
     tokio::pin!(admission);
     let first = std::future::poll_fn(|cx| Poll::Ready(admission.as_mut().poll(cx))).await;
     match first {
-        Poll::Ready(result) => result,
-        Poll::Pending => {
-            let failure = io.failure;
-            let mut interrupted = false;
-            let result = {
-                let flushing = flush_delivery(Io {
-                    delivery: &mut *io.delivery,
-                    failure: &mut *failure,
-                    ..io
-                });
-                tokio::pin!(flushing);
-                tokio::select! {
-                    biased;
-                    result = &mut flushing => {
-                        result?;
-                        admission.await
-                    }
-                    result = &mut admission => {
-                        match result {
-                            Ok(lease) => {
-                                flushing.await?;
-                                Ok(lease)
-                            }
-                            Err(error) => {
-                                interrupted = true;
-                                Err(error)
-                            }
-                        }
-                    }
-                }
-            };
-            if interrupted {
-                // A cancelled flush may have written a response prefix.
+        Poll::Ready(result) => {
+            if result.is_err() && io.delivery.checkpoint_flush_pending() {
                 io.delivery.interrupt();
-                *failure = Some(0);
             }
             result
         }
+        Poll::Pending => progress(admission, io, std::convert::identity).await,
     }
+}
+
+/// Continue input alongside an admission-started flush without delaying input
+/// completion until the peer accepts earlier output.
+pub(super) async fn continue_input<F, T, E, W, Observer, Map>(
+    input: F,
+    io: Io<'_, W, Observer>,
+    map_delivery_error: Map,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
+    Map: FnOnce(NacelleError) -> E,
+{
+    if !io.delivery.checkpoint_flush_pending() {
+        return input.await;
+    }
+    progress(input, io, map_delivery_error).await
+}
+
+async fn progress<F, T, E, W, Observer, Map>(
+    input: F,
+    io: Io<'_, W, Observer>,
+    map_delivery_error: Map,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    W: AsyncWrite + Unpin,
+    Observer: NacelleTelemetryObserver,
+    Map: FnOnce(NacelleError) -> E,
+{
+    let result = {
+        let flushing = io.delivery.flush_checkpoint(
+            io.writer,
+            io.limits,
+            io.telemetry,
+            io.metrics,
+            io.phase_duration,
+        );
+        tokio::pin!(flushing);
+        tokio::pin!(input);
+        tokio::select! {
+            biased;
+            result = &mut flushing => {
+                match result {
+                    Ok(_) => input.await,
+                    Err(error) => {
+                        *io.failure = Some(error.delivered_bytes);
+                        Err(map_delivery_error(error.error))
+                    }
+                }
+            }
+            result = &mut input => result,
+        }
+    };
+    if result.is_err() && (io.delivery.checkpoint_flush_pending() || io.failure.is_some()) {
+        // Only successful input may hand off the saved flush operation.
+        io.delivery.interrupt();
+    }
+    result
 }
 
 async fn flush_delivery<W, Observer>(io: Io<'_, W, Observer>) -> Result<(), NacelleError>

@@ -159,6 +159,7 @@ pub(super) fn map_message_read_error(error: MessageReadError<NacelleError>) -> N
 pub(super) struct MessageReadFailure {
     error: NacelleError,
     can_respond: bool,
+    phase: Option<&'static str>,
 }
 
 impl MessageReadFailure {
@@ -166,6 +167,7 @@ impl MessageReadFailure {
         Self {
             error,
             can_respond: false,
+            phase: None,
         }
     }
 
@@ -173,12 +175,17 @@ impl MessageReadFailure {
         Self {
             error,
             can_respond: true,
+            phase: Some("policy_before_request"),
         }
     }
 
     pub(super) fn transport(error: NacelleError) -> Self {
         let can_respond = matches!(error, NacelleError::Timeout(_));
-        Self { error, can_respond }
+        Self {
+            error,
+            can_respond,
+            phase: Some("socket_read"),
+        }
     }
 
     pub(super) fn from_message_read(error: MessageReadError<NacelleError>) -> Self {
@@ -186,11 +193,16 @@ impl MessageReadFailure {
         Self {
             error: map_message_read_error(error),
             can_respond,
+            phase: Some("socket_read"),
         }
     }
 
     pub(super) const fn should_encode(&self) -> bool {
         self.can_respond
+    }
+
+    pub(super) const fn operation_phase(&self) -> Option<&'static str> {
+        self.phase
     }
 
     pub(super) fn into_error(self) -> NacelleError {
@@ -208,10 +220,25 @@ mod tests {
         let timeout =
             MessageReadFailure::transport(NacelleError::Timeout(NacelleTimeoutReason::Idle));
         assert!(timeout.should_encode());
+        assert_eq!(timeout.operation_phase(), Some("socket_read"));
         let io = MessageReadFailure::from_message_read(MessageReadError::Io(std::io::Error::new(
             std::io::ErrorKind::ConnectionReset,
             "peer reset",
         )));
         assert!(!io.should_encode());
+        assert_eq!(io.operation_phase(), Some("socket_read"));
+    }
+
+    #[test]
+    fn admission_failures_preserve_policy_or_delivery_error_attribution() {
+        let policy = MessageReadFailure::policy(NacelleError::ResourceLimit(
+            nacelle_core::NacelleResourceLimitReason::Other("test_policy"),
+        ));
+        assert!(policy.should_encode());
+        assert_eq!(policy.operation_phase(), Some("policy_before_request"));
+        let delivery =
+            MessageReadFailure::delivery(NacelleError::Timeout(NacelleTimeoutReason::TcpWrite));
+        assert!(!delivery.should_encode());
+        assert_eq!(delivery.operation_phase(), None);
     }
 }

@@ -110,6 +110,14 @@ time and waiter count. The decorator first polls the policy; immediately ready
 checks do not create a deadline. Saturated waiter capacity rejects immediately.
 Existing finite connection/request bounds must also cover waiting work.
 
+On TCP, a pending checkpoint starts delivery of earlier output alongside the
+admission wait. Successful admission lets the next head/body read and handler
+progress even if that output is still blocked, for both buffered and streaming
+request bodies. The same delivery operation retains its byte offset and original
+write/flush deadlines; it completes before the current response is encoded, so
+responses remain ordered. Immediately ready decision-only policies do not start
+this delivery operation or change batching.
+
 If pending response delivery is cancelled, including by admission rejection or
 a streaming-body failure, Nacelle drops the connection without retrying delivery
 or graceful writer shutdown. Cleanup must not replay a partially written response

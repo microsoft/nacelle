@@ -504,15 +504,6 @@ where
                                 },
                             )
                             .await
-                            .inspect_err(|error| {
-                                crate::policies::record_error(
-                                    protocol.deref(),
-                                    &connection,
-                                    &telemetry,
-                                    "policy_before_request",
-                                    error,
-                                );
-                            })
                             .map_err(|error| {
                                 if failure.is_some() {
                                     framing::MessageReadFailure::delivery(error)
@@ -548,7 +539,21 @@ where
                                 })?,
                         );
                     }
-                    read_message_with_timeout(&mut request_reader, &tcp_limits).await
+                    let mut failure = None;
+                    checkpoint::continue_input(
+                        read_message_with_timeout(&mut request_reader, &tcp_limits),
+                        checkpoint::Io {
+                            writer: &mut writer,
+                            delivery: &mut response_delivery,
+                            limits: &tcp_limits,
+                            telemetry: &telemetry,
+                            metrics: connection_metrics.as_ref(),
+                            phase_duration: telemetry_plan.phase_duration,
+                            failure: &mut failure,
+                        },
+                        framing::MessageReadFailure::delivery,
+                    )
+                    .await
                 }
                 .await
             };
@@ -556,10 +561,12 @@ where
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,
                 Err(failure) => {
-                    let should_encode = failure.should_encode();
+                    let should_encode =
+                        failure.should_encode() && !response_delivery.is_interrupted();
+                    let phase = failure.operation_phase();
                     let error = failure.into_error();
-                    if let Some(connection_metrics) = &connection_metrics {
-                        telemetry.operation_error(connection_metrics, "socket_read", &error);
+                    if let (Some(connection_metrics), Some(phase)) = (&connection_metrics, phase) {
+                        telemetry.operation_error(connection_metrics, phase, &error);
                     }
                     if should_encode
                         && let Err(delivery_error) = write_error::<P, W, Observer>(
@@ -641,13 +648,15 @@ where
                                 can_respond = false;
                             }
                             legacy_policy_permit = Some(result.inspect_err(|error| {
-                                crate::policies::record_error(
-                                    protocol.deref(),
-                                    &connection,
-                                    &telemetry,
-                                    "policy_before_request",
-                                    error,
-                                );
+                                if failure.is_none() {
+                                    crate::policies::record_error(
+                                        protocol.deref(),
+                                        &connection,
+                                        &telemetry,
+                                        "policy_before_request",
+                                        error,
+                                    );
+                                }
                             })?);
                         }
                         if !request_reader.buffer().is_empty() {
@@ -680,6 +689,10 @@ where
                 decoded = match buffered_result {
                     Ok(decoded) => decoded,
                     Err(error) => {
+                        if response_delivery.checkpoint_flush_pending() {
+                            response_delivery.interrupt();
+                        }
+                        can_respond &= !response_delivery.is_interrupted();
                         if !can_respond {
                             return Err(error);
                         }
@@ -703,16 +716,18 @@ where
                     }
                 };
             }
-            response_delivery
-                .flush(
-                    &mut writer,
-                    &tcp_limits,
-                    &telemetry,
-                    connection_metrics.as_ref(),
-                    telemetry_plan.phase_duration,
-                )
-                .await
-                .map_err(|error| error.error)?;
+            if !response_delivery.checkpoint_flush_pending() {
+                response_delivery
+                    .flush(
+                        &mut writer,
+                        &tcp_limits,
+                        &telemetry,
+                        connection_metrics.as_ref(),
+                        telemetry_plan.phase_duration,
+                    )
+                    .await
+                    .map_err(|error| error.error)?;
+            }
         }
 
         Ok(())

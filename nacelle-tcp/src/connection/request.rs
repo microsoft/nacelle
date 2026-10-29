@@ -442,11 +442,15 @@ where
             .await
         } else if config.request_body_mode == TcpRequestBodyMode::Buffered {
             let body_started = start_tcp_phase(telemetry_plan.phase_duration);
-            let body_result = read_buffered_request_body(
-                reader,
-                read_buf,
-                decoded.body_len,
-                tcp_limits,
+            let body_result = super::checkpoint::continue_input(
+                read_buffered_request_body(reader, read_buf, decoded.body_len, tcp_limits),
+                PolicyIo {
+                    writer, delivery, limits: tcp_limits, telemetry,
+                    metrics: metrics_context,
+                    phase_duration: telemetry_plan.phase_duration,
+                    failure: &mut policy_flush_failure,
+                },
+                std::convert::identity,
             )
             .await
             .inspect_err(|error| {
@@ -697,6 +701,9 @@ where
             request_metrics.complete("ok", response_bytes);
         }
         Err(error) => {
+            if delivery.checkpoint_flush_pending() {
+                delivery.interrupt();
+            }
             record_core_request_failed(
                 telemetry,
                 core_request_events,
@@ -788,6 +795,7 @@ where
 {
     // The writer can retain earlier output even when the frame queue is empty.
     // Streaming admission and its handler must progress alongside the same flush.
+    let flush_prior_responses = flush_prior_responses || delivery.checkpoint_flush_pending();
     let handler_lease = if flush_prior_responses {
         None
     } else {
@@ -810,6 +818,7 @@ where
                 .await?,
         )
     };
+    let flush_prior_responses = flush_prior_responses || delivery.checkpoint_flush_pending();
     let handling = async {
         let _handler_lease = match handler_lease {
             Some(lease) => lease,

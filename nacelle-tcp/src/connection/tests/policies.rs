@@ -122,6 +122,156 @@ impl<Request, State> TcpLifecyclePolicy<Request, State> for RecordingPolicy {
 
 type PolicyProtocol = WithTcpPolicy<PhaseProtocol, RecordingPolicy>;
 
+struct RejectBefore {
+    admitted: usize,
+    calls: AtomicUsize,
+    timeout: bool,
+}
+
+impl TcpLifecyclePolicy<PhaseRequest, AuthState> for RejectBefore {
+    type Permit = ();
+
+    async fn before_request(
+        &self,
+        _: &ConnectionInfo,
+        _: &AuthState,
+    ) -> Result<Option<()>, NacelleError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) < self.admitted {
+            return Ok(None);
+        }
+        Err(if self.timeout {
+            NacelleError::Timeout(NacelleTimeoutReason::Other("test_before"))
+        } else {
+            NacelleError::ResourceLimit(NacelleResourceLimitReason::Other("test_before"))
+        })
+    }
+}
+
+#[test]
+fn legacy_pre_head_rejections_record_only_the_policy_phase() {
+    use metrics_util::debugging::DebugValue;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Metrics {
+        Default,
+        ErrorOnly,
+        ErrorsDisabled,
+        Disabled,
+    }
+
+    type P = WithTcpPolicy<PhaseProtocol, RejectBefore>;
+    for admitted in [0, 1] {
+        for timeout in [false, true] {
+            for mode in [
+                Metrics::Default,
+                Metrics::ErrorOnly,
+                Metrics::ErrorsDisabled,
+                Metrics::Disabled,
+            ] {
+                let recorder = DebuggingRecorder::new();
+                let handled = Arc::new(AtomicUsize::new(0));
+                let handler_calls = handled.clone();
+                let runtime = NacelleRuntimeState::default();
+                metrics::with_local_recorder(&recorder, || {
+                    let telemetry = match mode {
+                        Metrics::Default => NacelleTelemetry::new(),
+                        Metrics::ErrorOnly => NacelleTelemetry::new()
+                            .with_connection_metrics(false)
+                            .with_runtime_metrics(false)
+                            .with_request_metrics(NacelleRequestMetricsConfig {
+                                started: false,
+                                completed: false,
+                                in_flight: false,
+                                duration_ms: false,
+                                byte_counts: false,
+                            }),
+                        Metrics::ErrorsDisabled => {
+                            NacelleTelemetry::new().with_error_metrics(false)
+                        }
+                        Metrics::Disabled => NacelleTelemetry::new().with_metrics(false),
+                    };
+                    let server = TcpServer::<P>::builder()
+                        .protocol(
+                            PhaseProtocol {
+                                authenticated: true,
+                                request_wire_bytes: None,
+                                encoder_writes_then_errors: false,
+                            }
+                            .with_policy(RejectBefore {
+                                admitted,
+                                calls: AtomicUsize::new(0),
+                                timeout,
+                            }),
+                        )
+                        .handler(handler_fn(move |context: TcpRequestContext<P>| {
+                            handler_calls.fetch_add(1, Ordering::SeqCst);
+                            async move { context.respond(TcpResponse::bytes("ok")).await }
+                        }))
+                        .telemetry(telemetry)
+                        .runtime_state(runtime.clone())
+                        .build()
+                        .unwrap();
+                    let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let io = RecordingIo {
+                        input: vec![0, 0],
+                        position: 0,
+                        writes: writes.clone(),
+                    };
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                        .block_on(server.serve_io(io));
+                    let error = result.expect_err("before-request policy must reject");
+                    assert!(matches!(
+                        (&error, timeout),
+                        (
+                            NacelleError::Timeout(NacelleTimeoutReason::Other("test_before")),
+                            true
+                        ) | (
+                            NacelleError::ResourceLimit(NacelleResourceLimitReason::Other(
+                                "test_before"
+                            )),
+                            false
+                        )
+                    ));
+                    let mut expected = b"ok".repeat(admitted);
+                    expected.extend_from_slice(error.to_string().as_bytes());
+                    assert_eq!(writes.lock().unwrap().concat(), expected);
+                });
+                assert_eq!(handled.load(Ordering::SeqCst), admitted);
+                assert_eq!(runtime.active_connections(), 0);
+                assert_eq!(runtime.active_requests(), 0);
+                let snapshot = recorder.snapshotter().snapshot().into_vec();
+                let enabled = matches!(mode, Metrics::Default | Metrics::ErrorOnly);
+                for (name, expected) in [
+                    ("server.errors", usize::from(enabled)),
+                    (
+                        "server.resource_limit.rejections",
+                        usize::from(enabled && !timeout),
+                    ),
+                ] {
+                    let counters: Vec<_> = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .collect();
+                    assert_eq!(
+                        counters.len(),
+                        expected,
+                        "{name}, admitted={admitted}, timeout={timeout}, mode={mode:?}"
+                    );
+                    for (key, _, _, value) in counters {
+                        assert_eq!(*value, DebugValue::Counter(1));
+                        assert!(key.key().labels().any(|label| {
+                            label.key() == "phase" && label.value() == "policy_before_request"
+                        }));
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct WaitLater {
     body: bool,
     calls: AtomicUsize,

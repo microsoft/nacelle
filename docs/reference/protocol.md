@@ -98,8 +98,9 @@ body reaches EOF.
 `ResponseWritePolicy::Immediate` writes each completed frame immediately.
 `CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
 already-decoded requests, preserving order and rolling back only the current
-frame on encoder failure. The queue drains before reading more request-head bytes
-from the socket and before awaiting another streaming response chunk. At that
+frame on encoder failure. Normally the queue drains before reading more
+request-head bytes from the socket and before awaiting another streaming response
+chunk. At that
 boundary, the runtime also flushes the underlying `AsyncWrite`, which is required
 for buffered transports such as TLS. When the connection ends cleanly, the runtime performs a
 `shutdown_timeout`-bounded writer shutdown so TLS transports can emit
@@ -216,6 +217,12 @@ retained by the underlying writer after Nacelle's frame queue has drained.
 Blocked response writes therefore do not prevent an admitted handler from
 draining the bounded body channel. This behavior is independent of the `policies`
 feature.
+
+If a pre-head, head, or buffered-body-complete admission wait starts delivery of
+earlier output, successful admission can continue input and handler work without
+waiting for blocked output. This also applies to buffered request bodies. The
+delivery operation keeps its partial-write position and original deadlines and
+finishes before the current response is encoded; response order is unchanged.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers

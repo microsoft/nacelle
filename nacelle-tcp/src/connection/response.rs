@@ -1,5 +1,5 @@
 use bytes::BytesMut;
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::config::{NacelleTcpConfig, ResponseWritePolicy};
 use crate::limits::NacelleTcpLimits;
@@ -7,14 +7,14 @@ use crate::protocol::{
     FrameBuffer, Protocol, ResponseAbortReason, ResponseCompletionCallback,
     ResponseDeliveryOutcome, ResponseDeliveryPhase, TcpCompletion,
 };
-use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::telemetry::{NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryObserver};
 
 use super::io::{flush_with_timeout, write_all_tracked_with_timeout};
 #[cfg(test)]
 use super::metrics::TcpTelemetryPlan;
-use super::metrics::{finish_tcp_phase, record_tcp_error, start_tcp_phase};
+use super::metrics::{TcpPhaseTimer, finish_tcp_phase, record_tcp_error, start_tcp_phase};
 
 struct ResponseCompletionGuard {
     item: Option<ResponseCompletionCallback>,
@@ -108,6 +108,17 @@ pub(super) struct ResponseDelivery {
     base_capacity: usize,
     policy: ResponseWritePolicy,
     interrupted: bool,
+    checkpoint_flush: Option<CheckpointFlush>,
+}
+
+// Admission can finish while output is blocked. Keep the operation's progress
+// outside the polling future so input work can proceed without replaying bytes
+// or restarting its write/flush deadline.
+struct CheckpointFlush {
+    written: usize,
+    writing: bool,
+    deadline: Option<tokio::time::Instant>,
+    timer: TcpPhaseTimer,
 }
 
 struct FlushGuard<'a> {
@@ -130,6 +141,7 @@ impl ResponseDelivery {
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
             interrupted: false,
+            checkpoint_flush: None,
         }
     }
 
@@ -157,7 +169,12 @@ impl ResponseDelivery {
 
     pub(super) fn interrupt(&mut self) {
         self.pending.clear();
+        self.checkpoint_flush = None;
         self.interrupted = true;
+    }
+
+    pub(super) fn checkpoint_flush_pending(&self) -> bool {
+        self.checkpoint_flush.is_some()
     }
 
     pub(super) fn is_interrupted(&self) -> bool {
@@ -295,6 +312,18 @@ impl ResponseDelivery {
             completed: false,
         };
         let result = async {
+            if guard.delivery.checkpoint_flush_pending() {
+                return guard
+                    .delivery
+                    .flush_checkpoint(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        phase_duration_metrics,
+                    )
+                    .await;
+            }
             let pending_bytes = guard.delivery.pending.len();
             let delivered_bytes = if guard.delivery.pending.is_empty() {
                 guard.delivery.reset();
@@ -334,6 +363,110 @@ impl ResponseDelivery {
         .await;
         guard.completed = true;
         result
+    }
+
+    /// Poll the same admission-started operation across input checkpoints.
+    ///
+    /// Unlike `flush`, dropping this future retains its progress. Callers must
+    /// interrupt delivery on terminal input errors, and finish it before staging
+    /// any bytes belonging to the current response.
+    pub(super) async fn flush_checkpoint<W, Observer>(
+        &mut self,
+        writer: &mut W,
+        tcp_limits: &NacelleTcpLimits,
+        telemetry: &NacelleTelemetry<Observer>,
+        metrics_context: Option<&NacelleMetricsContext>,
+        phase_duration_metrics: bool,
+    ) -> Result<usize, ResponseDeliveryError>
+    where
+        W: AsyncWrite + Unpin,
+        Observer: NacelleTelemetryObserver,
+    {
+        let progress = self
+            .checkpoint_flush
+            .get_or_insert_with(|| CheckpointFlush {
+                written: 0,
+                writing: !self.pending.is_empty(),
+                deadline: tcp_limits
+                    .write_timeout
+                    .map(|timeout| tokio::time::Instant::now() + timeout),
+                timer: start_tcp_phase(phase_duration_metrics),
+            });
+        if progress.writing {
+            let pending_bytes = self.pending.len();
+            let deadline = progress.deadline;
+            let writing = async {
+                while progress.written < self.pending.len() {
+                    let written = writer
+                        .write(&self.pending[progress.written..])
+                        .await
+                        .map_err(NacelleError::from)?;
+                    if written == 0 {
+                        return Err(NacelleError::ConnectionClosed);
+                    }
+                    progress.written += written;
+                }
+                Ok(())
+            };
+            let result = match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, writing)
+                    .await
+                    .unwrap_or(Err(NacelleError::Timeout(NacelleTimeoutReason::TcpWrite))),
+                None => writing.await,
+            };
+            let progress = self
+                .checkpoint_flush
+                .take()
+                .expect("active checkpoint flush");
+            finish_tcp_phase(telemetry, metrics_context, "socket_write", progress.timer);
+            self.reset();
+            if let Err(error) = result {
+                self.interrupt();
+                record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+                return Err(ResponseDeliveryError {
+                    error,
+                    encoded_bytes: pending_bytes,
+                    delivered_bytes: progress.written,
+                    kind: ResponseDeliveryErrorKind::SocketWrite,
+                });
+            }
+            self.checkpoint_flush = Some(CheckpointFlush {
+                written: progress.written,
+                writing: false,
+                deadline: tcp_limits
+                    .write_timeout
+                    .map(|timeout| tokio::time::Instant::now() + timeout),
+                timer: start_tcp_phase(phase_duration_metrics),
+            });
+        }
+        let progress = self
+            .checkpoint_flush
+            .as_ref()
+            .expect("active checkpoint flush");
+        let flushing = writer.flush();
+        let result = match progress.deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, flushing)
+                .await
+                .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::TcpWrite))
+                .and_then(|result| result.map_err(NacelleError::from)),
+            None => flushing.await.map_err(NacelleError::from),
+        };
+        let progress = self
+            .checkpoint_flush
+            .take()
+            .expect("active checkpoint flush");
+        finish_tcp_phase(telemetry, metrics_context, "socket_write", progress.timer);
+        result.map_err(|error| {
+            self.interrupt();
+            record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+            ResponseDeliveryError {
+                error,
+                encoded_bytes: progress.written,
+                delivered_bytes: progress.written,
+                kind: ResponseDeliveryErrorKind::SocketFlush,
+            }
+        })?;
+        Ok(progress.written)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -804,6 +937,131 @@ mod tests {
     struct PartialThenFail {
         bytes_before_failure: usize,
         written: usize,
+    }
+
+    struct CheckpointWriter {
+        remaining: usize,
+        output: Vec<u8>,
+        allow_flush: bool,
+    }
+
+    impl AsyncWrite for CheckpointWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.remaining == 0 {
+                return Poll::Pending;
+            }
+            let written = bytes.len().min(self.remaining);
+            self.remaining -= written;
+            self.output.extend_from_slice(&bytes[..written]);
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            if self.allow_flush {
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    async fn assert_pending(future: impl std::future::Future) {
+        tokio::pin!(future);
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_flush_handoffs_preserve_write_and_flush_deadlines() {
+        use std::time::Duration;
+
+        for blocked_write in [true, false] {
+            let mut delivery = ResponseDelivery::new(&NacelleTcpConfig::default());
+            delivery.pending.extend_from_slice(b"prev");
+            let mut writer = CheckpointWriter {
+                remaining: if blocked_write { 2 } else { usize::MAX },
+                output: Vec::new(),
+                allow_flush: false,
+            };
+            let limits = NacelleTcpLimits::default().with_write_timeout(Duration::from_secs(5));
+            let telemetry = NacelleTelemetry::default();
+            let started = tokio::time::Instant::now();
+            for _ in 0..2 {
+                assert_pending(delivery.flush_checkpoint(
+                    &mut writer,
+                    &limits,
+                    &telemetry,
+                    None,
+                    false,
+                ))
+                .await;
+                tokio::time::advance(Duration::from_secs(1)).await;
+            }
+            let error = delivery
+                .flush(&mut writer, &limits, &telemetry, None, false)
+                .await
+                .expect_err("handoffs must retain the original deadline");
+            assert!(matches!(
+                error.error,
+                NacelleError::Timeout(NacelleTimeoutReason::TcpWrite)
+            ));
+            assert_eq!(started.elapsed(), Duration::from_secs(5));
+            assert_eq!(error.delivered_bytes, if blocked_write { 2 } else { 4 });
+            assert_eq!(
+                writer.output,
+                if blocked_write {
+                    &b"pr"[..]
+                } else {
+                    &b"prev"[..]
+                }
+            );
+            assert!(delivery.is_interrupted());
+            assert!(!delivery.checkpoint_flush_pending());
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_flush_handoffs_resume_without_replaying_the_prefix() {
+        let mut delivery = ResponseDelivery::new(&NacelleTcpConfig::default());
+        delivery.pending.extend_from_slice(b"prev");
+        let mut writer = CheckpointWriter {
+            remaining: 2,
+            output: Vec::new(),
+            allow_flush: false,
+        };
+        let limits = NacelleTcpLimits::default().without_write_timeout();
+        let telemetry = NacelleTelemetry::default();
+        assert_pending(delivery.flush_checkpoint(&mut writer, &limits, &telemetry, None, false))
+            .await;
+        assert_eq!(writer.output, b"pr");
+        writer.remaining = usize::MAX;
+        assert_pending(delivery.flush_checkpoint(&mut writer, &limits, &telemetry, None, false))
+            .await;
+        assert_eq!(writer.output, b"prev");
+        assert_pending(delivery.flush_checkpoint(&mut writer, &limits, &telemetry, None, false))
+            .await;
+        writer.allow_flush = true;
+        assert_eq!(
+            delivery
+                .flush(&mut writer, &limits, &telemetry, None, false)
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(writer.output, b"prev");
+        assert!(!delivery.is_interrupted());
+        assert!(!delivery.checkpoint_flush_pending());
     }
 
     impl AsyncWrite for RecordingWriter {
