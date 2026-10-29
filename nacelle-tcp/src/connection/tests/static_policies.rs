@@ -696,6 +696,227 @@ async fn failed_flush_before_policy_wait_does_not_attempt_an_error_response() {
 
 struct PendingWrites<IO>(IO);
 
+struct StreamingBodyFailureIo {
+    headers_read: bool,
+    body_failed: bool,
+    body_timeout: bool,
+    body_waker: Option<std::task::Waker>,
+    output: Arc<std::sync::Mutex<Vec<u8>>>,
+    flushes: Arc<AtomicUsize>,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+impl AsyncRead for StreamingBodyFailureIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if !self.headers_read {
+            buf.put_slice(&[1, 0, 2, 1]);
+            self.headers_read = true;
+            return Poll::Ready(Ok(()));
+        }
+        if self.output.lock().unwrap().is_empty() {
+            self.body_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        if self.body_timeout {
+            return Poll::Pending;
+        }
+        self.body_failed = true;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for StreamingBodyFailureIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let first = self.output.lock().unwrap().is_empty();
+        if !first && !self.body_failed {
+            return Poll::Pending;
+        }
+        let written = if first {
+            bytes.len().min(2)
+        } else {
+            bytes.len()
+        };
+        self.output
+            .lock()
+            .unwrap()
+            .extend_from_slice(&bytes[..written]);
+        if let Some(waker) = self.body_waker.take() {
+            waker.wake();
+        }
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.flushes.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.shutdowns.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn streaming_body_failure_does_not_replay_a_partially_written_response() {
+    for (waiting, body_timeout) in [(true, false), (true, true), (false, false), (false, true)] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let handlers = Arc::new(AtomicUsize::new(0));
+        let called = handlers.clone();
+        let runtime = NacelleRuntimeState::new(NacelleLimits::default().without_handler_timeout());
+        let server = TcpServer::<StaticProtocol>::builder()
+            .protocol(StaticProtocol(PhantomData))
+            .handler(handler_fn(
+                move |context: TcpRequestContext<StaticProtocol>| {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    async move { context.respond(TcpResponse::bytes("prev")).await }
+                },
+            ))
+            .runtime_state(runtime.clone())
+            .tcp_limits(
+                crate::limits::NacelleTcpLimits::default()
+                    .with_read_timeout(Duration::from_secs(1))
+                    .without_write_timeout()
+                    .without_shutdown_timeout(),
+            )
+            .tcp_config(
+                NacelleTcpConfig::default()
+                    .with_request_body_mode(TcpRequestBodyMode::Streaming)
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .policies(
+                TcpPolicies::new()
+                    .on_transport_ready(ResourcePolicy(active.clone()))
+                    .around_handler(WaitOnSecond {
+                        enabled: waiting,
+                        entries: Arc::new(AtomicUsize::new(0)),
+                        gate: Arc::new(Semaphore::new(0)),
+                    }),
+            )
+            .build()
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            server.serve_io(StreamingBodyFailureIo {
+                headers_read: false,
+                body_failed: false,
+                body_timeout,
+                body_waker: None,
+                output: output.clone(),
+                flushes: flushes.clone(),
+                shutdowns: shutdowns.clone(),
+            }),
+        )
+        .await
+        .expect("body failure must cancel pending delivery and finish the connection");
+        if body_timeout {
+            assert!(matches!(
+                result,
+                Err(NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead))
+            ));
+        } else {
+            assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
+        }
+        assert_eq!(&*output.lock().unwrap(), b"pr");
+        assert_eq!(flushes.load(Ordering::SeqCst), 0);
+        assert_eq!(shutdowns.load(Ordering::SeqCst), 0);
+        assert_eq!(handlers.load(Ordering::SeqCst), if waiting { 1 } else { 2 });
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.active_connections(), 0);
+        assert_eq!(runtime.active_requests(), 0);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn streaming_body_and_coalesced_delivery_make_full_duplex_progress() {
+    for attached in [false, true] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let handler_active = active.clone();
+        let handled = Arc::new(AtomicUsize::new(0));
+        let handler_done = handled.clone();
+        let runtime = NacelleRuntimeState::new(NacelleLimits::default().without_handler_timeout());
+        let server = TcpServer::<StaticProtocol>::builder()
+            .protocol(StaticProtocol(PhantomData))
+            .handler(handler_fn(
+                move |mut context: TcpRequestContext<StaticProtocol>| {
+                    let active = handler_active.clone();
+                    let done = handler_done.clone();
+                    async move {
+                        if context.request().head.get() == 1 {
+                            return context
+                                .respond(TcpResponse::bytes(Bytes::from_static(&[b'p'; 16])))
+                                .await;
+                        }
+                        let mut received = 0;
+                        while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                            received += chunk?.len();
+                        }
+                        assert_eq!(received, 64);
+                        assert_eq!(active.load(Ordering::SeqCst), if attached { 2 } else { 0 });
+                        done.store(1, Ordering::SeqCst);
+                        context.respond(TcpResponse::bytes("ok")).await
+                    }
+                },
+            ))
+            .runtime_state(runtime.clone())
+            .tcp_limits(crate::limits::NacelleTcpLimits::default().without_write_timeout())
+            .tcp_config(
+                NacelleTcpConfig::default()
+                    .with_request_body_mode(TcpRequestBodyMode::Streaming)
+                    .with_request_body_chunk_size(1)
+                    .with_request_body_channel_capacity(1)
+                    .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+            )
+            .build()
+            .unwrap();
+        let (mut client, stream) = tokio::io::duplex(8);
+        client.write_all(&[1, 0, 2, 64]).await.unwrap();
+        let policy_active = active.clone();
+        let task = tokio::spawn(async move {
+            if attached {
+                server
+                    .with_policies(
+                        TcpPolicies::new()
+                            .on_transport_ready(ResourcePolicy(policy_active.clone()))
+                            .around_handler(ResourcePolicy(policy_active)),
+                    )
+                    .serve_io(stream)
+                    .await
+            } else {
+                server.serve_io(stream).await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            client.write_all(&[b'x'; 64]).await.unwrap();
+            wait_for(&handled, 1).await;
+            assert_eq!(active.load(Ordering::SeqCst), if attached { 1 } else { 0 });
+            client.shutdown().await.unwrap();
+            let mut responses = Vec::new();
+            client.read_to_end(&mut responses).await.unwrap();
+            let mut expected = vec![b'p'; 16];
+            expected.extend_from_slice(b"ok");
+            assert_eq!(responses, expected);
+            task.await.unwrap().unwrap();
+        })
+        .await
+        .expect("response delivery must not prevent streaming body consumption");
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.active_connections(), 0);
+        assert_eq!(runtime.active_requests(), 0);
+    }
+}
+
 struct PendingFlushIo {
     reader: RecordingIo,
     shutdowns: Arc<AtomicUsize>,

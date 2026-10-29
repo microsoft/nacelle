@@ -110,9 +110,16 @@ time and waiter count. The decorator first polls the policy; immediately ready
 checks do not create a deadline. Saturated waiter capacity rejects immediately.
 Existing finite connection/request bounds must also cover waiting work.
 
-If admission rejects while a response write or flush is pending, Nacelle drops
-the connection without retrying delivery or graceful writer shutdown. Cleanup
-must not extend the admission wait indefinitely when write timeouts are disabled.
+If pending response delivery is cancelled, including by admission rejection or
+a streaming-body failure, Nacelle drops the connection without retrying delivery
+or graceful writer shutdown. Cleanup must not replay a partially written response
+or extend the admission wait indefinitely when write timeouts are disabled.
+
+While a streaming request body is being pumped, earlier coalesced responses flush
+concurrently with the admitted handler. The handler can consume the bounded body
+channel even when response writes are blocked. Handler leases still end when the
+handler finishes, not when that earlier flush completes. This scheduling does not
+depend on the `policies` feature.
 
 Policies run before the corresponding I/O or handler operation, so those
 operation deadlines are not policy deadlines. Acquire resources in a consistent

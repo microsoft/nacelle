@@ -110,6 +110,19 @@ pub(super) struct ResponseDelivery {
     interrupted: bool,
 }
 
+struct FlushGuard<'a> {
+    delivery: &'a mut ResponseDelivery,
+    completed: bool,
+}
+
+impl Drop for FlushGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.delivery.interrupt();
+        }
+    }
+}
+
 impl ResponseDelivery {
     pub(super) fn new(config: &NacelleTcpConfig) -> Self {
         Self {
@@ -276,39 +289,51 @@ impl ResponseDelivery {
         W: AsyncWrite + Unpin,
         Observer: NacelleTelemetryObserver,
     {
-        let pending_bytes = self.pending.len();
-        let delivered_bytes = if self.pending.is_empty() {
-            self.reset();
-            0
-        } else {
-            self.write_pending(
-                writer,
-                tcp_limits,
-                telemetry,
-                metrics_context,
-                phase_duration_metrics,
-            )
-            .await
-            .map_err(|(error, written)| ResponseDeliveryError {
-                error,
-                encoded_bytes: pending_bytes,
-                delivered_bytes: written,
-                kind: ResponseDeliveryErrorKind::SocketWrite,
-            })?
+        // An outer select may cancel this flush after a partial write.
+        let mut guard = FlushGuard {
+            delivery: self,
+            completed: false,
         };
-        let flush_started = start_tcp_phase(phase_duration_metrics);
-        let flush_result = flush_with_timeout(writer, tcp_limits).await;
-        finish_tcp_phase(telemetry, metrics_context, "socket_write", flush_started);
-        flush_result.map_err(|error| {
-            record_tcp_error(telemetry, metrics_context, "socket_write", &error);
-            ResponseDeliveryError {
-                error,
-                encoded_bytes: delivered_bytes,
-                delivered_bytes,
-                kind: ResponseDeliveryErrorKind::SocketFlush,
-            }
-        })?;
-        Ok(delivered_bytes)
+        let result = async {
+            let pending_bytes = guard.delivery.pending.len();
+            let delivered_bytes = if guard.delivery.pending.is_empty() {
+                guard.delivery.reset();
+                0
+            } else {
+                guard
+                    .delivery
+                    .write_pending(
+                        writer,
+                        tcp_limits,
+                        telemetry,
+                        metrics_context,
+                        phase_duration_metrics,
+                    )
+                    .await
+                    .map_err(|(error, written)| ResponseDeliveryError {
+                        error,
+                        encoded_bytes: pending_bytes,
+                        delivered_bytes: written,
+                        kind: ResponseDeliveryErrorKind::SocketWrite,
+                    })?
+            };
+            let flush_started = start_tcp_phase(phase_duration_metrics);
+            let flush_result = flush_with_timeout(writer, tcp_limits).await;
+            finish_tcp_phase(telemetry, metrics_context, "socket_write", flush_started);
+            flush_result.map_err(|error| {
+                record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+                ResponseDeliveryError {
+                    error,
+                    encoded_bytes: delivered_bytes,
+                    delivered_bytes,
+                    kind: ResponseDeliveryErrorKind::SocketFlush,
+                }
+            })?;
+            Ok(delivered_bytes)
+        }
+        .await;
+        guard.completed = true;
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

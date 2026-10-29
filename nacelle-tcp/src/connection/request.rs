@@ -428,6 +428,7 @@ where
                 delivery,
                 tcp_limits,
                 &mut policy_flush_failure,
+                false,
                 request,
                 decoded.body_len,
                 body,
@@ -488,6 +489,7 @@ where
                         delivery,
                         tcp_limits,
                         &mut policy_flush_failure,
+                        false,
                         request,
                         decoded.body_len,
                         body,
@@ -503,16 +505,6 @@ where
                 Err(error) => Err(error),
             }
         } else {
-            #[cfg(feature = "policies")]
-            if delivery.has_pending() {
-                delivery.flush(
-                    writer, tcp_limits, telemetry, metrics_context,
-                    telemetry_plan.phase_duration,
-                ).await.map_err(|error| {
-                    policy_flush_failure = Some(error.delivered_bytes);
-                    error.error
-                })?;
-            }
             let _streaming_permit =
                 runtime_state
                     .acquire_streaming_task_tracked()
@@ -528,6 +520,7 @@ where
                 delivery,
                 tcp_limits,
                 &mut policy_flush_failure,
+                true,
                 request,
                 decoded.body_len,
                 body,
@@ -712,7 +705,7 @@ where
                 request_started,
                 &error,
             );
-            if policy_flush_failure.is_some() {
+            if policy_flush_failure.is_some() || delivery.is_interrupted() {
                 request_metrics.complete("error", 0);
                 return Err(error);
             }
@@ -774,6 +767,7 @@ async fn execute_handler_with_metrics<P, D, Observer, Policies, W>(
     delivery: &mut ResponseDelivery,
     tcp_limits: &NacelleTcpLimits,
     policy_flush_failure: &mut Option<usize>,
+    flush_prior_responses: bool,
     mut request: P::Request,
     body_len: usize,
     body: NacelleBody,
@@ -791,7 +785,7 @@ where
     W: AsyncWrite + Unpin,
     Observer: NacelleTelemetryObserver,
 {
-    let _handler_lease = policies
+    let handler_lease = policies
         .handler(
             &mut request,
             body_len,
@@ -807,25 +801,49 @@ where
             },
         )
         .await?;
-    let handler_started = start_tcp_phase(phase_duration_metrics && metrics_context.is_some());
-    let result = execute_handler(
-        handler,
-        request,
-        body,
-        response_context,
-        runtime_state,
-        connection_context,
-    )
-    .await;
-    if let Err(error) = &result {
-        record_tcp_error(telemetry, metrics_context, "handler", error);
+    let handling = async {
+        let _handler_lease = handler_lease;
+        let handler_started = start_tcp_phase(phase_duration_metrics && metrics_context.is_some());
+        let result = execute_handler(
+            handler,
+            request,
+            body,
+            response_context,
+            runtime_state,
+            connection_context,
+        )
+        .await;
+        if let Err(error) = &result {
+            record_tcp_error(telemetry, metrics_context, "handler", error);
+        }
+        finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
+        result.map(|completion| {
+            completion
+                .into_response()
+                .map(GuardedResponseCompletion::new)
+        })
+    };
+    if flush_prior_responses && delivery.has_pending() {
+        let flushing = async {
+            delivery
+                .flush(
+                    writer,
+                    tcp_limits,
+                    telemetry,
+                    metrics_context,
+                    phase_duration_metrics,
+                )
+                .await
+                .map_err(|error| {
+                    *policy_flush_failure = Some(error.delivered_bytes);
+                    error.error
+                })
+        };
+        let (completion, _) = tokio::try_join!(handling, flushing)?;
+        Ok(completion)
+    } else {
+        handling.await
     }
-    finish_tcp_phase(telemetry, metrics_context, "handler", handler_started);
-    result.map(|completion| {
-        completion
-            .into_response()
-            .map(GuardedResponseCompletion::new)
-    })
 }
 
 async fn execute_handler<P, D>(

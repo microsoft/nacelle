@@ -98,13 +98,16 @@ body reaches EOF.
 `ResponseWritePolicy::Immediate` writes each completed frame immediately.
 `CoalesceBuffered` and `FlushAtBytes` may queue multiple completed frames from
 already-decoded requests, preserving order and rolling back only the current
-frame on encoder failure. The queue drains before another socket read and before
-awaiting another streaming response chunk. At that boundary, the runtime also
-flushes the underlying `AsyncWrite`, which is required for buffered transports
-such as TLS. When the connection ends cleanly, the runtime performs a
+frame on encoder failure. The queue drains before reading more request-head bytes
+from the socket and before awaiting another streaming response chunk. At that
+boundary, the runtime also flushes the underlying `AsyncWrite`, which is required
+for buffered transports such as TLS. When the connection ends cleanly, the runtime performs a
 `shutdown_timeout`-bounded writer shutdown so TLS transports can emit
-`close_notify`. Terminal error paths make the same bounded shutdown attempt;
-an earlier connection failure remains the returned error if shutdown also fails.
+`close_notify`. Terminal error paths normally make the same bounded shutdown
+attempt; an earlier connection failure remains the returned error if shutdown
+also fails. If pending response delivery is cancelled, the connection is dropped
+without another flush or shutdown attempt, because retrying could replay a
+partially written response.
 Request telemetry records encoded response bytes when a request completes; a
 later batch write, transport flush, or shutdown failure is reported as a
 connection operation error.
@@ -138,6 +141,9 @@ offered with the context captured by `error_context`.
 This includes failures while draining the body after a handler completes
 silently or prepares a response. A streaming body-read failure cancels a still
 running handler.
+If that cancellation interrupts delivery of an earlier coalesced response,
+Nacelle closes the connection without invoking `error_response` or retrying
+delivery.
 
 Responses retain the configured body limits, write policy, and write
 deadlines. They are best-effort: resource exhaustion can prevent delivery.
@@ -204,6 +210,9 @@ in the socket/read buffer, but Nacelle does not run multiple handlers
 concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler.
+Earlier coalesced responses flush concurrently with the admitted streaming handler
+and body pump, so blocked response writes do not prevent the handler from draining
+the bounded body channel. This behavior is independent of the `policies` feature.
 
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers
