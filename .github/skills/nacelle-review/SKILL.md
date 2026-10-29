@@ -1,6 +1,6 @@
 ---
 name: nacelle-review
-description: "Review Nacelle Rust and Cargo changes for decoder progress, buffer ownership, transport and Handler contracts, cancellation, backpressure, TLS separation, features, and validation."
+description: "Review Nacelle Rust and Cargo changes for decoder progress, response-byte attribution, buffer ownership, transport and Handler contracts, cancellation, backpressure, TLS separation, features, and behavioral validation."
 ---
 
 # Reviewing Nacelle Rust and Runtime Changes
@@ -46,6 +46,14 @@ relevant.
   borrowed value is either necessary or safe.
 - Check encoding and partial writes for dropped, duplicated, reordered, or
   incorrectly flushed data.
+- Distinguish encoded, buffered, socket-written, and flushed bytes, and track
+  which response owns each count. A failed coalesced flush must not attribute
+  earlier responses' bytes to the current request, or lose current-response
+  bytes already written before that flush. Compare every affected success and
+  error call site of delivery-accounting helpers.
+- Check silent completions, protocol error responses, and completion callbacks
+  separately. A request that generates no response must not acquire response
+  bytes merely because its rejection or cleanup flushes an earlier response.
 
 ### 3. Check Async Lifecycle and Resource Bounds
 
@@ -55,6 +63,14 @@ relevant.
   handlers cannot bypass the intended backpressure.
 - Check blocking operations, lock scope across `.await`, task ownership,
   `Send`/`Sync` requirements, and cleanup when a future is dropped.
+- At affected `.await`, `select!`, and `join!` boundaries, identify which future
+  can be dropped, what partial I/O progress it owns, and whether subsequent
+  cleanup can retry that work. Verify cancellation cannot replay a written
+  prefix or restart an indefinitely blocked flush.
+- Track connection, request, handler, and application leases through ownership
+  transfers and every exit. Check their documented release boundaries when
+  body pumping, handler completion, admission, and response delivery progress
+  independently; do not assume one joined future's lifetime matches another's.
 - Require deterministic coverage for changed timing behavior where practical;
   follow existing paused-time tests rather than adding sleep-based assumptions.
 
@@ -67,6 +83,9 @@ relevant.
   select `rustls`.
 - Verify changed feature-gated paths under the smallest relevant feature set
   and the supported provider combinations.
+- Compare runtime scheduling with relevant features enabled and disabled,
+  including pre-flush placement and concurrent body/handler progress. Successful
+  compilation alone does not establish equivalent behavior.
 - Keep peer-controlled data out of metric labels. Preserve low cardinality,
   stable rejection reasons, and opt-in diagnostic overhead.
 - For hot-path changes, identify allocations, retained buffers, locks, timers,
@@ -78,6 +97,26 @@ relevant.
 Start with focused tests for the owning crate. Codec changes start with
 `cargo test -p nacelle-codec --all-features`; performance claims also need the
 existing benchmark comparison under comparable conditions.
+
+For delivery or admission changes, build a relevant behavioral coverage matrix
+from the invariants, not only from the tests already present:
+
+- Immediate and coalesced delivery, with and without earlier pending responses.
+- Ready rejection and pending admission; success and failure at affected hooks.
+- Rejection with and without a protocol error response, including silent
+  completions and callback-bearing responses where affected.
+- Partial writes, write errors or deadlines, and failures of the underlying
+  flush after response bytes have already been written.
+- Body EOF/read deadlines, handler failure, cancellation, and teardown while
+  another operation is pending.
+- Relevant feature configurations, bounded-channel backpressure, response order,
+  per-request byte attribution, and lease release.
+
+For each applicable case, cite test coverage, source-backed reasoning or a
+counterexample, or an explicit evidence gap. Justify irrelevant cases; do not
+require an unrelated Cartesian product. Favor deterministic partial-progress
+fixtures and paused time when tests are authorized. Passing existing tests must
+not be treated as proof that untested failure paths preserve these contracts.
 
 Use the Rust instructions for formatting, lint, and test gates. Feature wiring,
 TLS, cross-crate changes, and readiness work require the broader
