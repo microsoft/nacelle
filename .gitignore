@@ -29,6 +29,7 @@ artifacts
 *.secret
 docs/internal
 .github/plans/
+.github/ledger/
 
 # Generated Reports
 .reports/

@@ -25,6 +25,10 @@ Why: the reader should immediately understand the conclusion and its basis.
 Use familiar words, active voice, specific nouns, and observable behavior.
 Remove filler, ceremony, generic machine phrasing, unsupported certainty, and
 qualifiers such as "real," "actual," or "supported" that add no useful distinction.
+Do not assert "this is a real issue" or use similar assurances in place of
+evidence. Name the triggering condition, incorrect behavior, and consequence.
+Apply this rule to all authored prose, including PR descriptions and commit
+messages, not just reviews.
 
 Why: concrete wording makes claims understandable and assessable.
 
