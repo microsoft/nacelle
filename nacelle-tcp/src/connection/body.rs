@@ -84,14 +84,15 @@ where
             Ok(bytes_read) => bytes_read,
             Err(error) => {
                 if receiver_open {
-                    let _ = tx.send(Err(body_read_error(&error))).await;
+                    // The driver must receive the failure even if admission holds a full channel.
+                    let _ = tx.try_send(Err(body_read_error(&error)));
                 }
                 return Err(error);
             }
         };
         if bytes_read == 0 {
             if receiver_open {
-                let _ = tx.send(Err(NacelleError::UnexpectedEof)).await;
+                let _ = tx.try_send(Err(NacelleError::UnexpectedEof));
             }
             return Err(NacelleError::UnexpectedEof);
         }

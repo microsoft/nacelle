@@ -696,6 +696,86 @@ async fn failed_flush_before_policy_wait_does_not_attempt_an_error_response() {
 
 struct PendingWrites<IO>(IO);
 
+async fn assert_full_streaming_channel_body_failure(body_timeout: bool) {
+    let active = Arc::new(AtomicUsize::new(0));
+    let entries = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(Semaphore::new(0));
+    let runtime = NacelleRuntimeState::default();
+    let server = TcpServer::<StaticProtocol>::builder()
+        .protocol(StaticProtocol(PhantomData))
+        .handler(handler_fn(
+            |_: TcpRequestContext<StaticProtocol>| async move {
+                panic!("waiting policy prevents handler")
+            },
+        ))
+        .runtime_state(runtime.clone())
+        .tcp_limits(
+            crate::limits::NacelleTcpLimits::default().with_read_timeout(Duration::from_secs(1)),
+        )
+        .tcp_config(
+            NacelleTcpConfig::default()
+                .with_request_body_mode(TcpRequestBodyMode::Streaming)
+                .with_request_body_chunk_size(1)
+                .with_request_body_channel_capacity(1),
+        )
+        .policies(
+            TcpPolicies::new()
+                .on_transport_ready(ResourcePolicy(active.clone()))
+                .on_request_head(ResourcePolicy(active.clone()))
+                .around_handler(ResourcePolicy(active.clone()))
+                .around_handler(WaitingPolicy {
+                    entries: entries.clone(),
+                    gate: gate.clone(),
+                }),
+        )
+        .build()
+        .unwrap();
+    let (mut client, stream) = tokio::io::duplex(16);
+    client.write_all(&[1, 2, b'x']).await.unwrap();
+    let task = tokio::spawn(async move { server.serve_io(stream).await });
+    wait_for(&entries, 1).await;
+    assert_eq!(active.load(Ordering::SeqCst), 3);
+    assert_eq!(runtime.active_connections(), 1);
+    assert_eq!(runtime.active_requests(), 1);
+    assert_eq!(runtime.active_streaming_tasks(), 1);
+
+    let started = tokio::time::Instant::now();
+    if !body_timeout {
+        client.shutdown().await.unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("body failure must cancel admission despite a full body channel")
+        .expect("connection task");
+    if body_timeout {
+        assert!(matches!(
+            result,
+            Err(NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead))
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(1));
+    } else {
+        assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+    assert_eq!(entries.load(Ordering::SeqCst), 1);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.active_connections(), 0);
+    assert_eq!(runtime.active_requests(), 0);
+    assert_eq!(runtime.active_streaming_tasks(), 0);
+    gate.add_permits(1);
+    assert_eq!(gate.available_permits(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn streaming_body_eof_cancels_admission_with_a_full_body_channel() {
+    assert_full_streaming_channel_body_failure(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn streaming_body_timeout_cancels_admission_with_a_full_body_channel() {
+    assert_full_streaming_channel_body_failure(true).await;
+}
+
 struct StreamingBodyFailureIo {
     headers_read: bool,
     body_failed: bool,

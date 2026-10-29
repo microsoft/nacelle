@@ -52,14 +52,15 @@ Retained costs are scoped by ownership:
   rejects a newly observed peer when the configured table is full; it does not
   take a per-request mutex or sweep every tracked peer.
 - Type-erased protocol/handler errors are constructed only on error paths.
-- TCP lifecycle policies are opt-in (`tcp-policies` on the facade). Without
-  that feature, policy hooks and permit storage are absent. Enabled policy
-  futures and permits are concrete rather than boxed. Application waits and
-  permit acquisition have application-defined costs. Resource-bearing request
-  permits require response flush before release, and a pending admission wait
-  flushes earlier responses; account for these coalescing barriers when
-  comparing profiles. No throughput or latency equivalence is implied by the
-  compile-time gating.
+- Legacy TCP lifecycle hooks and permit storage are absent when
+  `nacelle-tcp/policies` is disabled. The facade's `tcp-policies` enables both
+  TCP and this feature; facade `policies` also enables it when TCP is selected.
+  Enabled policy futures and permits are concrete rather than boxed.
+  Application waits and permit acquisition have application-defined costs.
+  Resource-bearing request permits require response flush before release, and
+  a pending admission wait flushes earlier responses; account for these
+  coalescing barriers when comparing profiles. No throughput or latency
+  equivalence is implied by the compile-time gating.
 - TCP response coalescing is opt-in. It queues only complete bounded frames and
 	restores socket backpressure at thresholds, streaming waits, and socket-read
 	boundaries.
