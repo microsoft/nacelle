@@ -24,6 +24,13 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 - Update `nacelle-codec/README.md` and `docs/reference/nacelle-codec.md` when codec APIs or contracts change. Update the corresponding documentation for other public APIs, features, configuration, operator behavior, compatibility, or performance guidance.
 - `docs/internal/` is intentionally blanket-ignored. Keep documents local and untracked; do not add `.gitignore` exceptions for internal docs.
 - `.github/plans/` is intentionally blanket-ignored. Keep documents local and untracked; do not add `.gitignore` exceptions for plans.
+- `.github/ledger/` is intentionally blanket-ignored. Store provenance, evidence, and handoff records for larger reviews or long-running PR reviews there. Keep them local and untracked; never stage, commit, force-add, or add `.gitignore` exceptions for ledger files.
+
+## Git Ignore Rules
+
+- Changes to `.gitignore` must be additive only. Do not remove, edit, or reorder existing entries.
+- Additions must never weaken existing exclusions or make ignored files eligible for version control. Do not add negation rules or exceptions that allow ignored files to be checked in.
+- Never stage or commit files covered by `.gitignore`, including files that are already tracked. Before staging, confirm that the intended paths are not ignored; never bypass exclusions with force-add or equivalent commands.
 
 ## Validation
 
@@ -45,3 +52,5 @@ Nacelle is an experimental Tokio-based Rust library for streaming services acros
 ## Commits
 
 When asked to commit, use Conventional Commits with a short, scoped message such as `fix: ...`, `feat: ...`, `perf: ...`, `docs: ...`, or `test: ...`. Commit only the coherent change requested; do not include unrelated working-tree changes.
+
+Use the [PR and commit drafting workflow](skills/pr-description/SKILL.md) when asked for titles, PR descriptions, commit descriptions, or squash commit messages. Commit bodies, including PR descriptions intended for reuse as commit bodies, must omit validation sections and equivalent test-results summaries. Keep necessary evidence and known failures in the PR or a separate handoff note. Remove filler throughout authored prose.

@@ -41,9 +41,13 @@ Why: the repository should remain sufficient to understand and maintain the syst
 
 ### GEN-WRITE-004: Make change descriptions reviewable
 
-Describe the concrete problem, resulting behavior, design choices, verification,
-and limitations. Include abandoned approaches only for relevant trade-offs.
-Preserve required public/internal sections and describe results, not editing history.
+Describe the concrete problem, resulting behavior, design choices, and
+limitations. Include abandoned approaches only for relevant trade-offs.
+Keep relevant verification evidence in PR descriptions or review/handoff notes,
+not commit bodies. Commit bodies must omit validation sections and equivalent
+test-results summaries. Describing tests added by the change is still useful.
+Preserve required sections for the target artifact and describe results, not
+editing history.
 
 Why: reviewers need behavior and evidence rather than a transcript.
 
