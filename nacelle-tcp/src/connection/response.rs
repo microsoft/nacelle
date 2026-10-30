@@ -396,7 +396,7 @@ where
         if let Some(guard) = guard {
             guard.fail(error.phase_enum(), 0, 0, &error.error);
         }
-        return Err(error);
+        return Err(error.without_current_response_bytes());
     }
     let response_bytes = match encode_response_body(
         protocol,
@@ -540,7 +540,8 @@ where
             metrics_context,
             phase_duration_metrics,
         )
-        .await?;
+        .await
+        .map_err(ResponseDeliveryError::without_current_response_bytes)?;
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
@@ -687,6 +688,12 @@ impl ResponseDeliveryError {
             delivered_bytes: delivered_previous.saturating_add(self.delivered_bytes),
             kind: self.kind,
         }
+    }
+
+    fn without_current_response_bytes(mut self) -> Self {
+        self.encoded_bytes = 0;
+        self.delivered_bytes = 0;
+        self
     }
 
     fn with_cumulative_final_flush(mut self, response_bytes: usize) -> Self {
@@ -1041,6 +1048,21 @@ mod tests {
 
         assert_eq!(error.encoded_bytes, 10);
         assert_eq!(error.delivered_bytes, 10);
+    }
+
+    #[test]
+    fn prior_output_failure_has_no_current_response_bytes() {
+        let error = ResponseDeliveryError {
+            error: NacelleError::InvalidFrame("test prior write failure"),
+            encoded_bytes: 4,
+            delivered_bytes: 2,
+            kind: ResponseDeliveryErrorKind::SocketWrite,
+        }
+        .without_current_response_bytes();
+
+        assert_eq!(error.encoded_bytes, 0);
+        assert_eq!(error.delivered_bytes, 0);
+        assert_eq!(error.phase(), "socket_write");
     }
 
     #[tokio::test]

@@ -133,11 +133,7 @@ impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
     }
 }
 
-impl<P, H> LocalTcpServer<P, H, NoopObserver>
-where
-    P: Protocol,
-    H: crate::admission::LocalTcpService<P>,
-{
+impl<P, H> LocalTcpServer<P, H, NoopObserver> {
     /// Construct a worker-local server with one handler for all requests.
     pub fn new(protocol: P, handler: H) -> Self {
         Self {
@@ -154,8 +150,6 @@ where
 
 impl<P, H, Observer> LocalTcpServer<P, H, Observer>
 where
-    P: Protocol,
-    H: crate::admission::LocalTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     /// Set worker-local TCP framing and buffering configuration.

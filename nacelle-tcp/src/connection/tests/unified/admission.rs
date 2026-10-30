@@ -35,9 +35,6 @@ fn rejection_metrics_do_not_control_permit_or_observer_cleanup() {
                             .with_error_metrics(errors)
                             .with_connection_metrics(false)
                             .with_runtime_metrics(false)
-                            .with_request_started_metrics(false)
-                            .with_request_completed_metrics(false)
-                            .with_byte_count_metrics(false)
                             .with_observer(observer.clone()),
                     );
                     assert!(matches!(
@@ -74,6 +71,53 @@ fn rejection_metrics_do_not_control_permit_or_observer_cleanup() {
                 }
             );
         }
+    }
+}
+
+#[test]
+fn admission_timeout_keeps_error_counters_with_detailed_request_metrics() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    metrics::with_local_recorder(&recorder, || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server = server(
+                    Capacity::new(0),
+                    CustomProtocol::default(),
+                    config(2),
+                    NacelleRuntimeState::default(),
+                    Arc::default(),
+                    1,
+                )
+                .with_telemetry(
+                    NacelleTelemetry::default()
+                        .with_connection_metrics(false)
+                        .with_runtime_metrics(false),
+                );
+                let mut future = Box::pin(server.serve_io(io(b"A\0")));
+                pending(future.as_mut()).await;
+                tokio::time::advance(Duration::from_secs(1)).await;
+                assert!(matches!(
+                    future.await,
+                    Err(NacelleError::Timeout(NacelleTimeoutReason::Admission))
+                ));
+            });
+    });
+
+    let snapshot = snapshotter.snapshot().into_vec();
+    for name in ["server.request.failed", "server.request.timed_out"] {
+        let values: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == name)
+            .map(|(_, _, _, value)| value)
+            .collect();
+        assert_eq!(values, vec![&DebugValue::Counter(1)]);
     }
 }
 
@@ -443,6 +487,113 @@ impl AsyncWrite for FlushGate {
 struct WriteGate {
     inner: FlushGate,
     remaining: usize,
+}
+
+struct PartialWriteThenFailIo {
+    inner: RecordingIo,
+    wrote: bool,
+}
+
+impl AsyncRead for PartialWriteThenFailIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PartialWriteThenFailIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.wrote {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "test response write failure",
+            )));
+        }
+        self.wrote = true;
+        Pin::new(&mut self.inner).poll_write(cx, &bytes[..1])
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[test]
+fn rejected_request_does_not_count_prior_response_bytes() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let protocol = CustomProtocol {
+        error_outcomes: Some(outcomes.clone()),
+        ..CustomProtocol::default()
+    };
+    metrics::with_local_recorder(&recorder, || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let server = server(
+                    Capacity::new(1),
+                    protocol.clone(),
+                    config(4).with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                    NacelleRuntimeState::default(),
+                    Arc::default(),
+                    1,
+                )
+                .with_telemetry(
+                    NacelleTelemetry::default()
+                        .with_connection_metrics(false)
+                        .with_runtime_metrics(false),
+                );
+                let result = server
+                    .serve_io(PartialWriteThenFailIo {
+                        inner: io(b"A\0R\0"),
+                        wrote: false,
+                    })
+                    .await;
+                assert!(matches!(
+                    result,
+                    Err(NacelleError::Io(ref error))
+                        if error.kind() == std::io::ErrorKind::BrokenPipe
+                ));
+            });
+    });
+
+    assert_eq!(
+        *outcomes.lock().expect("outcome recorder poisoned"),
+        vec![CapturedOutcome::Failed {
+            phase: ResponseDeliveryPhase::SocketWrite,
+            encoded_wire_bytes: 0,
+            written_wire_bytes: 0,
+        }]
+    );
+    let snapshot = snapshotter.snapshot().into_vec();
+    let values: Vec<_> = snapshot
+        .iter()
+        .filter(|(key, _, _, _)| {
+            key.key().name() == "server.response.body.size"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "status" && label.value() == "error")
+        })
+        .map(|(_, _, _, value)| value)
+        .collect();
+    assert_eq!(values, vec![&DebugValue::Histogram(vec![0.0.into()])]);
 }
 
 impl AsyncRead for WriteGate {
@@ -1021,6 +1172,69 @@ impl<'a> Admission<SerialTcpAdmissionContext<'a, CustomProtocol, SerialAppState>
             .fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+}
+
+struct LocalStateRule;
+
+impl<'a, State> LocalAdmission<AdmissionContext<'a, u8, State, SerialAppState>> for LocalStateRule {
+    type Permit = ();
+
+    async fn admit(
+        &self,
+        context: AdmissionContext<'a, u8, State, SerialAppState>,
+    ) -> Result<(), AdmissionRejection> {
+        assert_eq!(*context.head(), b'S');
+        context
+            .app_state()
+            .policy_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn state_only_local_handler_configures_admission_before_binding_app_state() {
+    let state = Arc::new(SerialAppState::default());
+    let runtime = NacelleRuntimeState::default();
+    let server = crate::LocalTcpServer::new(
+        CustomProtocol::default(),
+        local_handler_fn(
+            |context: TcpRequestContext<CustomProtocol, SerialAppState>| async move {
+                assert_eq!(context.app_state().policy_calls.load(Ordering::SeqCst), 1);
+                context
+                    .app_state()
+                    .handler_calls
+                    .fetch_add(1, Ordering::SeqCst);
+                Ok(context.complete())
+            },
+        ),
+    )
+    .with_tcp_config(config(2))
+    .with_tcp_limits(NacelleTcpLimits::default())
+    .with_admission(
+        LocalStateRule,
+        AdmissionConfig::new(Duration::from_secs(1), 1).unwrap(),
+    )
+    .unwrap()
+    .with_app_state(state.clone())
+    .with_runtime_state(runtime.clone())
+    .unwrap();
+    super::super::super::serve_local_stream_without_connection_limit(
+        io(b"S\0"),
+        server.protocol(),
+        server.handler(),
+        server.config(),
+        server.telemetry(),
+        server.runtime_state(),
+        server.tcp_limits(),
+        NacelleConnectionMeta::tcp(None, None),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(state.policy_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.handler_calls.load(Ordering::SeqCst), 1);
+    assert_released(&runtime);
 }
 
 #[tokio::test]

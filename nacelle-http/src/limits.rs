@@ -14,10 +14,12 @@ impl std::error::Error for HttpParserLimitsError {}
 
 /// Hyper parser bounds, separate from post-parse HTTP policy checks.
 ///
-/// Defaults retain Hyper's bounded buffer strategy and stack-backed 100-header
-/// parser. A custom header count other than 100 opts into Hyper's per-request
-/// header-array allocation. The buffer limit is not an exact read allowance:
-/// a complete head may arrive with body bytes beyond the configured threshold.
+/// Defaults retain Hyper's bounded buffer strategy and 100-header parser.
+/// A custom header count selects Hyper's configurable-count path. In the
+/// resolved implementation, counts through 100 use inline header arrays; larger
+/// counts allocate those arrays. The buffer limit is not an exact read
+/// allowance: a complete head may arrive with body bytes beyond the configured
+/// threshold.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HttpParserLimits {
     max_buffer_bytes: Option<usize>,

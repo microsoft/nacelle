@@ -22,11 +22,12 @@ let limits = NacelleHttpLimits::default()
 
 The minimum buffer setting is 8192 bytes. It controls Hyper's parser strategy,
 not an exact read allowance: complete heads may include body read-ahead beyond
-that threshold. `None` keeps the stack-backed 100-header parser; a different
-header count opts into an allocation per request.
+that threshold. `None` keeps the default 100-header parser. A configured count
+selects Hyper's configurable-count path; in the resolved implementation, counts
+through 100 remain inline and larger counts allocate the header arrays.
 
 Use typed admission when requests must obtain application capacity before body
-work. The [HTTP admission example](../../examples/nacelle-examples/src/bin/http_admission.rs)
+work. The [HTTP admission example](https://github.com/microsoft/nacelle/blob/main/examples/nacelle-examples/src/bin/http_admission.rs)
 shares an owned semaphore permit through `AppState` and accepts `/work`:
 
 ```sh

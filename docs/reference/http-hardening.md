@@ -41,14 +41,15 @@ even when no body chunks have been delivered to Nacelle.
 In the resolved Hyper 1.10.1 dependency, the low-level HTTP/1 builder's
 `max_buf_size` accepts a minimum of 8192 bytes. It controls parser buffering,
 not a hard per-request plaintext read allowance: a complete head and read-ahead
-can exceed that setting. Explicitly setting Hyper's `max_headers` also changes
-header parsing from default stack storage to per-request heap storage.
+can exceed that setting. Explicitly setting Hyper's `max_headers` selects its
+configurable-count parser path.
 Nacelle exposes these separately through validated
 `HttpParserLimits::new(max_buffer_bytes, max_headers)` and
 `NacelleHttpLimits::with_parser_limits(...)`. `None` or `Some(100)` retains
-the default stack-backed header parser; another positive count opts into
-Hyper's header-array allocation. Buffer values below 8192 are rejected before
-serving. Keep post-parse byte/count checks as a separate application policy.
+the default parser path. In the resolved implementation, positive counts
+through 100 use inline header arrays; larger counts allocate those arrays.
+Buffer values below 8192 are rejected before serving. Keep post-parse byte/count
+checks as a separate application policy.
 
 For `Expect: 100-continue`, Hyper waits for the body consumer to request data
 before sending `100 Continue`. A head-policy rejection does not start that
