@@ -6,12 +6,12 @@ use crate::protocol::SharedProtocol;
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::limits::TrackedPermit;
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
     NacelleTransport,
 };
+use nacelle_core::tracking::NacelleConnectionActivity;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -164,7 +164,7 @@ where
         Arc<TcpServer<P, H, Observer>>,
         TcpStream,
         NacelleConnectionMeta,
-        TrackedPermit,
+        Option<NacelleConnectionActivity>,
     ) -> Fut,
     Fut: Future<Output = Result<(), NacelleError>> + Send + 'static,
 {
@@ -183,9 +183,9 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                prepare_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server.runtime_state().register_connection(&connection) {
                     Ok(permit) => permit,
                     Err(error) => {
                         record_connection_rejection(server.as_ref(), transport, tls_label, &error);
@@ -195,8 +195,12 @@ where
                         continue;
                     }
                 };
-                let task = serve_connection(server.clone(), stream, connection, connection_permit);
-                connections.spawn(task);
+                let owned = (stream, registration);
+                prepare_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
+                let task = serve_connection(server.clone(), stream, connection, activity);
+                connections.spawn(registration.run(task));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, transport);

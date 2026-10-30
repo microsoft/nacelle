@@ -12,6 +12,7 @@ pub mod pipeline;
 pub mod request;
 pub mod runtime;
 pub mod telemetry;
+pub mod tracking;
 
 pub use admission::{
     Admission, AdmissionConfig, AdmissionContext, AdmissionRejection, AllowAll, LocalAdmission,
@@ -34,4 +35,9 @@ pub use telemetry::{
     CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetricsConfig,
     NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
     NacelleTelemetryObserver, NacelleTransport, NoopObserver,
+};
+pub use tracking::{
+    NacelleCloseOutcome, NacelleConnectionActivityState, NacelleConnectionCloseReason,
+    NacelleConnectionLookup, NacelleConnectionSnapshot, NacelleConnectionTracking,
+    NacelleReclaimOutcome, NacelleReclaimPartition,
 };

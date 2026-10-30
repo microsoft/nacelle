@@ -15,9 +15,7 @@ use nacelle_rustls::NacelleTlsConfig;
 #[cfg(feature = "openssl")]
 use openssl::ssl::Ssl;
 
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit, serve_local_stream_without_connection_limit,
-};
+use crate::connection::{serve_local_serial_stream_admitted, serve_local_stream_admitted};
 use crate::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
@@ -58,10 +56,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -71,12 +70,13 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    serve_local_stream_without_connection_limit(
+                connections.spawn_local(registration.run(async move {
+                    serve_local_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -85,9 +85,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);
@@ -134,10 +135,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -147,12 +149,13 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
-                    serve_local_serial_stream_without_connection_limit(
+                connections.spawn_local(registration.run(async move {
+                    serve_local_serial_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -161,9 +164,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);
@@ -213,10 +217,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -226,12 +231,13 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn_local(registration.run(async move {
                     let stream = match tokio::time::timeout(
                         handshake_timeout,
                         acceptor.accept(stream),
@@ -249,7 +255,7 @@ where
                     };
                     let connection = connection
                         .with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
-                    serve_local_stream_without_connection_limit(
+                    serve_local_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -258,9 +264,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);
@@ -310,10 +317,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -323,12 +331,13 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let acceptor = tls_config.acceptor();
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn_local(registration.run(async move {
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                     let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                         .map_err(NacelleError::protocol)?;
@@ -350,7 +359,7 @@ where
                     let connection = connection.with_tls(
                         nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
-                    serve_local_stream_without_connection_limit(
+                    serve_local_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -359,9 +368,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);
@@ -411,10 +421,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -425,12 +436,13 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let acceptor = tls_config.acceptor();
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn_local(registration.run(async move {
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
                     let mut stream = tokio_openssl::SslStream::new(ssl, stream)
                         .map_err(NacelleError::protocol)?;
@@ -450,7 +462,7 @@ where
                     let connection = connection.with_tls(
                         nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
-                    serve_local_serial_stream_without_connection_limit(
+                    serve_local_serial_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -459,9 +471,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);
@@ -513,10 +526,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection_permit = match server
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -527,13 +541,14 @@ where
                         continue;
                     }
                 };
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
-                    .with_listener(server.listener_label());
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let acceptor = tls_config.acceptor();
                 let detection_timeout = detection_options.timeout;
                 let server = server.clone();
-                connections.spawn_local(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn_local(registration.run(async move {
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {
@@ -545,7 +560,7 @@ where
                     };
 
                     if !is_tls {
-                        return serve_local_serial_stream_without_connection_limit(
+                        return serve_local_serial_stream_admitted(
                             stream,
                             server.protocol(),
                             server.handler(),
@@ -554,6 +569,7 @@ where
                             server.runtime_state(),
                             server.tcp_limits(),
                             connection,
+                            activity,
                         )
                         .await;
                     }
@@ -577,7 +593,7 @@ where
                     let connection = connection.with_tls(
                         nacelle_openssl::connection_tls_meta(stream.ssl()),
                     );
-                    serve_local_serial_stream_without_connection_limit(
+                    serve_local_serial_stream_admitted(
                         stream,
                         server.protocol(),
                         server.handler(),
@@ -586,9 +602,10 @@ where
                         server.runtime_state(),
                         server.tcp_limits(),
                         connection,
+                        activity,
                     )
                     .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_local_connection_result(joined);

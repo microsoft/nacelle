@@ -1611,6 +1611,7 @@ fn http_close_reason(result: &Result<(), NacelleError>) -> &'static str {
         Err(NacelleError::ConnectionClosed) => "connection_closed",
         Err(NacelleError::ResourceLimit(_)) => "resource_limit",
         Err(NacelleError::AdmissionRejected(_)) => "admission",
+        Err(NacelleError::ConnectionTerminated(reason)) => reason.as_str(),
         Err(NacelleError::Io(_)) => "io",
         Err(NacelleError::Protocol(_)) => "protocol",
         Err(NacelleError::Handler(_)) => "handler",

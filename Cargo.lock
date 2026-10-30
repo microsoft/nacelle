@@ -792,6 +792,7 @@ dependencies = [
  "futures-core",
  "metrics",
  "metrics-util",
+ "pin-project-lite",
  "tokio",
  "tokio-util",
  "tracing",

@@ -30,6 +30,42 @@ acquire/drop overhead. Watch it closely after changes to `NacelleRuntimeState`.
 
 ## Successful-path ownership and dispatch
 
+### Connection tracking costs
+
+Tracking is disabled by default. Enabling it adds connection-time registry
+allocation/locking, one cancellation waiter per connection, and atomic activity
+transitions at input/idle boundaries. It does not add per-request registry locks,
+timers, or metrics. Bounded registry map storage retains its high-water
+allocation; TLS metadata, snapshots retained by callers, sockets, and transport
+buffers must be budgeted separately.
+
+Run the explicit lifecycle profiles:
+
+```bash
+cargo bench -p nacelle-examples --features bench,tcp --bench connection_lifecycle
+```
+
+`registry_churn` compares registration/drop with tracking off/on.
+`tracking_tcp` compares one and 64 requests per direct-I/O connection, with
+immediate delivery and metrics disabled. These are in-memory driver cases,
+not network throughput. The 256-entry idle/reclaim profiles isolate registry
+administration; the four-worker profile also includes channel dispatch/replies,
+but excludes worker thread startup. Registry-only entries contain no TCP tasks.
+
+On Linux, the same benchmark binary accepts
+`NACELLE_TRACKING_MEMORY_ENTRIES=100000`. Run that mode in a fresh process.
+It touches guard storage before observing RSS, registers plain metadata without
+peer/TLS strings, then observes live and retired RSS. The difference estimates
+registry/signal/allocator bytes per live entry, not total connection memory or
+exact allocated bytes. Page rounding and allocator retention affect the result.
+Keep allocator, entry count, toolchain, and platform fixed between comparisons.
+
+Compare tracking-off network throughput with the retained baseline and frozen
+stress client as well; the absence of registry operations does not prove that
+future layout or code generation has no cost.
+
+### Request ownership
+
 The default successful TCP and HTTP pipelines use concrete protocol, handler,
 responder, body, and telemetry observer types. Nacelle does not box handler
 futures or dynamically dispatch those contracts.

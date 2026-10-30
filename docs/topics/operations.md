@@ -50,6 +50,31 @@ Expected shutdown telemetry:
 - drain completed or timed out
 - active connections aborted
 
+## Administrative TCP/Unix retirement
+
+Configure tracking at startup and retain the installed `runtime_control()`.
+Lowering a connection target only limits new admissions. Call `reclaim_idle`
+explicitly to retire idle connections; repeat only after observing teardown,
+not in a busy loop. Concurrent scans account for existing closing reservations,
+but cannot guarantee the target when connections remain active.
+
+Forced `close_connection` is cancellation, not graceful drain. It may discard
+partial output and does not wait for TLS `close_notify`. Do not expose this
+capability to untrusted callers or put connection IDs into metric labels.
+The static close reasons are `administrative_close` and `idle_reclaim`.
+Tracked task aborts resolve the existing close event once; failed setup before
+the open event does not manufacture a close event.
+
+The runnable example demonstrates explicit forced retirement on Ctrl-C:
+
+```bash
+cargo run -p nacelle-examples --bin tcp_connection_control -- 127.0.0.1:8080
+```
+
+Use normal listener shutdown instead when active work must drain. See
+[tracking outcomes and ownership](runtime-limits.md#tracked-tcpunix-connections)
+for selection versus teardown, borrowed I/O, and HTTP scope.
+
 ## Metrics To Watch
 
 - `server.runtime.workers`

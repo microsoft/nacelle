@@ -8,6 +8,7 @@ use nacelle_core::lifecycle::NacelleDrainDeadline;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::connection::tests::{registered, tracked_runtime};
 use crate::protocol::{DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse};
 use crate::server::TcpServer;
 
@@ -133,6 +134,7 @@ impl Protocol for TestProtocol {
 
 #[tokio::test]
 async fn tcp_tls_self_signed_server_accepts_request() {
+    let runtime = tracked_runtime(8);
     let generated =
         nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed tls");
     let certificate = test_certificate(generated.certificate_pem.as_bytes());
@@ -150,6 +152,8 @@ async fn tcp_tls_self_signed_server_accepts_request() {
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     let server = TcpServer::<TestProtocol>::builder()
         .protocol(TestProtocol)
+        .runtime_state(runtime.clone())
+        .unwrap()
         .handler(handler_fn(
             |context: TcpRequestContext<TestProtocol>| async move {
                 context.respond(TcpResponse::bytes("ok")).await
@@ -193,6 +197,9 @@ async fn tcp_tls_self_signed_server_accepts_request() {
         .await
         .expect("response should read");
     assert_eq!(&response, b"ok");
+    let snapshot = registered(&runtime).await;
+    assert!(snapshot.connection.tls.is_some());
+    assert_eq!(snapshot.connection.local_addr, Some(addr));
 
     shutdown.shutdown();
     tokio::time::timeout(Duration::from_secs(1), server_task)
@@ -200,6 +207,89 @@ async fn tcp_tls_self_signed_server_accepts_request() {
         .expect("server should stop")
         .expect("server task should join")
         .expect("server should exit");
+    assert_eq!(runtime.active_connections(), 0);
+    assert!(runtime.control().connections(8).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn tracked_tls_setup_is_busy_and_cleans_up_close_failure_timeout_and_abort() {
+    use nacelle_core::{
+        NacelleCloseOutcome, NacelleConnectionActivityState, NacelleReclaimOutcome,
+    };
+    for mode in ["close", "disconnect", "timeout", "abort"] {
+        let runtime = tracked_runtime(1);
+        let control = runtime.control();
+        let generated = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown, token) = nacelle_core::NacelleShutdown::pair();
+        let observer = nacelle_core::NacelleInMemoryObserver::new();
+        let server = TcpServer::<TestProtocol>::builder()
+            .protocol(TestProtocol)
+            .runtime_state(runtime.clone())
+            .unwrap()
+            .handler(handler_fn(|_: TcpRequestContext<TestProtocol>| async {
+                Err::<crate::protocol::TcpHandlerCompletion<TestProtocol>, _>(
+                    NacelleError::InvalidFrame("unexpected handler dispatch before TLS setup"),
+                )
+            }))
+            .build()
+            .unwrap()
+            .with_telemetry(
+                nacelle_core::NacelleTelemetry::default().with_observer(observer.clone()),
+            );
+        let task = tokio::spawn(serve_tcp_tls_listener_with_shutdown_deadline(
+            Arc::new(server),
+            listener,
+            generated
+                .tls_config
+                .with_handshake_timeout(Duration::from_millis(100)),
+            token,
+            NacelleDrainDeadline::new(Duration::ZERO),
+        ));
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let snapshot = registered(&runtime).await;
+        assert_eq!(snapshot.activity, NacelleConnectionActivityState::Setup);
+        control.set_max_connections(Some(0)).unwrap();
+        assert!(matches!(
+            control.reclaim_idle(1),
+            NacelleReclaimOutcome::Observed {
+                selected: 0,
+                unfilled: 1,
+                ..
+            }
+        ));
+        match mode {
+            "close" => {
+                assert_eq!(
+                    control.close_connection(snapshot.connection.connection_id),
+                    NacelleCloseOutcome::Selected
+                );
+            }
+            "disconnect" => {
+                drop(client);
+            }
+            "abort" => {
+                shutdown.shutdown();
+            }
+            _ => {}
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !control.connections(1).unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        shutdown.shutdown();
+        task.await.unwrap().unwrap();
+        assert_eq!(runtime.active_connections(), 0);
+        assert!(observer.events().iter().all(|event| !matches!(
+            event.kind,
+            nacelle_core::NacelleTelemetryEventKind::ConnectionOpened
+                | nacelle_core::NacelleTelemetryEventKind::ConnectionClosed
+        )));
+    }
 }
 
 #[tokio::test]

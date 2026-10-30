@@ -109,6 +109,91 @@ not necessarily the entire process if the caller constructed separate states.
 
 ## Startup configuration
 
+### Tracked TCP/Unix connections
+
+Tracking is off by default. Enable a finite registry before installing runtime
+state, then obtain the control handle from the app, host, or direct server that
+owns that state:
+
+```rust
+use nacelle::core::{NacelleConnectionTracking, NacelleLimits, NacelleRuntimeState};
+use nacelle::NacelleApp;
+
+let state = NacelleRuntimeState::new(NacelleLimits::default()
+    .with_connection_tracking(NacelleConnectionTracking::new(8_000)?));
+let app = NacelleApp::new().with_runtime_state(state)?;
+let control = app.runtime_control();
+control.set_max_connections(Some(8_000))?;
+// Register listeners and move app into run(); retain control for administration.
+let snapshots = control.connections(64); // None if disabled; otherwise owned metadata.
+control.set_max_connections(Some(4_000))?;
+let reclaim = control.reclaim_idle(128); // Explicit, best-effort idle selection.
+if let Some(connection) = snapshots.and_then(|mut entries| entries.pop()) {
+    let lookup = control.connection(connection.connection.connection_id);
+    let close = control.close_connection(connection.connection.connection_id);
+}
+```
+
+The registry capacity is independent of the live connection ceiling and cannot
+be resized or enabled retroactively. Zero and unrepresentable capacities are
+rejected. Setting the live ceiling to `None` does not bypass registry capacity.
+Registration follows the existing connection/peer/rate admission checks;
+registry rejection can therefore consume an allowed connection-open rate slot.
+Full storage and duplicate live custom IDs report `ConnectionRegistry` and
+`DuplicateConnectionId`. No protocol or request work starts after rejection.
+
+TCP, Unix, and their existing shared/local/serial TLS variants register before
+controlled setup. Setup, TLS detection/handshake, partial heads, queued input,
+admission, bodies, handlers, callbacks, and unflushed output are not idle.
+Only the driver establishes idle after the underlying writer has flushed and
+no accumulated input or work remains. New input and reclaim compete atomically:
+if reclaim wins, that input is not dispatched. Bytes not yet observed by Nacelle
+can still be discarded by idle reclaim.
+
+`connection(id)` distinguishes `TrackingDisabled`, `Unknown`, and `Found`.
+Snapshots are owned, unordered observations, not live task handles or a stable
+pagination mechanism. `Unknown` includes finished IDs and IDs outside a worker
+handle's scope. Custom IDs must remain unique across the tracked group and
+must not be reused while administrative callers can hold stale IDs.
+
+`close_connection(id)` distinguishes disabled/unknown, `Selected`, and
+`AlreadyClosing`. Forced close can cancel setup, active requests, response
+delivery, and pending normal shutdown. Selection is not teardown confirmation.
+It returns `NacelleError::ConnectionTerminated(Forced)` from direct serving,
+does not invoke `Protocol::error_response`, and does not retry writes, flush,
+or shutdown. Outstanding completion callbacks resolve as cancelled, not
+delivered; already resolved callbacks are not repeated. Peers may have received
+partial or complete output. Borrowed serial I/O remains with the caller, who
+must not resume the cancelled protocol.
+
+`reclaim_idle(budget)` selects at most `budget` new idle closes toward each
+partition's current target. `None` has no gap. Existing closing reservations
+are subtracted before selecting more, including across concurrent scans.
+Reports include observed occupancy, target, already-closing count, new
+selections, and the unfilled gap. Insufficient idle entries or budget leave a
+nonzero gap. Lowering a target alone never scans or cancels work.
+
+Connection capacity remains occupied until work/I/O teardown, then the entry
+is removed. Setup failure, EOF, error, panic unwinding, cancellation, and task
+abort use the same registration owner. Listener `JoinSet` supervision and
+stop/drain/abort shutdown remain separate from administrative selection.
+HTTP connections do not participate in this registry yet; shared occupancy
+can include HTTP connections that cannot be selected.
+
+Worker accounting divides registry capacity at startup, including zero shares
+that reject rather than disabling tracking. All partitions share duplicate-ID
+detection but retain their own capacity and target gaps. Use the aggregate
+handle; spare capacity is not borrowed across workers.
+
+Storage grows on registration, retains its bounded map high-water allocation,
+and holds only metadata/signals, not sockets, application state, or tasks.
+There is no registry allocation/lock or administrative waiter on tracking-off
+connections. Tracked request activity uses atomics, not registry locks or new
+request timers/metrics. Snapshot/reclaim scans can inspect the entire allocated
+registry even with a small result/selection budget; registration and removal
+wait for that lock. Choose capacity and scan frequency together.
+See [lifecycle measurements](performance-model.md#connection-tracking-costs).
+
 ### Application admission budgets
 
 Use `AdmissionConfig::new(timeout, max_pending)` with one concrete application
