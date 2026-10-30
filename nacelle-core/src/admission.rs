@@ -205,7 +205,7 @@ impl AdmissionState {
 
     pub fn acquire(&self) -> Result<AdmissionWaiter<'_>, NacelleError> {
         self.pending
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |pending| {
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |pending| {
                 (pending < self.config.max_pending).then_some(pending + 1)
             })
             .map_err(|_| {
