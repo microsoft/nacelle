@@ -790,7 +790,9 @@ where
     /// # Errors
     ///
     /// Returns the first listener or supervised-task error after requesting
-    /// shutdown from the remaining listeners.
+    /// shutdown from the remaining listeners. If listener installation fails,
+    /// drains already-installed listeners using the configured timeout before
+    /// returning the original installation error.
     ///
     /// # Panics
     ///
@@ -802,7 +804,12 @@ where
             .with_shutdown(self.shutdown)
             .with_shutdown_drain_timeout(self.drain_timeout);
         for install in self.listeners {
-            install(&mut host)?;
+            if let Err(error) = install(&mut host) {
+                host.shutdown();
+                // Preserve the installation error even if draining also fails.
+                let _ = host.wait().await;
+                return Err(error);
+            }
         }
         let ctrl_c_task = self
             .ctrl_c_shutdown
@@ -871,6 +878,48 @@ mod tests {
             ))
         ));
         assert_eq!(control.scope(), nacelle_core::NacelleControlScope::Shared);
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn installation_failure_shuts_down_and_drains_installed_listeners() {
+        let listener_state = std::sync::Arc::new(());
+        let handler_state = listener_state.clone();
+        let server = nacelle_http::HyperServer::new(handler_fn(
+            move |_context: nacelle_http::HttpRequestContext<()>| {
+                let _ = &handler_state;
+                async { Err(NacelleError::ConnectionClosed) }
+            },
+        ));
+        let invalid_server = nacelle_http::HyperServer::new(handler_fn(
+            |_context: nacelle_http::HttpRequestContext<()>| async {
+                Err(NacelleError::ConnectionClosed)
+            },
+        ));
+        let _server_control = invalid_server.runtime_control();
+        let shutdown = NacelleShutdown::new();
+        let shutdown_token = shutdown.token();
+        let addr = "127.0.0.1:0".parse().expect("valid socket address");
+        let app = NacelleApp::new()
+            .with_shutdown(shutdown)
+            .http("installed", addr, server)
+            .http("invalid", addr, invalid_server);
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), app.run())
+            .await
+            .expect("installation failure should finish draining")
+            .expect_err("exported server control should prevent installation");
+
+        assert!(matches!(
+            error,
+            NacelleError::Configuration(nacelle_core::NacelleConfigurationError::RuntimeStateInUse)
+        ));
+        assert!(shutdown_token.is_shutdown());
+        assert_eq!(
+            std::sync::Arc::strong_count(&listener_state),
+            1,
+            "installed listener must release its handler before run returns"
+        );
     }
 
     #[cfg(feature = "tcp")]
