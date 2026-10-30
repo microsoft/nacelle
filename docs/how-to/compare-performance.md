@@ -27,6 +27,13 @@ allocator, features, configuration, connection count, pipeline depth, payload,
 TLS provider, and client revision with every result. A throughput number without
 that context is not a comparable baseline.
 
+Also record the metrics recorder and switches, warm-up, sample duration,
+repetitions, and any uncommitted harness changes. Repeat the unchanged baseline
+before choosing regression thresholds, then compare each candidate both with
+its parent and the pinned starting revision. Keep allocation-instrumented runs
+separate from throughput/latency samples. Shared-host measurements establish
+local variance, not a dedicated-host performance guarantee.
+
 Suggested local benchmark:
 
 ```bash
@@ -40,6 +47,22 @@ cargo bench -p nacelle-codec --bench framed_comparison --all-features
 cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp"
 ```
 
+The same critical-path target has opt-in HTTP/1 loopback cases:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp http" -- http_connection_round_trip --noplot
+```
+
+`http_connection_round_trip/buffered_echo/0` and
+`http_connection_round_trip/buffered_echo/65536` measure one complete connection,
+request, and chunked response. They use two Tokio workers, the system allocator,
+default Nacelle telemetry switches without a recorder, and an application that
+buffers the request before echoing it. Client connection, allocation, and read
+costs are included. These are not persistent keep-alive, slow-reader, p99, or
+HTTPS measurements. The comparison scripts' `critical-paths` suite uses the
+TCP-only feature selection; run this HTTP selection separately with an
+identical harness at both revisions.
+
 The telemetry group can be run independently:
 
 ```bash
@@ -47,7 +70,10 @@ cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" --
 ```
 
 The TCP crate also measures one complete connection plus one request through the
-metrics facade, with independent phase-timing coverage:
+metrics facade, separating disabled metrics, default switches, request timing,
+and TCP phase timing. All four cases use an in-memory duplex transport without
+a metrics recorder; the feature selection below does not make them TLS
+handshakes:
 
 ```bash
 cargo bench -p nacelle-tcp --bench telemetry_paths --features "buffer-rotation phase-timing rustls tls-self-signed" -- --noplot

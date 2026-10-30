@@ -300,6 +300,86 @@ fn telemetry_benches(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "http")]
+fn http_connection_benches(c: &mut Criterion) {
+    use nacelle::core::{lifecycle::NacelleShutdown, pipeline::handler_fn};
+    use nacelle::http::{HttpRequestContext, HttpResponse, HyperServer};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    async fn round_trip(addr: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
+        let mut stream = TcpStream::connect(addr).await.expect("connect HTTP client");
+        stream.write_all(request).await.expect("write HTTP request");
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read HTTP response");
+        response
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("HTTP benchmark runtime");
+    let (shutdown, token) = NacelleShutdown::pair();
+    let (addr, task) = runtime.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind HTTP benchmark listener");
+        let addr = listener.local_addr().expect("HTTP listener address");
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                let mut body = BytesMut::new();
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    body.extend_from_slice(&chunk?);
+                }
+                context
+                    .respond(HttpResponse::bytes(http::StatusCode::OK, body.freeze()))
+                    .await
+            },
+        ));
+        let task =
+            tokio::spawn(async move { server.serve_listener_with_shutdown(listener, token).await });
+        (addr, task)
+    });
+
+    let mut group = c.benchmark_group("http_connection_round_trip");
+    for body_len in [0, 64 * 1024] {
+        let body = vec![0xAB; body_len];
+        let mut request = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes();
+        request.extend_from_slice(&body);
+        let response = runtime.block_on(round_trip(addr, &request));
+        assert!(response.starts_with(b"HTTP/1.1 200 "));
+        // The response adapter adds chunked framing around the non-ASCII payload.
+        assert_eq!(
+            response.iter().filter(|&&byte| byte == 0xAB).count(),
+            body_len
+        );
+
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(
+            BenchmarkId::new("buffered_echo", body_len),
+            &request,
+            |b, request| b.to_async(&runtime).iter(|| round_trip(addr, request)),
+        );
+    }
+    group.finish();
+
+    shutdown.shutdown();
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("HTTP benchmark should shut down")
+            .expect("HTTP server task should join")
+            .expect("HTTP server should exit cleanly");
+    });
+}
+
 criterion_group!(
     critical_paths,
     protocol_frame_benches,
@@ -308,4 +388,9 @@ criterion_group!(
     peer_rate_limit_benches,
     telemetry_benches
 );
+#[cfg(feature = "http")]
+criterion_group!(http_paths, http_connection_benches);
+#[cfg(feature = "http")]
+criterion_main!(critical_paths, http_paths);
+#[cfg(not(feature = "http"))]
 criterion_main!(critical_paths);

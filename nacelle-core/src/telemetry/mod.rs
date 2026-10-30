@@ -1092,8 +1092,8 @@ mod tests {
             telemetry.request_finished_with_context(
                 &context,
                 "ok",
-                0,
-                0,
+                3,
+                5,
                 Duration::from_millis(250),
             );
             telemetry.request_failed(
@@ -1136,6 +1136,83 @@ mod tests {
         assert_eq!(units["server.request.duration"], Some(&Unit::Seconds));
         assert_eq!(units["server.request.body.size"], Some(&Unit::Bytes));
         assert_eq!(units["server.response.body.size"], Some(&Unit::Bytes));
+
+        for (name, expected) in [
+            ("server.request.completed", DebugValue::Counter(1)),
+            (
+                "server.request.duration",
+                DebugValue::Histogram(vec![0.25.into()]),
+            ),
+            (
+                "server.request.body.size",
+                DebugValue::Histogram(vec![3.0.into()]),
+            ),
+            (
+                "server.response.body.size",
+                DebugValue::Histogram(vec![5.0.into()]),
+            ),
+        ] {
+            let matching: Vec<_> = snapshot
+                .iter()
+                .filter(|(key, _, _, _)| {
+                    key.key().name() == name
+                        && key.key().labels().any(|label| label.key() == "protocol")
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{name}");
+            let (key, _, _, value) = matching[0];
+            assert_eq!(*value, expected, "{name}");
+            let mut labels: Vec<_> = key
+                .key()
+                .labels()
+                .map(|label| (label.key(), label.value()))
+                .collect();
+            labels.sort_unstable();
+            assert_eq!(
+                labels,
+                vec![
+                    ("listener", "test"),
+                    ("protocol", "test"),
+                    ("status", "ok"),
+                    ("tls", "none"),
+                    ("transport", "tcp"),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_gauges_balance_peer_rejection_and_permit_drop() {
+        for (release, expected) in [(false, 1.0), (true, 0.0)] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                let state = crate::limits::NacelleRuntimeState::new(
+                    crate::limits::NacelleLimits::default().with_max_connections_per_peer(1),
+                );
+                NacelleTelemetry::default().register_runtime_state(state.clone());
+                let peer = "127.0.0.1".parse().expect("peer");
+                let connection = state.acquire_connection_for_peer(peer).expect("capacity");
+                assert!(state.acquire_connection_for_peer(peer).is_err());
+                let request = state.acquire_request().expect("request capacity");
+                let stream = state.acquire_streaming_task().expect("stream capacity");
+                if release {
+                    drop((connection, request, stream));
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                assert_eq!(snapshot.len(), 3);
+                for (key, _, _, value) in snapshot {
+                    assert!(matches!(
+                        key.key().name(),
+                        "server.connection.active"
+                            | "server.request.active"
+                            | "server.streaming_task.active"
+                    ));
+                    assert_eq!(key.key().labels().count(), 0);
+                    assert_eq!(value, DebugValue::Gauge(expected.into()));
+                }
+            });
+        }
     }
 
     #[test]

@@ -443,13 +443,27 @@ fn request_failure_metrics_do_not_require_an_observer() {
     });
 
     let snapshot = snapshotter.snapshot().into_vec();
-    for name in ["server.request.failed", "server.request.timed_out"] {
-        assert!(
-            snapshot
-                .iter()
-                .any(|(key, _, _, _)| key.key().name() == name),
-            "missing metric {name}"
-        );
+    for (name, labels) in [
+        ("server.request.failed", vec![("transport", "tcp")]),
+        (
+            "server.request.timed_out",
+            vec![("operation", "handler"), ("transport", "tcp")],
+        ),
+    ] {
+        let matching: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == name)
+            .collect();
+        assert_eq!(matching.len(), 1, "{name}");
+        let (key, _, _, value) = matching[0];
+        assert_eq!(*value, metrics_util::debugging::DebugValue::Counter(1));
+        let mut actual_labels: Vec<_> = key
+            .key()
+            .labels()
+            .map(|label| (label.key(), label.value()))
+            .collect();
+        actual_labels.sort_unstable();
+        assert_eq!(actual_labels, labels);
     }
 }
 

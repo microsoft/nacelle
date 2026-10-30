@@ -41,6 +41,9 @@ use crate::pipeline::{
     NoHttpConnectionState, SharedHttpAppStateHandler,
 };
 
+#[cfg(test)]
+mod baseline;
+
 trait HttpDispatch<State, Observer>
 where
     Observer: NacelleTelemetryObserver,

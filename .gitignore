@@ -30,6 +30,7 @@ artifacts
 docs/internal
 .github/plans/
 .github/ledger/
+.data/
 
 # Generated Reports
 .reports/
