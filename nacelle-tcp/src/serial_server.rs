@@ -75,6 +75,18 @@ impl<P, H> SerialTcpServer<P, H, NoopObserver> {
 }
 
 impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
+    /// Set TCP framing and buffering configuration before or after binding application state.
+    pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set socket, idle, and handler timeouts.
+    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
+        self.tcp_limits = tcp_limits;
+        self
+    }
+
     /// Install admission over an exclusively borrowed head and connection state.
     ///
     /// # Errors
@@ -130,18 +142,6 @@ where
     H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
-    /// Set TCP framing and buffering configuration.
-    pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Set socket, idle, and handler timeouts.
-    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
-        self.tcp_limits = tcp_limits;
-        self
-    }
-
     /// Replace the runtime limits and accounting state.
     ///
     /// Returns a configuration error while the previous state has live handles
@@ -317,6 +317,18 @@ impl<P, H> LocalSerialTcpServer<P, H, NoopObserver> {
 }
 
 impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
+    /// Set worker-local TCP configuration before or after binding application state.
+    pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set worker-local TCP timeouts.
+    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
+        self.tcp_limits = tcp_limits;
+        self
+    }
+
     /// Install worker-local admission over exclusive connection state.
     ///
     /// # Errors
@@ -370,18 +382,6 @@ where
     H: crate::admission::LocalSerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
-    /// Set worker-local TCP framing and buffering configuration.
-    pub fn with_tcp_config(mut self, config: NacelleTcpConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    /// Set worker-local TCP timeouts.
-    pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
-        self.tcp_limits = tcp_limits;
-        self
-    }
-
     /// Set worker-local runtime limits and accounting.
     ///
     /// Returns a configuration error while the previous state has live handles

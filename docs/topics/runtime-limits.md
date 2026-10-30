@@ -141,10 +141,11 @@ No application permit is retained just to flush queued output.
 
 For admission-enabled TCP failures, the admission timeout supplies a finite
 fallback for error-response writes and closing flush/shutdown when those TCP
-timeouts were disabled. Normal admitted responses retain the selected
-transport deadlines. Cancellation during a prior-response flush abandons that
-delivery and closes without retrying partially written bytes or generating
-another error response.
+timeouts were disabled, including malformed or oversized heads rejected before
+request dispatch. Explicit TCP timeouts take precedence. Normal admitted
+responses retain the selected transport deadlines. Cancellation during a
+prior-response flush abandons that delivery and closes without retrying
+partially written bytes or generating another error response.
 
 ### Transport and body settings
 

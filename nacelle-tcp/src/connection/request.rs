@@ -362,9 +362,16 @@ where
                         flushed = true;
                         future.await.map_err(NacelleError::AdmissionRejected)
                     };
-                    let result = tokio::time::timeout(admission.config().timeout(), wait)
-                        .await
-                        .unwrap_or(Err(NacelleError::Timeout(NacelleTimeoutReason::Admission)));
+                    let result = match tokio::time::timeout(admission.config().timeout(), wait).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            let error = NacelleError::Timeout(NacelleTimeoutReason::Admission);
+                            if !flushed {
+                                record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+                            }
+                            Err(error)
+                        }
+                    };
                     prior_delivery_failed = !flushed && result.is_err();
                     result
                 }

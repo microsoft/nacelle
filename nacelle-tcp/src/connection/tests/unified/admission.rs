@@ -440,6 +440,249 @@ impl AsyncWrite for FlushGate {
     }
 }
 
+struct WriteGate {
+    inner: FlushGate,
+    remaining: usize,
+}
+
+impl AsyncRead for WriteGate {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for WriteGate {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.remaining == 0 {
+            return Poll::Pending;
+        }
+        let take = bytes.len().min(self.remaining);
+        let result = Pin::new(&mut self.inner).poll_write(cx, &bytes[..take]);
+        if let Poll::Ready(Ok(written)) = result {
+            self.remaining -= written;
+        }
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn head_error_delivery_bounds_disabled_timeouts_and_preserves_explicit_timeouts() {
+    for (input, head_bytes, handled, expected) in [
+        (&b"\xff"[..], 2, 0, &b"[-custom:malformed]"[..]),
+        (&b"A\0\xff"[..], 2, 1, &b"[Aok][-custom:malformed]"[..]),
+        (&b"A\0"[..], 1, 0, &b"[-custom:malformed]"[..]),
+    ] {
+        for policy in [
+            ResponseWritePolicy::Immediate,
+            ResponseWritePolicy::CoalesceBuffered,
+        ] {
+            for flush_only in [false, true] {
+                for write_timeout in [None, Some(Duration::from_secs(3))] {
+                    let rule = Capacity::new(1);
+                    let protocol = CustomProtocol::default();
+                    let runtime = NacelleRuntimeState::default();
+                    let calls = Arc::default();
+                    let mut limits = NacelleTcpLimits::default()
+                        .without_write_timeout()
+                        .without_shutdown_timeout();
+                    limits.write_timeout = write_timeout;
+                    let server = server(
+                        rule.clone(),
+                        protocol.clone(),
+                        NacelleTcpConfig::default()
+                            .with_head_read_limits(TcpHeadReadLimits::new(head_bytes, 4).unwrap())
+                            .with_response_write_policy(policy),
+                        runtime.clone(),
+                        Arc::clone(&calls),
+                        1,
+                    )
+                    .with_tcp_limits(limits);
+                    let inner = io(input);
+                    let writes = inner.writes.clone();
+                    let started = tokio::time::Instant::now();
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(4),
+                        server.serve_io(WriteGate {
+                            inner: FlushGate {
+                                inner,
+                                open: Arc::new(AtomicBool::new(!flush_only)),
+                                flushes: Arc::default(),
+                            },
+                            remaining: if flush_only {
+                                usize::MAX
+                            } else if policy == ResponseWritePolicy::Immediate && handled == 1 {
+                                b"[Aok][".len()
+                            } else {
+                                1
+                            },
+                        }),
+                    )
+                    .await
+                    .expect("head-error delivery must have a finite deadline");
+                    assert!(matches!(
+                        result,
+                        Err(NacelleError::Timeout(NacelleTimeoutReason::TcpWrite))
+                    ));
+                    assert_eq!(
+                        started.elapsed(),
+                        write_timeout.unwrap_or(Duration::from_secs(1))
+                    );
+                    assert_eq!(
+                        writes.lock().unwrap().concat(),
+                        if flush_only {
+                            expected
+                        } else if policy == ResponseWritePolicy::Immediate && handled == 1 {
+                            &b"[Aok]["[..]
+                        } else {
+                            b"["
+                        }
+                    );
+                    assert_eq!(*protocol.errors.lock().unwrap(), vec![None]);
+                    assert_eq!(calls.load(Ordering::SeqCst), handled);
+                    assert_eq!(rule.calls.load(Ordering::SeqCst), handled);
+                    assert_released(&runtime);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn admitted_normal_response_does_not_gain_a_disabled_write_deadline() {
+    let rule = Capacity::new(1);
+    let runtime = NacelleRuntimeState::default();
+    let server = server(
+        rule,
+        CustomProtocol::default(),
+        config(2),
+        runtime.clone(),
+        Arc::default(),
+        1,
+    )
+    .with_tcp_limits(NacelleTcpLimits::default().without_write_timeout());
+    let mut future = Box::pin(server.serve_io(WriteGate {
+        inner: FlushGate {
+            inner: io(b"A\0"),
+            open: Arc::new(AtomicBool::new(true)),
+            flushes: Arc::default(),
+        },
+        remaining: 1,
+    }));
+    pending(future.as_mut()).await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    pending(future.as_mut()).await;
+    drop(future);
+    assert_released(&runtime);
+}
+
+#[test]
+fn cancelled_pre_admission_delivery_records_one_socket_write_timeout() {
+    use metrics_util::debugging::DebugValue;
+
+    for flush_only in [false, true] {
+        for (metrics, errors) in [(false, true), (true, true), (true, false)] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let observer = NacelleInMemoryObserver::new();
+            let runtime = NacelleRuntimeState::default();
+            metrics::with_local_recorder(&recorder, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .start_paused(true)
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let mut rule = Capacity::new(0);
+                        rule.wait_on = Some(b'B');
+                        let protocol = CustomProtocol::default();
+                        let calls = Arc::default();
+                        let server = server(
+                            rule.clone(),
+                            protocol.clone(),
+                            config(4)
+                                .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
+                            runtime.clone(),
+                            Arc::clone(&calls),
+                            1,
+                        )
+                        .with_telemetry(
+                            NacelleTelemetry::default()
+                                .with_metrics(metrics)
+                                .with_error_metrics(errors)
+                                .with_observer(observer.clone()),
+                        );
+                        let inner = io(b"A\0B\0");
+                        let writes = inner.writes.clone();
+                        let flushes = Arc::new(AtomicUsize::new(0));
+                        let mut future = Box::pin(server.serve_io(WriteGate {
+                            inner: FlushGate {
+                                inner,
+                                open: Arc::new(AtomicBool::new(!flush_only)),
+                                flushes: flushes.clone(),
+                            },
+                            remaining: if flush_only { usize::MAX } else { 1 },
+                        }));
+                        pending(future.as_mut()).await;
+                        tokio::time::advance(Duration::from_secs(1)).await;
+                        assert!(matches!(
+                            future.await,
+                            Err(NacelleError::Timeout(NacelleTimeoutReason::Admission))
+                        ));
+                        assert_eq!(
+                            writes.lock().unwrap().concat(),
+                            if flush_only { &b"[Aok]"[..] } else { b"[" }
+                        );
+                        assert!(protocol.errors.lock().unwrap().is_empty());
+                        assert_eq!(calls.load(Ordering::SeqCst), 1);
+                        assert_eq!(rule.calls.load(Ordering::SeqCst), 2);
+                        assert_eq!(rule.drops.load(Ordering::SeqCst), 1);
+                    });
+            });
+            assert_released(&runtime);
+            assert!(!observer.events().iter().any(|event| matches!(
+                event.kind,
+                NacelleTelemetryEventKind::RequestRejected
+                    | NacelleTelemetryEventKind::RequestFailed
+            )));
+            let snapshot = snapshotter.snapshot().into_vec();
+            let failures: Vec<_> = snapshot
+                .iter()
+                .filter(|(key, _, _, _)| key.key().name() == "server.errors")
+                .collect();
+            if metrics && errors {
+                assert_eq!(failures.len(), 1);
+                let (key, _, _, value) = failures[0];
+                assert_eq!(*value, DebugValue::Counter(1));
+                let labels: Vec<_> = key
+                    .key()
+                    .labels()
+                    .map(|label| (label.key(), label.value()))
+                    .collect();
+                assert!(labels.contains(&("phase", "socket_write")));
+                assert!(labels.contains(&("error_kind", "timeout")));
+            } else {
+                assert!(failures.is_empty());
+            }
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn pending_policy_flushes_prior_output_and_underlying_writer_within_deadline() {
     for timeout in [false, true] {
@@ -728,6 +971,94 @@ async fn local_and_serial_servers_dispatch_one_borrowed_policy() {
 }
 
 struct SerialBorrow;
+
+#[derive(Default)]
+struct SerialAppState {
+    policy_calls: AtomicUsize,
+    handler_calls: AtomicUsize,
+}
+
+struct StateOnlySerialHandler;
+
+impl SerialTcpHandler<CustomProtocol, SerialAppState> for StateOnlySerialHandler {
+    async fn call<'a>(
+        &'a self,
+        context: SerialTcpRequestContext<'a, CustomProtocol, SerialAppState>,
+    ) -> Result<TcpHandlerCompletion<CustomProtocol>, NacelleError> {
+        assert_eq!(context.app_state().policy_calls.load(Ordering::SeqCst), 1);
+        context
+            .app_state()
+            .handler_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(context.complete())
+    }
+}
+
+impl LocalSerialTcpHandler<CustomProtocol, SerialAppState> for StateOnlySerialHandler {
+    async fn call<'a>(
+        &'a self,
+        context: SerialTcpRequestContext<'a, CustomProtocol, SerialAppState>,
+    ) -> Result<TcpHandlerCompletion<CustomProtocol>, NacelleError> {
+        SerialTcpHandler::call(self, context).await
+    }
+}
+
+struct SerialStateRule;
+
+impl<'a> Admission<SerialTcpAdmissionContext<'a, CustomProtocol, SerialAppState>>
+    for SerialStateRule
+{
+    type Permit = ();
+
+    async fn admit(
+        &self,
+        context: SerialTcpAdmissionContext<'a, CustomProtocol, SerialAppState>,
+    ) -> Result<(), AdmissionRejection> {
+        assert_eq!(*context.head(), b'S');
+        context
+            .app_state()
+            .policy_calls
+            .fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn state_only_serial_handlers_configure_admission_before_binding_app_state() {
+    for local in [false, true] {
+        let state = Arc::new(SerialAppState::default());
+        let admission = AdmissionConfig::new(Duration::from_secs(1), 1).unwrap();
+        let runtime = NacelleRuntimeState::default();
+        if local {
+            LocalSerialTcpServer::new(CustomProtocol::default(), StateOnlySerialHandler)
+                .with_tcp_config(config(2))
+                .with_tcp_limits(NacelleTcpLimits::default())
+                .with_admission(SerialStateRule, admission)
+                .unwrap()
+                .with_app_state(state.clone())
+                .with_runtime_state(runtime.clone())
+                .unwrap()
+                .serve_io(io(b"S\0"))
+                .await
+                .unwrap();
+        } else {
+            SerialTcpServer::new(CustomProtocol::default(), StateOnlySerialHandler)
+                .with_tcp_config(config(2))
+                .with_tcp_limits(NacelleTcpLimits::default())
+                .with_admission(SerialStateRule, admission)
+                .unwrap()
+                .with_app_state(state.clone())
+                .with_runtime_state(runtime.clone())
+                .unwrap()
+                .serve_io(io(b"S\0"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(state.policy_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(state.handler_calls.load(Ordering::SeqCst), 1);
+        assert_released(&runtime);
+    }
+}
 
 impl<'a> Admission<SerialTcpAdmissionContext<'a, SerialCounterProtocol>> for SerialBorrow {
     type Permit = ();

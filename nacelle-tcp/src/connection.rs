@@ -299,6 +299,12 @@ where
     }
     telemetry.connection_opened(transport);
 
+    let mut error_limits = tcp_limits;
+    if let Some(admission) = handler.admission_state() {
+        error_limits
+            .write_timeout
+            .get_or_insert(admission.config().timeout());
+    }
     let result: Result<(), NacelleError> = async {
         'conn: loop {
             #[cfg(feature = "buffer-rotation")]
@@ -327,7 +333,7 @@ where
                             protocol.deref(),
                             None,
                             &error,
-                            &tcp_limits,
+                            &error_limits,
                             &mut response_delivery,
                             &runtime_state,
                             &telemetry,
@@ -374,7 +380,7 @@ where
                             protocol.deref(),
                             None,
                             &error,
-                            &tcp_limits,
+                            &error_limits,
                             &mut response_delivery,
                             &runtime_state,
                             &telemetry,
@@ -405,13 +411,14 @@ where
     }
     .await;
 
-    let mut closing_limits = tcp_limits;
+    let mut closing_limits = if result.is_err() {
+        error_limits
+    } else {
+        tcp_limits
+    };
     if result.is_err()
         && let Some(admission) = handler.admission_state()
     {
-        closing_limits
-            .write_timeout
-            .get_or_insert(admission.config().timeout());
         closing_limits
             .shutdown_timeout
             .get_or_insert(admission.config().timeout());

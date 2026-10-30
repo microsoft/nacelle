@@ -86,6 +86,8 @@ Configure H/B with `TcpHeadReadLimits`, then call the shared builder's
 `.admission(policy, AdmissionConfig::new(timeout, max_pending)?)?`.
 Local, serial, and local-serial servers use `.with_admission(...)` after
 `.with_tcp_config(...)`. Missing bounded-head configuration fails before I/O.
+Serial handlers that require typed application state can configure TCP limits
+and install admission before the application or worker runtime binds that state.
 An unconfigured server has no policy accounting or timer; explicit `AllowAll`
 uses the configured admission bounds and returns `()`.
 
@@ -104,7 +106,9 @@ without interpreting unread body bytes as another head.
 The permit covers body resolution, handler work, and response encoding.
 It is released before a completion callback's final flush, not after remote
 receipt. A cancelled or failed prior-output flush closes without retrying the
-write or encoding a replacement error. See
+write or encoding a replacement error. When the admission deadline cancels that
+flush, TCP records one `server.errors` timeout under `socket_write` when error
+metrics are enabled, not an admission rejection for the waiting request. See
 [admission budgets](../topics/runtime-limits.md#application-admission-budgets)
 for scope, deadlines, cancellation, and disabled-timeout fallbacks.
 
