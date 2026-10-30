@@ -223,6 +223,14 @@ The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
 
+`connection_permit_contended/{bounded,unlimited}` adds four persistent worker
+threads sharing one state. Each timed round includes start/finish barriers and
+1,024 acquire/drop operations; thread creation is outside the measurement.
+Treat it as a contention comparison, not isolated single-permit latency. Keep
+CPU affinity, worker count, metrics configuration, and the same benchmark
+harness fixed on both revisions. The `peer_rate_limit_distinct_peers` group
+measures the rate table directly, separately from runtime-state admission.
+
 ## Profile Linux CPU and allocations
 
 Use the Linux profiling helper for repeatable plain-TCP diagnostics:

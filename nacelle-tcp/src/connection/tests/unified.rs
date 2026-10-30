@@ -174,6 +174,7 @@ where
         .tcp_config(config)
         .tcp_limits(tcp_limits)
         .runtime_state(runtime_state)
+        .expect("runtime configuration")
         .build()
         .expect("custom server should build");
     let client = async {
@@ -544,6 +545,7 @@ async fn late_body_failure_after_silent_completion(close_request: bool) {
             .tcp_config(config)
             .tcp_limits(NacelleTcpLimits::default().with_read_timeout(Duration::from_millis(20)))
             .runtime_state(runtime_state.clone())
+            .expect("runtime configuration")
             .build()
             .expect("custom server should build");
         let client = async {
@@ -697,6 +699,7 @@ async fn error_reply_write_failure_does_not_reenter_error_hook() {
             |context: TcpRequestContext<CustomProtocol>| async move { Ok(context.complete()) },
         ))
         .runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .build()
         .expect("custom server should build");
     let result = server
@@ -792,6 +795,7 @@ async fn ordinary_response_write_failure_does_not_invoke_error_hook() {
             },
         ))
         .runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .build()
         .expect("custom server should build");
 
@@ -849,6 +853,7 @@ async fn silent_completion_is_distinct_from_an_encoded_empty_response() {
             }))
             .tcp_config(NacelleTcpConfig::default().with_response_write_policy(policy))
             .runtime_state(runtime_state.clone())
+            .expect("runtime configuration")
             .build()
             .expect("custom server should build");
 
@@ -920,12 +925,14 @@ async fn serial_and_local_dispatch_preserve_silence_and_encode_custom_errors() {
                 LocalSerialTcpServer::new(protocol.clone(), CustomSerialHandler)
                     .with_tcp_config(config)
                     .with_runtime_state(runtime_state.clone())
+                    .expect("runtime configuration")
                     .serve_io(io)
                     .await
             } else {
                 SerialTcpServer::new(protocol.clone(), CustomSerialHandler)
                     .with_tcp_config(config)
                     .with_runtime_state(runtime_state.clone())
+                    .expect("runtime configuration")
                     .serve_io(io)
                     .await
             };

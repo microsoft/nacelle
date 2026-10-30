@@ -923,6 +923,7 @@ where
 
 fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     match error {
+        crate::error::NacelleError::Configuration(_) => Some("configuration"),
         crate::error::NacelleError::ResourceLimit(reason) => Some(reason.as_str()),
         crate::error::NacelleError::Timeout(reason) => Some(reason.as_str()),
         crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
@@ -939,6 +940,7 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
 
 fn error_kind(error: &crate::error::NacelleError) -> &'static str {
     match error {
+        crate::error::NacelleError::Configuration(_) => "configuration",
         crate::error::NacelleError::ResourceLimit(_) => "resource_limit",
         crate::error::NacelleError::Timeout(_) => "timeout",
         crate::error::NacelleError::InvalidFrame(_) => "invalid_frame",
@@ -1213,6 +1215,39 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[test]
+    fn live_rate_rejection_rolls_back_peer_capacity_and_gauge() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let state = crate::NacelleRuntimeState::new(
+                crate::NacelleLimits::default().with_max_connections_per_peer(1),
+            );
+            let control = state.control();
+            control.set_connection_open_rate(Some(0)).expect("pause");
+            let peer = "127.0.0.1".parse().expect("peer");
+            assert!(matches!(
+                state.acquire_connection_for_peer(peer),
+                Err(crate::NacelleError::ResourceLimit(
+                    crate::NacelleResourceLimitReason::PeerConnectionRate
+                ))
+            ));
+            assert_eq!(state.active_connections(), 0);
+            control.set_connection_open_rate(None).expect("disable");
+            drop(
+                state
+                    .acquire_connection_for_peer(peer)
+                    .expect("peer capacity rolled back"),
+            );
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_eq!(snapshot.len(), 1);
+            let (key, _, _, value) = &snapshot[0];
+            assert_eq!(key.key().name(), "server.connection.active");
+            assert_eq!(key.key().labels().count(), 0);
+            assert_eq!(*value, DebugValue::Gauge(0.0.into()));
+        });
     }
 
     #[test]

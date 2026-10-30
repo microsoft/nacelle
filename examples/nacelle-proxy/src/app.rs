@@ -90,6 +90,25 @@ impl ProxyApp {
 
         let shutdown = NacelleShutdown::new();
         let reload_policy = ReloadPolicy::new(startup);
+        println!("nacelle proxy listening on {listen_addr}");
+        let limits = NacelleLimits::default()
+            .with_max_in_flight_requests(startup.max_in_flight_requests)
+            .with_max_connections_per_peer(startup.max_connections_per_peer)
+            .with_max_request_body_bytes(startup.max_request_body_bytes)
+            .with_max_response_body_bytes(startup.max_response_body_bytes)
+            .with_handler_timeout(startup.handler_timeout);
+        let runtime_state = nacelle::core::NacelleRuntimeState::new(limits);
+        runtime_state
+            .control()
+            .set_max_connections(Some(startup.max_connections))
+            .map_err(ProxyError::runtime)?;
+        let app = NacelleApp::new()
+            .with_runtime_state(runtime_state)
+            .map_err(ProxyError::runtime)?
+            .with_shutdown(shutdown.clone())
+            .with_ctrl_c_shutdown()
+            .tcp_tls("proxy", listen_addr, server, self.tls_config)
+            .run();
         let watcher = tokio::spawn(watch_configuration(
             self.config_path,
             self.initial,
@@ -97,21 +116,6 @@ impl ProxyApp {
             self.service,
             shutdown.token(),
         ));
-
-        println!("nacelle proxy listening on {listen_addr}");
-        let limits = NacelleLimits::default()
-            .with_max_connections(startup.max_connections)
-            .with_max_in_flight_requests(startup.max_in_flight_requests)
-            .with_max_connections_per_peer(startup.max_connections_per_peer)
-            .with_max_request_body_bytes(startup.max_request_body_bytes)
-            .with_max_response_body_bytes(startup.max_response_body_bytes)
-            .with_handler_timeout(startup.handler_timeout);
-        let app = NacelleApp::new()
-            .with_limits(limits)
-            .with_shutdown(shutdown.clone())
-            .with_ctrl_c_shutdown()
-            .tcp_tls("proxy", listen_addr, server, self.tls_config)
-            .run();
         supervise_application(app, watcher, shutdown).await
     }
 }

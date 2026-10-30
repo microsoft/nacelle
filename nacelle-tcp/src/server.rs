@@ -141,10 +141,21 @@ where
     }
 
     /// Set runtime limits/accounting for this worker.
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime_state = runtime_state;
-        self
+    ///
+    /// Rejects replacement while the previous state has live handles or clones.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        self.telemetry
+            .register_runtime_state(self.runtime_state.clone());
+        Ok(self)
+    }
+
+    /// Control this server's installed state. Exported handles prevent replacement.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
     }
 
     /// Set telemetry for this worker.
@@ -169,23 +180,24 @@ where
 
     #[doc(hidden)]
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> LocalTcpServer<P, H, Next>
+    ) -> Result<LocalTcpServer<P, H, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
-        LocalTcpServer {
+        self.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        Ok(LocalTcpServer {
             protocol: self.protocol,
             handler: self.handler,
             config: self.config,
             telemetry,
-            runtime_state,
+            runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-        }
+        })
     }
 
     /// Set the stable listener label recorded in connection metadata.
@@ -245,6 +257,28 @@ pub type AppStateTcpServer<P, H, Observer, AppState> =
     TcpServer<P, SharedAppStateHandler<P, H, AppState>, Observer>;
 
 impl<P, H, Observer> TcpServer<P, H, Observer> {
+    /// Install startup state before exporting controls or sharing the server.
+    ///
+    /// Reinstalling the same state is allowed; replacing shared state is a
+    /// configuration error.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError>
+    where
+        Observer: NacelleTelemetryObserver,
+    {
+        self.runtime_state.replace(runtime_state)?;
+        self.telemetry
+            .register_runtime_state(self.runtime_state.clone());
+        Ok(self)
+    }
+
+    /// Control this server's installed state. Exported handles prevent replacement.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
+    }
+
     /// Bind application state before shared-runtime request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
@@ -319,12 +353,6 @@ where
         self
     }
 
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime_state = runtime_state;
-        self
-    }
-
     pub fn with_tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {
         self.tcp_limits = tcp_limits;
         self
@@ -348,23 +376,24 @@ where
 
     #[doc(hidden)]
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> TcpServer<P, H, Next>
+    ) -> Result<TcpServer<P, H, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
-        TcpServer {
+        self.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        Ok(TcpServer {
             protocol: self.protocol,
             handler: self.handler,
             config: self.config,
             telemetry,
-            runtime_state,
+            runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-        }
+        })
     }
 
     /// Serve one connection from independently owned read and write halves.
@@ -514,9 +543,13 @@ impl<ProtocolState, HandlerState, P, H, Observer>
         }
     }
 
-    pub fn runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.runtime_state = runtime_state;
-        self
+    /// Install startup state, rejecting replacement of a state already shared.
+    pub fn runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        Ok(self)
     }
 
     pub fn tcp_limits(mut self, tcp_limits: NacelleTcpLimits) -> Self {

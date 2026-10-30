@@ -12,9 +12,15 @@ pub mod request;
 pub mod runtime;
 pub mod telemetry;
 
-pub use error::{BoxError, NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
+pub use error::{
+    BoxError, NacelleConfigurationError, NacelleError, NacelleResourceLimitReason,
+    NacelleTimeoutReason,
+};
 pub use lifecycle::{NacelleShutdown, NacelleShutdownToken};
-pub use limits::{NacelleLimits, NacelleRuntimeState, TrackedPermit};
+pub use limits::{
+    NacelleConnectionLimits, NacelleControlScope, NacelleLimits, NacelleRuntimeControl,
+    NacelleRuntimeState, TrackedPermit,
+};
 pub use peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };

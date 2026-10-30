@@ -187,7 +187,12 @@ impl NacellePeerRateLimiter {
         self.started_at.elapsed().as_secs() as u32
     }
 
-    fn try_acquire_at(&self, peer: IpAddr, limit: usize, tick: u32) -> NacellePeerRateLimitResult {
+    pub(crate) fn try_acquire_at(
+        &self,
+        peer: IpAddr,
+        limit: usize,
+        tick: u32,
+    ) -> NacellePeerRateLimitResult {
         if limit == 0 {
             return NacellePeerRateLimitResult::RateLimited;
         }

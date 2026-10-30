@@ -27,6 +27,25 @@ Repeatable profiles:
 - `examples/nacelle-stress-server/configs/tcp-tls.toml`: TCP wrapped in
   self-signed TLS.
 
+Server TOML separates initial live thresholds from startup-only limits:
+
+```toml
+[connection_limits]
+max_connections = 16384
+# max_connection_opens_per_peer_per_second = 100
+
+[limits]
+connection_rate_limit_table_capacity = 16384
+```
+
+Connection totals and rates no longer belong in `[limits]`; old fields are
+rejected rather than ignored. Zero rejects new admissions. An overlay can use
+`unlimited_connections = true` or `disable_connection_open_rate = true` inside
+`[connection_limits]` to clear an earlier finite value. A finite value and its
+true clearing flag in the same file are an error; omitted or false flags leave
+the prior value unchanged. These files configure startup thresholds, not a
+remote administrative endpoint.
+
 Linux example:
 
 ```bash

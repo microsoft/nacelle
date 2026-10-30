@@ -10,7 +10,7 @@ use tokio::task::JoinSet;
 use nacelle_core::error::NacelleResourceLimitReason;
 use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdown, NacelleShutdownToken};
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+use nacelle_core::limits::NacelleRuntimeState;
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::NacelleTransport;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
@@ -57,6 +57,8 @@ use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 /// Terminal methods return listener bind, accept, transport, resource-limit,
 /// timeout, or supervised-task errors as [`NacelleError`]. Match variants and
 /// reason enums rather than parsing display text.
+/// Registration returns configuration errors before spawning a listener when
+/// its server state is already shared with a different control handle or clone.
 ///
 /// # Panics
 ///
@@ -164,16 +166,21 @@ where
         self.app_state.as_ref()
     }
 
-    /// Replace the process-wide limits used by every enabled listener.
-    pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
-        self.runtime_state = NacelleRuntimeState::new(limits);
-        self
+    /// Replace the process-wide runtime state used by every enabled listener.
+    ///
+    /// Returns a configuration error after the state is shared with a handle
+    /// or listener. Reinstalling the identical state is allowed.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        Ok(self)
     }
 
-    /// Replace the process-wide runtime state used by every enabled listener.
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.runtime_state = runtime_state;
-        self
+    /// Control the exact state used by this host's listeners.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
     }
 
     /// Return a token that observes this host's shutdown source.
@@ -206,7 +213,7 @@ where
         name: impl Into<String>,
         addr: SocketAddr,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -218,7 +225,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -239,7 +246,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "tcp")]
@@ -249,7 +256,7 @@ where
         name: impl Into<String>,
         addr: SocketAddr,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -272,7 +279,7 @@ where
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -285,7 +292,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -308,7 +315,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "tcp")]
@@ -319,7 +326,7 @@ where
         addr: SocketAddr,
         tcp_options: NacelleTcpOptions,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -331,7 +338,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -353,7 +360,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "tcp")]
@@ -364,7 +371,7 @@ where
         addr: SocketAddr,
         bind_options: NacelleTcpBindOptions,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -376,7 +383,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -398,7 +405,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", unix))]
@@ -408,7 +415,7 @@ where
         name: impl Into<String>,
         path: impl AsRef<Path>,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -422,7 +429,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
         self.tasks.spawn(async move {
@@ -443,7 +450,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", unix))]
@@ -454,7 +461,7 @@ where
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -468,7 +475,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
         self.tasks.spawn(async move {
@@ -490,7 +497,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", unix))]
@@ -500,7 +507,7 @@ where
         name: impl Into<String>,
         path: impl AsRef<Path>,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -523,7 +530,7 @@ where
         path: impl AsRef<Path>,
         unix_options: NacelleUnixSocketOptions,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -538,7 +545,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("unix_socket"), &name, &path_label);
         self.tasks.spawn(async move {
@@ -561,7 +568,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", feature = "rustls"))]
@@ -572,7 +579,7 @@ where
         addr: SocketAddr,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleTlsConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -584,7 +591,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -606,7 +613,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
@@ -617,7 +624,7 @@ where
         addr: SocketAddr,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -641,7 +648,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -665,7 +672,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -677,7 +684,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -701,7 +708,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
@@ -712,7 +719,7 @@ where
         addr: SocketAddr,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -737,7 +744,7 @@ where
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -750,7 +757,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -773,7 +780,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
@@ -784,7 +791,7 @@ where
         addr: SocketAddr,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -810,7 +817,7 @@ where
         tls_config: NacelleOpenSslConfig,
         tcp_options: NacelleTcpOptions,
         detection_options: NacelleTlsDetectionOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -836,7 +843,7 @@ where
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -848,7 +855,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -868,7 +875,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
@@ -879,7 +886,7 @@ where
         addr: SocketAddr,
         server: nacelle_tcp::SerialTcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -907,7 +914,7 @@ where
         tls_config: NacelleOpenSslConfig,
         bind_options: NacelleTcpBindOptions,
         detection_options: NacelleTlsDetectionOptions,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
@@ -920,7 +927,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("tcp"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -944,7 +951,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(feature = "http")]
@@ -954,7 +961,7 @@ where
         name: impl Into<String>,
         addr: SocketAddr,
         server: nacelle_http::HyperServer<H, F, ServerObserver>,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         F: nacelle_http::HttpConnectionStateFactory,
         H: nacelle_http::HttpHandler<F::State, AppState>,
@@ -966,7 +973,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -983,7 +990,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     #[cfg(all(feature = "http", feature = "rustls"))]
@@ -994,7 +1001,7 @@ where
         addr: SocketAddr,
         server: nacelle_http::HyperServer<H, F, ServerObserver>,
         tls_config: NacelleTlsConfig,
-    ) -> &mut Self
+    ) -> Result<&mut Self, NacelleError>
     where
         F: nacelle_http::HttpConnectionStateFactory,
         H: nacelle_http::HttpHandler<F::State, AppState>,
@@ -1006,7 +1013,7 @@ where
         let drain_deadline = self.drain_deadline.clone();
         let server = server
             .with_app_state(self.app_state.clone())
-            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())
+            .with_runtime_context(self.telemetry.clone(), self.runtime_state.clone())?
             .with_listener_label(name.clone());
         telemetry.listener_configured(NacelleTransport::new("http"), &name, &addr.to_string());
         self.tasks.spawn(async move {
@@ -1029,7 +1036,7 @@ where
             }
             result
         });
-        self
+        Ok(self)
     }
 
     /// Wait until every listener exits, requesting shutdown on the first failure.
@@ -1100,6 +1107,32 @@ mod tests {
     use tokio::sync::oneshot;
 
     use super::*;
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn host_rejects_detached_controls_before_spawning_a_listener() {
+        let mut host = NacelleHost::new();
+        let server = nacelle_http::HyperServer::new(nacelle_core::pipeline::handler_fn(
+            |_context: nacelle_http::HttpRequestContext<()>| async move {
+                Err(NacelleError::ConnectionClosed)
+            },
+        ));
+        let _server_control = server.runtime_control();
+        assert!(matches!(
+            host.enable_http("http", "127.0.0.1:0".parse().expect("address"), server),
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::RuntimeStateInUse
+            ))
+        ));
+        assert!(host.tasks.is_empty());
+        let _host_control = host.runtime_control();
+        assert!(matches!(
+            host.with_runtime_state(NacelleRuntimeState::default()),
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::RuntimeStateInUse
+            ))
+        ));
+    }
 
     #[tokio::test]
     async fn listener_failure_requests_shutdown_and_drains_remaining_tasks() {

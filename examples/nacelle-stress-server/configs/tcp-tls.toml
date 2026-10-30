@@ -9,8 +9,10 @@ low_memory = false
 byte_metrics = true
 tls_self_signed = true
 
-[limits]
+[connection_limits]
 max_connections = 16384
+
+[limits]
 max_in_flight_requests = 65536
 max_streaming_tasks = 8192
 max_request_body_bytes = 16777216

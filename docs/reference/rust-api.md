@@ -50,6 +50,9 @@ they do not change request semantics.
   `Display`. Connection-local failures, including HTTP connection-task panics,
   are observed through telemetry and do not normally stop the listener;
   listener setup/accept failure and top-level listener-task failure do.
+  Runtime-state installation and host `enable_*` calls are fallible;
+  `NacelleError::Configuration` includes invalid thresholds and attempts to
+  replace state still shared by control handles or listeners.
 - **Panics:** shared-runtime serving methods do not intentionally panic for
   runtime or peer input. They must be called while a Tokio runtime is entered;
   Tokio may panic otherwise. Worker-local methods additionally require the
@@ -118,9 +121,14 @@ Start with these public entry points:
   `WorkerSet::all()`, `WorkerSet::first(...)`, or `WorkerSet::explicit(...)` while preserving
   selection order. The shared runtime is caller-owned; configure its Tokio thread count on the
   runtime builder instead.
-- `nacelle::runtime::ThreadPerCoreLimits::Global` for exact process-wide counters, or
-  `ThreadPerCoreLimits::Worker` for partitioned worker-local counters. Worker
-  mode keeps those counters worker-local.
+- `nacelle::runtime::ThreadPerCoreLimits::global(state)` for exact process-wide
+  counters, or `ThreadPerCoreLimits::worker(startup_limits, count)?` for
+  partitioned worker-local counters. Pass the policy to a local runtime config
+  constructor before obtaining its `runtime_control()` handle. Worker mode
+  controls aggregate process totals while retaining worker-local counters.
+- `nacelle::core::NacelleRuntimeControl` for live connection thresholds.
+  `NacelleRuntimeState::startup_limits()` contains only startup configuration;
+  `control.snapshot()` observes live thresholds.
 - `nacelle::runtime::WorkerContext::offload_blocking(...)` for explicit blocking work whose
   completion is awaited back on the originating local worker.
 - `nacelle::tcp::Protocol` for TCP wire-format adapters.

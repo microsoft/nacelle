@@ -4,6 +4,42 @@ use std::io;
 
 pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 
+/// Invalid administrative configuration, separate from peer admission failures.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NacelleConfigurationError {
+    /// Use `None`, not the reserved `usize::MAX`, for unlimited connections.
+    ConnectionLimit,
+    /// The rate does not fit the limiter's finite counter representation.
+    ConnectionOpenRate,
+    /// Every enabled rate limiter needs nonzero reserved table capacity.
+    ConnectionRateTableCapacity,
+    /// Partition count must be nonzero and match the configured workers.
+    PartitionCount,
+    /// A builder cannot replace state already shared with handles or listeners.
+    RuntimeStateInUse,
+}
+
+impl Display for NacelleConfigurationError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ConnectionLimit => "finite connection limit must be below usize::MAX; use None for unlimited",
+            Self::ConnectionOpenRate => "connection-open rate must fit u32 and be below usize::MAX",
+            Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
+            Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
+            Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
+        })
+    }
+}
+
+impl StdError for NacelleConfigurationError {}
+
+impl From<NacelleConfigurationError> for NacelleError {
+    fn from(error: NacelleConfigurationError) -> Self {
+        Self::Configuration(error)
+    }
+}
+
 /// Structured reason for a bounded resource admission failure.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -11,7 +47,6 @@ pub enum NacelleResourceLimitReason {
     /// Process-wide concurrent connection capacity.
     Connections,
     /// Peer-rate table capacity is too small for worker partitioning.
-    ConnectionRateLimitTableCapacity,
     /// Concurrent in-flight request capacity.
     InFlightRequests,
     /// Per-peer connection-open rate.
@@ -57,7 +92,6 @@ impl NacelleResourceLimitReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Connections => "connections",
-            Self::ConnectionRateLimitTableCapacity => "connection_rate_limit_table_capacity",
             Self::InFlightRequests => "in_flight_requests",
             Self::PeerConnectionRate => "peer_connection_rate",
             Self::PeerConnectionRateTable => "peer_connection_rate_table",
@@ -157,6 +191,7 @@ impl Display for NacelleTimeoutReason {
 
 #[derive(Debug)]
 pub enum NacelleError {
+    Configuration(NacelleConfigurationError),
     MissingProtocol,
     InvalidFrame(&'static str),
     FrameTooLarge { len: usize, max: usize },
@@ -183,6 +218,9 @@ impl NacelleError {
     /// Return optional operator guidance without changing this error's display text.
     pub fn hint(&self) -> Option<&'static str> {
         match self {
+            Self::Configuration(_) => Some(
+                "configure startup state before sharing it; use its control handle for live thresholds",
+            ),
             Self::MissingProtocol => {
                 Some("call TcpServer::<YourProtocol>::builder().protocol(...) before build")
             }
@@ -198,11 +236,11 @@ impl NacelleError {
             Self::ConnectionClosed => {
                 Some("the peer closed the connection before the operation completed")
             }
-            Self::ResourceLimit(NacelleResourceLimitReason::Connections) => {
-                Some("raise NacelleLimits::max_connections or reduce concurrent clients")
-            }
+            Self::ResourceLimit(NacelleResourceLimitReason::Connections) => Some(
+                "update NacelleRuntimeControl::set_max_connections or reduce concurrent clients",
+            ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRate) => Some(
-                "raise NacelleLimits::max_connection_opens_per_peer_per_second or slow reconnect churn",
+                "update NacelleRuntimeControl::set_connection_open_rate or slow reconnect churn",
             ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTable)
             | Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTableFull) => Some(
@@ -259,6 +297,7 @@ impl NacelleError {
 impl Display for NacelleError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Configuration(error) => write!(f, "configuration error: {error}"),
             Self::MissingProtocol => f.write_str("protocol is required"),
             Self::InvalidFrame(message) => write!(f, "invalid frame: {message}"),
             Self::FrameTooLarge { len, max } => {
@@ -279,6 +318,7 @@ impl Display for NacelleError {
 impl StdError for NacelleError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
+            Self::Configuration(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Protocol(error) => Some(error.as_ref()),
             Self::Handler(error) => Some(error.as_ref()),

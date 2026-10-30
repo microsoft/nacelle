@@ -175,20 +175,22 @@ fn protocol_pipeline_benches(c: &mut Criterion) {
 fn runtime_limit_benches(c: &mut Criterion) {
     let state = NacelleRuntimeState::new(
         NacelleLimits::default()
-            .with_max_connections(128_000)
             .with_max_in_flight_requests(128_000)
             .with_max_streaming_tasks(128_000),
     );
-    let peer_state = NacelleRuntimeState::new(
-        NacelleLimits::default()
-            .with_max_connections(128_000)
-            .with_max_connections_per_peer(128_000),
-    );
-    let peer_rate_state = NacelleRuntimeState::new(
-        NacelleLimits::default()
-            .with_max_connections(128_000)
-            .with_max_connection_opens_per_peer_per_second(usize::MAX),
-    );
+    let peer_state =
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_connections_per_peer(128_000));
+    let peer_rate_state = NacelleRuntimeState::default();
+    for state in [&state, &peer_state, &peer_rate_state] {
+        state
+            .control()
+            .set_max_connections(Some(128_000))
+            .expect("connection cap");
+    }
+    peer_rate_state
+        .control()
+        .set_connection_open_rate(Some(u32::MAX as usize - 1))
+        .expect("rate");
     let peer: IpAddr = "127.0.0.1".parse().expect("valid ip");
 
     let mut group = c.benchmark_group("runtime_limits");
@@ -260,6 +262,58 @@ fn peer_rate_limit_benches(c: &mut Criterion) {
         );
     }
 
+    group.finish();
+}
+
+fn contended_connection_benches(c: &mut Criterion) {
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    const WORKERS: usize = 4;
+    const OPERATIONS: usize = 256;
+    let mut group = c.benchmark_group("connection_permit_contended");
+    group.throughput(Throughput::Elements((WORKERS * OPERATIONS) as u64));
+    for (name, limit) in [("bounded", Some(16_384)), ("unlimited", None)] {
+        let state = NacelleRuntimeState::default();
+        state
+            .control()
+            .set_max_connections(limit)
+            .expect("connection cap");
+        let start = Arc::new(Barrier::new(WORKERS + 1));
+        let finish = Arc::new(Barrier::new(WORKERS + 1));
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..WORKERS {
+                let state = state.clone();
+                let start = start.clone();
+                let finish = finish.clone();
+                let stop = &stop;
+                scope.spawn(move || {
+                    loop {
+                        start.wait();
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        for _ in 0..OPERATIONS {
+                            drop(state.acquire_connection().expect("connection capacity"));
+                        }
+                        finish.wait();
+                    }
+                });
+            }
+            group.bench_function(name, |b| {
+                b.iter(|| {
+                    start.wait();
+                    finish.wait();
+                })
+            });
+            stop.store(true, Ordering::Relaxed);
+            start.wait();
+        });
+        assert_eq!(state.active_connections(), 0);
+    }
     group.finish();
 }
 
@@ -385,6 +439,7 @@ criterion_group!(
     protocol_frame_benches,
     protocol_pipeline_benches,
     runtime_limit_benches,
+    contended_connection_benches,
     peer_rate_limit_benches,
     telemetry_benches
 );

@@ -19,11 +19,94 @@ The important production habit is to size limits together. A high connection
 count with large read and response buffers is a memory budget decision, not just
 a concurrency decision.
 
-Call `NacelleLimits::without_max_connections()` to disable only the process-wide
-connection ceiling. Connection accounting and configured per-peer limits remain
-active.
+## Live connection control
 
-For configuration details:
+`NacelleLimits` contains startup-only request, streaming, body, handler-timeout,
+per-peer concurrency, and rate-table capacity settings.
+`NacelleRuntimeControl` changes two connection thresholds on the installed
+state without restarting listeners or resetting counters.
+
+```rust
+use nacelle::core::{NacelleLimits, NacelleRuntimeState};
+use nacelle::NacelleApp;
+
+let state = NacelleRuntimeState::new(
+    NacelleLimits::default().with_connection_rate_limit_table_capacity(16_384),
+);
+let app = NacelleApp::new().with_runtime_state(state)?;
+let control = app.runtime_control(); // Retain before moving the app into run().
+control.set_max_connections(Some(8_000))?;
+control.set_connection_open_rate(Some(100))?;
+// Register listeners on app, then run it. The same handle remains live.
+control.set_max_connections(Some(0))?; // Pause new connections, not existing work.
+control.set_max_connections(None)?;   // Unlimited total connections.
+control.set_connection_open_rate(None)?; // Disable new rate accounting.
+let observed = control.snapshot();
+```
+
+The default total is `Some(16_384)` and the default rate is `None`.
+`Some(0)` rejects all new connections for a total cap, or all IP-based
+admissions for a rate cap. `None` means unlimited total connections or disabled
+rate accounting, respectively. Unlimited connections still consume permits and
+update the existing gauges. Unix sockets have no invented peer IP: they consume
+total capacity but bypass IP-based concurrency and rate checks.
+
+Lowering below occupancy does not evict connections. Admissions already racing
+an update may finish with the threshold observed by that check; later checks
+read the new value. The order remains total capacity, optional peer concurrency,
+then optional peer rate. Earlier rejection does not consume rate budget, and
+rate rejection releases previously acquired capacity.
+
+First rate enable allocates the bounded table on the administrative path before
+publishing the rate. Changing or disabling the rate retains entries and their
+fixed-window clocks. Opens while disabled are not counted retroactively.
+Table capacity cannot change at runtime. Zero startup capacity prevents rate
+enable. Finite total caps must be below `usize::MAX`; finite rates must also fit
+`u32`. Invalid updates return `NacelleError::Configuration` without changing the
+threshold.
+
+`state.control()`, app/host `runtime_control()`, and direct-server
+`runtime_control()` address their installed state. Use the app/host handle when
+that object owns the listeners. A transport's own handle cannot be silently
+rebound to the app/host state: installation returns a configuration error
+instead. Configure startup state before exporting handles or cloning servers.
+Fallible `with_runtime_state(...)` calls permit reinstalling the same state but
+reject replacing one still shared by a handle, listener, server clone, or permit.
+
+`startup_limits()` borrows only immutable configuration; `control.snapshot()`
+returns owned live thresholds. This replaces the removed connection fields and
+setters on `NacelleLimits`, the old `limits()` accessor, and facade `with_limits`
+setters. Host `enable_*` methods and runtime-state installation now return
+`Result`; propagate configuration failures with `?`.
+App `*_dual_stack*` registration also returns `Result`: it installs app runtime
+state before cloning the server for IPv4 and IPv6. Select startup state before
+registering those listeners.
+
+### Worker accounting
+
+`control.scope()` distinguishes `Shared` from `Partitioned { partitions }`.
+`ThreadPerCoreLimits::global(state)` shares one state across workers.
+`ThreadPerCoreLimits::worker(startup_limits, count)` returns independent counters
+with an aggregate `control()`. Pass that policy into
+`LocalTcpRuntimeConfig::new(...)` or `LocalHttpRuntimeConfig::new(...)`; their
+fallible constructors check the effective worker count. Obtain the installed
+aggregate handle through the resulting config's `runtime_control()`.
+
+Aggregate finite values are process totals, divided by quotient and remainder
+in configured worker order. A total below the worker count leaves zero shares,
+which reject rather than becoming unlimited. Spare capacity is not borrowed
+between workers. Rate-table capacity is also divided at startup, even while
+rates are disabled; enabling requires at least one reserved entry per worker.
+No table is allocated until enable, and the process budget is not multiplied by
+worker count.
+
+Administrative fan-out and aggregate snapshots are serialized; admission on
+different workers does not switch instantaneously. Use the aggregate handle,
+not independent updates through `state_for(...).control()`. Each worker keeps
+its own rate window and counter history. A shared scope identifies one state,
+not necessarily the entire process if the caller constructed separate states.
+
+## Startup configuration
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
@@ -68,10 +151,10 @@ Recommended presets:
 Memory sizing:
 
 This sizing formula requires a finite effective connection ceiling. Use the
-configured `max_connections` when it is nonzero. When `max_connections` is the
-zero sentinel for unlimited connections, substitute the finite connection
-boundary enforced by the proxy, process supervisor, container, or other
-external layer.
+finite cap from `control.snapshot().max_connections`. For `None`, substitute a
+finite boundary enforced externally. A lower live cap does not reduce existing
+occupancy immediately; size for retained connections as well as future
+admissions. Zero pauses admission, not memory use by existing connections.
 
 ```text
 connection_budget =
