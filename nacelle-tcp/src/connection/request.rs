@@ -327,6 +327,7 @@ where
                 reader,
                 read_buf,
                 decoded.body_len,
+                config.head_read_limits.is_some(),
                 tcp_limits,
             )
             .await

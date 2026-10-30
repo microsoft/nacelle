@@ -192,3 +192,71 @@ async fn tcp_tls_self_signed_server_accepts_request() {
         .expect("server task should join")
         .expect("server should exit");
 }
+
+#[tokio::test]
+async fn tcp_head_budget_caps_plaintext_returned_by_tls() {
+    let generated =
+        nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).expect("self-signed tls");
+    let certificate = test_certificate(generated.certificate_pem.as_bytes());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(certificate).expect("root certificate");
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+    let acceptor = tokio_rustls::TlsAcceptor::from(generated.tls_config.server_config());
+    let (client_io, server_io) = tokio::io::duplex(128 * 1024);
+    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let written = Arc::new(tokio::sync::Notify::new());
+    let server = TcpServer::<TestProtocol>::builder()
+        .protocol(TestProtocol)
+        .tcp_config(
+            crate::NacelleTcpConfig::default()
+                .with_head_read_limits(crate::TcpHeadReadLimits::new(1, 16).expect("head limits")),
+        )
+        .handler(handler_fn({
+            let written = written.clone();
+            move |_: TcpRequestContext<TestProtocol>| {
+                let written = written.clone();
+                async move {
+                    written.notified().await;
+                    Err::<crate::protocol::TcpHandlerCompletion<TestProtocol>, _>(
+                        NacelleError::InvalidFrame("test stop after head"),
+                    )
+                }
+            }
+        }))
+        .build()
+        .expect("server");
+    let serve = async {
+        let tls = acceptor.accept(server_io).await.expect("TLS accept");
+        server
+            .serve_io(crate::connection::tests::CountingIo {
+                inner: tls,
+                reads: reads.clone(),
+            })
+            .await
+    };
+    let send = async {
+        let name = rustls::pki_types::ServerName::try_from("localhost").expect("server name");
+        let mut tls = connector
+            .connect(name, client_io)
+            .await
+            .expect("TLS connect");
+        tls.write_all(&vec![1; 64 * 1024])
+            .await
+            .expect("offered plaintext");
+        written.notify_one();
+        tls.read_to_end(&mut Vec::new()).await.expect("TLS close");
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(serve, send) })
+            .await
+            .expect("TLS exchange");
+    assert!(matches!(
+        result,
+        Err(NacelleError::InvalidFrame("test stop after head"))
+    ));
+    assert_eq!(*reads.lock().expect("reads"), [(16, 16)]);
+}

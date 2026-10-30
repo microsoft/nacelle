@@ -205,3 +205,55 @@ required by the existing `Arc`-backed shared server. Shared serial servers
 require state and handler futures to be `Send`, but not `Sync`, because each
 connection owns its state. Worker-local serial servers may use `!Send` state and
 futures.
+
+### Bounded head reads
+
+Head read-ahead is opt-in. The default `head_read_limits = None` preserves
+existing batching and fully buffered body delivery. For the reference protocol's
+24-byte encoded head:
+
+```rust
+use nacelle::tcp::{NacelleTcpConfig, TcpHeadReadLimits};
+
+let config = NacelleTcpConfig::default()
+    .with_head_read_limits(TcpHeadReadLimits::new(24, 4096)?);
+```
+
+`H = max_head_bytes` limits decoder-visible encoded head bytes.
+`B = max_undecided_bytes` limits cumulative undecided plaintext, including the
+head and any body or next-request prefix read with it. Construction requires
+`0 < H <= B <= isize::MAX`. These values do not replace `max_frame_len` or
+request-body limits: an admitted body can be much larger than either.
+
+The first idle read and every incomplete-head continuation use only the remaining
+`B - buffered_bytes` allowance. The decoder sees at most `H` bytes; following
+bytes are split off and restored after decoding. This preserves shared storage
+when the decoder retains its input allocation. A decoder that reallocates or
+replaces input can force a copy when unread bytes are rejoined; keep input
+storage intact when zero-copy reuse is required.
+An ordinary complete head exactly at `H` or `B` succeeds. Needing more input at
+`H` rejects the connection without another read. An EOF-delimited decoder needs
+space below `H` to observe EOF; the runtime never treats a truncated head prefix
+as EOF.
+
+Reads stop once the head is available. The existing body-limit and runtime
+admission checks run before further body reads. Buffered and streamed body reads
+are limited to their remaining admitted body/chunk length, so they do not
+prefetch new undecided bytes. Previously buffered next-request bytes remain
+intact and count toward the next head's budget. One decoder and `MessageReader`
+survive these transitions; zero-copy slices, cancellation, the absolute
+first-byte-to-head timeout, and the separate idle timeout remain intact.
+
+Rejections use `NacelleError::InvalidFrame` with the stable reasons
+`request head exceeds configured byte limit` or
+`undecided input exceeds configured byte limit`. They follow the ordinary
+bounded error-response and connection-close path. The codec's corresponding
+budget error is distinct from EOF; oversized caller-provided codec buffers are
+rejected before decoding, never trimmed.
+
+`H` and `B` do not bound allocation capacity, retained shared `Bytes`, decoder
+allocations, TLS transport buffers, or kernel buffers. The plaintext read boundary
+applies above TLS: record data already decrypted and buffered inside the TLS
+implementation is outside `B`. Custom decoders must bound their own allocations
+and consume only their head, leaving the declared body in the cumulative input.
+Authentication and authorization remain application/protocol policy.

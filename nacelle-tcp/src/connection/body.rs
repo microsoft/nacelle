@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio::io::AsyncRead;
 use tokio::sync::mpsc;
 
@@ -13,6 +13,7 @@ pub(super) async fn read_buffered_request_body<R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     body_len: usize,
+    bounded_reads: bool,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<NacelleBody, NacelleError>
 where
@@ -29,7 +30,12 @@ where
     }
 
     while body.len() < body_len {
-        let bytes_read = read_buf_with_timeout(reader, &mut body, tcp_limits).await?;
+        let bytes_read = if bounded_reads {
+            let remaining = body_len - body.len();
+            read_buf_with_timeout(reader, &mut (&mut body).limit(remaining), tcp_limits).await?
+        } else {
+            read_buf_with_timeout(reader, &mut body, tcp_limits).await?
+        };
         if bytes_read == 0 {
             return Err(NacelleError::UnexpectedEof);
         }
@@ -80,7 +86,12 @@ where
     while remaining > 0 {
         let next_len = remaining.min(config.request_body_chunk_size);
         let mut chunk = BytesMut::with_capacity(next_len);
-        let bytes_read = match read_buf_with_timeout(reader, &mut chunk, tcp_limits).await {
+        let read = if config.head_read_limits.is_some() {
+            read_buf_with_timeout(reader, &mut (&mut chunk).limit(next_len), tcp_limits).await
+        } else {
+            read_buf_with_timeout(reader, &mut chunk, tcp_limits).await
+        };
+        let bytes_read = match read {
             Ok(bytes_read) => bytes_read,
             Err(error) => {
                 if receiver_open {

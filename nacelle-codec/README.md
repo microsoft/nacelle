@@ -50,6 +50,16 @@ be cancelled without consuming bytes. This lets callers time first-byte waiting
 separately from message completion. Decode between reads to enforce input limits;
 `read_more()` does not enforce them itself.
 
+Use `read_message_bounded(max_readable_bytes)` or
+`read_more_bounded(max_readable_bytes)` to cap the actual read destination.
+Already-buffered bytes count toward the same cumulative limit; a larger retained
+capacity does not increase the allowance. A complete message exactly at the
+limit succeeds. Exhaustion returns `MessageReadError::ReadBudgetExceeded`,
+not EOF, without another transport poll. An oversized caller-provided buffer is
+rejected before decoding, without discarding input. These operations preserve
+cancellation and shared-slice ownership. EOF-delimited messages need spare
+budget to observe EOF; see the [codec reference](../docs/reference/nacelle-codec.md#bounded-reads).
+
 Decoded messages can be:
 
 - `freeze()` a message into immutable `Bytes`;
@@ -68,6 +78,9 @@ required.
 their configured maximum. Custom decoders are responsible for rejecting
 oversized input while it accumulates in `MessageReader`. `MessageWriter` queues
 encoded bytes until `flush`, `send`, or `shutdown` writes them.
+Reader budgets bound plaintext returned into the cumulative buffer, not
+allocation capacity, retained messages, decoder-owned allocations, TLS transport
+buffers, or kernel buffers.
 
 ## Long-lived connections
 

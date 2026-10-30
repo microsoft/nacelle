@@ -1,3 +1,74 @@
+/// Invalid TCP head limits: require `0 < H <= B <= isize::MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpHeadReadLimitsError;
+
+impl std::fmt::Display for TcpHeadReadLimitsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "TCP head limits require 0 < max_head_bytes <= max_undecided_bytes <= isize::MAX",
+        )
+    }
+}
+
+impl std::error::Error for TcpHeadReadLimitsError {}
+
+/// Opt-in limits on encoded heads and cumulative undecided plaintext.
+///
+/// `H` bounds the input visible to the decoder. `B` includes the head and any
+/// body or following-request prefix returned by `AsyncRead`. Neither bounds
+/// allocation capacity, retained shared slices, decoder-owned allocations, TLS
+/// transport buffers, or kernel buffers. Admitted bodies retain their separate
+/// frame/body limits.
+///
+/// ```
+/// use nacelle_tcp::{NacelleTcpConfig, TcpHeadReadLimits, TcpHeadReadLimitsError};
+///
+/// let config = NacelleTcpConfig::default()
+///     .with_head_read_limits(TcpHeadReadLimits::new(24, 4096)?);
+/// # let _ = config;
+/// # Ok::<(), TcpHeadReadLimitsError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpHeadReadLimits {
+    max_head_bytes: usize,
+    max_undecided_bytes: usize,
+}
+
+impl TcpHeadReadLimits {
+    /// Validate the maximum encoded head size `H` and undecided-byte budget `B`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TcpHeadReadLimitsError`] unless `0 < H <= B <= isize::MAX`.
+    pub const fn new(
+        max_head_bytes: usize,
+        max_undecided_bytes: usize,
+    ) -> Result<Self, TcpHeadReadLimitsError> {
+        if max_head_bytes == 0
+            || max_undecided_bytes < max_head_bytes
+            || max_undecided_bytes > isize::MAX as usize
+        {
+            return Err(TcpHeadReadLimitsError);
+        }
+        Ok(Self {
+            max_head_bytes,
+            max_undecided_bytes,
+        })
+    }
+
+    /// Maximum encoded head size (`H`).
+    #[must_use]
+    pub const fn max_head_bytes(self) -> usize {
+        self.max_head_bytes
+    }
+
+    /// Maximum cumulative undecided plaintext bytes (`B`).
+    #[must_use]
+    pub const fn max_undecided_bytes(self) -> usize {
+        self.max_undecided_bytes
+    }
+}
+
 /// How a decoded TCP request body is delivered to the application pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpRequestBodyMode {
@@ -33,6 +104,11 @@ pub struct NacelleTcpConfig {
     pub response_buffer_capacity: usize,
     /// Maximum accepted protocol frame length.
     pub max_frame_len: usize,
+    /// Optional encoded-head and cumulative undecided-plaintext limits.
+    ///
+    /// Defaults to `None`, retaining unbounded decoder read-ahead and batching.
+    /// Custom decoders must bound their own allocations in either mode.
+    pub head_read_limits: Option<TcpHeadReadLimits>,
     /// Chunk size used when exposing buffered request bodies.
     pub request_body_chunk_size: usize,
     /// Bounded channel capacity used for streaming request bodies.
@@ -49,6 +125,7 @@ impl Default for NacelleTcpConfig {
             read_buffer_capacity: 64 * 1024,
             response_buffer_capacity: 64 * 1024,
             max_frame_len: 16 * 1024 * 1024,
+            head_read_limits: None,
             request_body_chunk_size: 64 * 1024,
             request_body_channel_capacity: 4,
             request_body_mode: TcpRequestBodyMode::Buffered,
@@ -73,6 +150,17 @@ impl NacelleTcpConfig {
     /// Set the maximum accepted frame length.
     pub fn with_max_frame_len(mut self, max_frame_len: usize) -> Self {
         self.max_frame_len = max_frame_len.max(24);
+        self
+    }
+
+    /// Bound request-head reads without restricting admitted body size.
+    ///
+    /// A complete head exactly at `H` succeeds; needing more input at `H`
+    /// rejects the connection. EOF-delimited heads therefore need spare space
+    /// below `H` to observe transport EOF. Reads stop once a head is decoded,
+    /// until the existing body-limit and runtime checks permit continuation.
+    pub const fn with_head_read_limits(mut self, limits: TcpHeadReadLimits) -> Self {
+        self.head_read_limits = Some(limits);
         self
     }
 
@@ -109,6 +197,24 @@ impl NacelleTcpConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_limits_reject_invalid_bounds() {
+        for (head, undecided) in [
+            (0, 0),
+            (0, 8),
+            (9, 8),
+            (1, usize::MAX),
+            (usize::MAX, usize::MAX),
+        ] {
+            assert_eq!(
+                TcpHeadReadLimits::new(head, undecided),
+                Err(TcpHeadReadLimitsError)
+            );
+        }
+        assert!(TcpHeadReadLimits::new(8, 8).is_ok());
+        assert!(TcpHeadReadLimits::new(8, 16).is_ok());
+    }
 
     #[test]
     fn defaults_are_bounded_and_buffered() {

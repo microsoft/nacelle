@@ -1,7 +1,9 @@
 use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 
 use super::*;
 use crate::{LengthDelimitedDecoder, LengthDelimitedEncoder, MessageDecoder, MessageEncoder};
@@ -80,7 +82,7 @@ async fn reader_read_more_cancellation_preserves_input() {
         tokio::pin!(pending_read);
         std::future::poll_fn(|context| {
             assert!(pending_read.as_mut().poll(context).is_pending());
-            std::task::Poll::Ready(())
+            Poll::Ready(())
         })
         .await;
     }
@@ -195,6 +197,207 @@ fn reader_rotates_only_empty_oversized_buffers() {
     reader.buffer_mut().clear();
     reader.rotate_empty_buffer(64);
     assert_eq!(reader.buffer().capacity(), 64);
+}
+
+struct CountingRead {
+    input: &'static [u8],
+    chunk_size: usize,
+    returned: usize,
+    offered: Vec<usize>,
+}
+
+impl AsyncRead for CountingRead {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        destination: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        this.offered.push(destination.remaining());
+        let count = destination
+            .remaining()
+            .min(this.chunk_size)
+            .min(this.input.len());
+        let (chunk, remaining) = this.input.split_at(count);
+        destination.put_slice(chunk);
+        this.input = remaining;
+        this.returned += count;
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn counting_read(input: &'static [u8], chunk_size: usize) -> CountingRead {
+    CountingRead {
+        input,
+        chunk_size,
+        returned: 0,
+        offered: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn bounded_reads_cap_fragmented_input_and_preserve_shared_slices() {
+    let transport = counting_read(b"\0\0\0\x04head\0\0\0\x04next", 2);
+    let mut reader =
+        MessageReader::with_capacity(transport, LengthDelimitedDecoder::new(32), 64 * 1024);
+    let pointer = reader.buffer().as_ptr();
+    let first = reader
+        .read_message_bounded(8)
+        .await
+        .expect("read")
+        .expect("head");
+    assert_eq!(&first[..], b"head");
+    assert_eq!(first.as_ptr(), pointer.wrapping_add(4));
+    assert_eq!(reader.transport().returned, 8);
+    assert_eq!(reader.transport().offered, [8, 6, 4, 2]);
+
+    #[cfg(feature = "buffer-rotation")]
+    reader.rotate_empty_buffer(16);
+    let second = reader
+        .read_message_bounded(8)
+        .await
+        .expect("read")
+        .expect("next");
+    assert_eq!(&second[..], b"next");
+    assert_eq!(&first[..], b"head");
+    assert_eq!(reader.transport().returned, 16);
+    assert_eq!(reader.transport().offered, [8, 6, 4, 2, 8, 6, 4, 2]);
+}
+
+#[tokio::test]
+async fn bounded_exhaustion_is_cumulative_and_does_not_observe_eof() {
+    let transport = counting_read(b"\0\0\0\x04head", 2);
+    let mut reader = MessageReader::new(transport, LengthDelimitedDecoder::new(32));
+    for _ in 0..2 {
+        assert!(matches!(
+            reader.read_message_bounded(7).await,
+            Err(MessageReadError::ReadBudgetExceeded {
+                limit: 7,
+                buffered: 7
+            })
+        ));
+        assert_eq!(reader.transport().returned, 7);
+        assert_eq!(reader.transport().offered, [7, 5, 3, 1]);
+        assert_eq!(&reader.buffer()[..], b"\0\0\0\x04hea");
+    }
+    let message = reader
+        .read_message_bounded(8)
+        .await
+        .expect("resume")
+        .expect("message");
+    assert_eq!(&message[..], b"head");
+}
+
+#[tokio::test]
+async fn bounded_reads_reject_oversized_initial_buffers_before_decoding() {
+    let buffer = BytesMut::from(&b"\0\0\0\x04headextra"[..]);
+    let pointer = buffer.as_ptr();
+    let mut reader = MessageReader::with_buffer(
+        counting_read(b"", 8),
+        LengthDelimitedDecoder::new(32),
+        buffer,
+    );
+    assert!(matches!(
+        reader.read_message_bounded(8).await,
+        Err(MessageReadError::ReadBudgetExceeded {
+            limit: 8,
+            buffered: 13
+        })
+    ));
+    assert!(matches!(
+        reader.read_more_bounded(8).await,
+        Err(MessageReadError::ReadBudgetExceeded { .. })
+    ));
+    assert_eq!(reader.buffer().as_ptr(), pointer);
+    assert_eq!(&reader.buffer()[..], b"\0\0\0\x04headextra");
+    assert!(reader.transport().offered.is_empty());
+
+    let mut empty = MessageReader::new(counting_read(b"", 8), LengthDelimitedDecoder::new(32));
+    assert!(matches!(
+        empty.read_more_bounded(0).await,
+        Err(MessageReadError::ReadBudgetExceeded {
+            limit: 0,
+            buffered: 0
+        })
+    ));
+    assert!(empty.transport().offered.is_empty());
+}
+
+struct EofDecoder;
+
+impl MessageDecoder for EofDecoder {
+    type Message = BytesMut;
+    type Error = Infallible;
+
+    fn decode(&mut self, _: &mut BytesMut) -> Result<Option<BytesMut>, Infallible> {
+        Ok(None)
+    }
+
+    fn decode_eof(&mut self, input: &mut BytesMut) -> Result<Option<BytesMut>, Infallible> {
+        Ok((!input.is_empty()).then(|| input.split()))
+    }
+}
+
+#[tokio::test]
+async fn bounded_reads_preserve_eof_and_progress_errors() {
+    let mut reader = MessageReader::new(counting_read(b"end", 8), EofDecoder);
+    assert_eq!(
+        &reader
+            .read_message_bounded(4)
+            .await
+            .expect("EOF decode")
+            .expect("message")[..],
+        b"end"
+    );
+    assert!(reader.read_message_bounded(4).await.expect("EOF").is_none());
+    assert_eq!(reader.read_more_bounded(0).await.expect("known EOF"), 0);
+    assert_eq!(reader.transport().offered, [4, 1]);
+
+    let mut incomplete =
+        MessageReader::new(counting_read(b"\0\0", 8), LengthDelimitedDecoder::new(32));
+    assert!(matches!(
+        incomplete.read_message_bounded(8).await,
+        Err(MessageReadError::UnexpectedEof { remaining: 2 })
+    ));
+    let mut stalled = MessageReader::new(counting_read(b"", 8), NoProgressDecoder);
+    assert!(matches!(
+        stalled.read_message_bounded(8).await,
+        Err(MessageReadError::MessageWithoutProgress)
+    ));
+    let mut consuming = MessageReader::new(counting_read(b"ab", 8), ConsumingWaitDecoder);
+    assert!(matches!(
+        consuming.read_message_bounded(2).await,
+        Err(MessageReadError::ConsumedOnNeedMore {
+            before: 2,
+            after: 1
+        })
+    ));
+}
+
+#[tokio::test]
+async fn cancelling_bounded_read_retains_partial_input() {
+    let (mut client, server) = tokio::io::duplex(16);
+    client.write_all(&[0, 0]).await.expect("prefix");
+    let mut reader = MessageReader::new(server, LengthDelimitedDecoder::new(32));
+    {
+        let pending = reader.read_message_bounded(5);
+        tokio::pin!(pending);
+        std::future::poll_fn(|context| {
+            assert!(pending.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+    assert_eq!(&reader.buffer()[..], &[0, 0]);
+    client.write_all(&[0, 1, b'x']).await.expect("suffix");
+    assert_eq!(
+        &reader
+            .read_message_bounded(5)
+            .await
+            .expect("resume")
+            .expect("message")[..],
+        b"x"
+    );
 }
 
 #[tokio::test]
