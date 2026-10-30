@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures_core::Stream;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::Response;
-use hyper::body::{Frame, Incoming};
+use hyper::body::{Body, Frame, Incoming, SizeHint};
 
 use crate::limits::NacelleHttpLimits;
 use crate::pipeline::HttpResponse;
@@ -21,7 +21,46 @@ use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, Nacell
 
 type RequestBodySender = tokio::sync::mpsc::Sender<Result<Bytes, NacelleError>>;
 
-pub(crate) type HttpBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
+type ResponseBody<Observer> = StreamBody<HttpBodyStream<Observer>>;
+
+/// The permit is owned, not structurally pinned, and never exposed through Pin.
+pub(crate) struct HttpBody<Observer: NacelleTelemetryObserver, Permit> {
+    body: ResponseBody<Observer>,
+    permit: Option<Permit>,
+}
+
+impl<Observer: NacelleTelemetryObserver, Permit> Unpin for HttpBody<Observer, Permit> {}
+
+impl<Observer: NacelleTelemetryObserver, Permit> HttpBody<Observer, Permit> {
+    pub(crate) const fn new(body: ResponseBody<Observer>, permit: Option<Permit>) -> Self {
+        Self { body, permit }
+    }
+}
+
+impl<Observer: NacelleTelemetryObserver, Permit> Body for HttpBody<Observer, Permit> {
+    type Data = Bytes;
+    type Error = NacelleError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, NacelleError>>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.body).poll_frame(cx);
+        if matches!(result, Poll::Ready(None | Some(Err(_)))) {
+            this.permit.take();
+        }
+        result
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        Body::size_hint(&self.body)
+    }
+}
 
 pub(crate) fn incoming_to_body<Observer>(
     incoming: Incoming,
@@ -30,7 +69,7 @@ pub(crate) fn incoming_to_body<Observer>(
     runtime_state: NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
-) -> (NacelleBody, impl Future<Output = ()>)
+) -> (NacelleBody, impl Future<Output = Result<(), NacelleError>>)
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -51,7 +90,9 @@ where
                 telemetry,
                 tx,
             )
-            .await;
+            .await
+        } else {
+            Ok(())
         }
     };
     (body, pump)
@@ -66,26 +107,18 @@ async fn pump_incoming_body<Observer>(
     http_limits: NacelleHttpLimits,
     telemetry: NacelleTelemetry<Observer>,
     tx: RequestBodySender,
-) where
+) -> Result<(), NacelleError>
+where
     Observer: NacelleTelemetryObserver,
 {
     if let Some(body_len_hint) = body_len_hint
         && body_len_hint > runtime_state.startup_limits().max_request_body_bytes
     {
-        let _ = tx
-            .send(Err(NacelleError::ResourceLimit(
-                NacelleResourceLimitReason::RequestBodyBytes,
-            )))
-            .await;
-        return;
+        return Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::RequestBodyBytes,
+        ));
     }
-    let _streaming_permit = match runtime_state.acquire_streaming_task_tracked() {
-        Ok(permit) => permit,
-        Err(error) => {
-            let _ = tx.send(Err(error)).await;
-            return;
-        }
-    };
+    let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
     let mut body_bytes = 0_usize;
     loop {
         let frame = {
@@ -95,12 +128,7 @@ async fn pump_incoming_body<Observer>(
                     Ok(frame) => frame,
                     Err(_) => {
                         telemetry.timeout(NacelleTransport::new("http"), "http_body_read");
-                        let _ = tx
-                            .send(Err(NacelleError::Timeout(
-                                NacelleTimeoutReason::HttpBodyRead,
-                            )))
-                            .await;
-                        break;
+                        return Err(NacelleError::Timeout(NacelleTimeoutReason::HttpBodyRead));
                     }
                 }
             } else {
@@ -114,20 +142,14 @@ async fn pump_incoming_body<Observer>(
             Ok(frame) => {
                 if let Some(data) = frame.data_ref() {
                     let Some(next) = body_bytes.checked_add(data.len()) else {
-                        let _ = tx
-                            .send(Err(NacelleError::ResourceLimit(
-                                NacelleResourceLimitReason::RequestBodyBytes,
-                            )))
-                            .await;
-                        break;
+                        return Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::RequestBodyBytes,
+                        ));
                     };
                     if next > runtime_state.startup_limits().max_request_body_bytes {
-                        let _ = tx
-                            .send(Err(NacelleError::ResourceLimit(
-                                NacelleResourceLimitReason::RequestBodyBytes,
-                            )))
-                            .await;
-                        break;
+                        return Err(NacelleError::ResourceLimit(
+                            NacelleResourceLimitReason::RequestBodyBytes,
+                        ));
                     }
                     body_bytes = next;
                     request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
@@ -138,11 +160,11 @@ async fn pump_incoming_body<Observer>(
                 }
             }
             Err(error) => {
-                let _ = tx.send(Err(NacelleError::protocol(error))).await;
-                break;
+                return Err(NacelleError::protocol(error));
             }
         }
     }
+    Ok(())
 }
 
 const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {
@@ -154,7 +176,7 @@ pub(crate) fn response_to_http<Observer>(
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
     policy: &NacelleHttpPolicy,
-) -> Result<Response<HttpBody<Observer>>, NacelleError>
+) -> Result<Response<ResponseBody<Observer>>, NacelleError>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -177,7 +199,7 @@ fn nacelle_body_to_http<Observer>(
     body: NacelleBody,
     runtime_state: NacelleRuntimeState,
     telemetry: NacelleTelemetry<Observer>,
-) -> HttpBody<Observer>
+) -> ResponseBody<Observer>
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -275,7 +297,9 @@ mod tests {
             &NacelleHttpPolicy::default(),
         )
         .expect("response should build");
-        let mut body = response.into_body();
+        let capacity = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = capacity.clone().acquire_owned().await.unwrap();
+        let mut body = super::HttpBody::new(response.into_body(), Some(permit));
 
         let error = body
             .frame()
@@ -286,7 +310,9 @@ mod tests {
             error,
             NacelleError::ResourceLimit(NacelleResourceLimitReason::ResponseBodyBytes)
         ));
+        assert_eq!(capacity.available_permits(), 1);
         assert!(body.frame().await.is_none());
+        assert_eq!(capacity.available_permits(), 1);
         assert!(
             observer
                 .events()

@@ -1,5 +1,6 @@
 //! TCP transport for Nacelle.
 
+pub mod admission;
 pub mod config;
 pub mod connection;
 pub mod limits;
@@ -9,6 +10,9 @@ pub mod runtime;
 mod serial_server;
 pub mod server;
 
+#[doc(hidden)]
+pub use admission::{LocalSerialTcpService, LocalTcpService, SerialTcpService, TcpService};
+pub use admission::{SerialTcpAdmissionContext, TcpAdmissionContext};
 pub use config::{
     NacelleTcpConfig, ResponseWritePolicy, TcpHeadReadLimits, TcpHeadReadLimitsError,
     TcpRequestBodyMode,

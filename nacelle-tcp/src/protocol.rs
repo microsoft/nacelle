@@ -385,8 +385,8 @@ where
 /// Shared-runtime adapter that installs application state before user dispatch.
 #[doc(hidden)]
 pub struct SharedAppStateHandler<P, H, AppState> {
-    handler: Arc<H>,
-    app_state: Arc<AppState>,
+    pub(crate) handler: Arc<H>,
+    pub(crate) app_state: Arc<AppState>,
     protocol: PhantomData<fn() -> P>,
 }
 
@@ -401,50 +401,11 @@ impl<P, H, AppState> SharedAppStateHandler<P, H, AppState> {
     }
 }
 
-impl<P, H, AppState> Handler<TcpRequestContext<P>> for SharedAppStateHandler<P, H, AppState>
-where
-    P: SharedProtocol,
-    H: TcpHandler<P, AppState>,
-    AppState: Send + Sync + 'static,
-{
-    type Completion = TcpHandlerCompletion<P>;
-    type Error = NacelleError;
-
-    fn call(
-        &self,
-        context: TcpRequestContext<P>,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> + Send {
-        Handler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
-    }
-}
-
-impl<P, H, AppState> SerialTcpHandler<P> for SharedAppStateHandler<P, H, AppState>
-where
-    P: Protocol,
-    P::ConnectionState: Send,
-    H: SerialTcpHandler<P, AppState>,
-    AppState: Send + Sync + 'static,
-{
-    fn call<'connection>(
-        &'connection self,
-        context: SerialTcpRequestContext<'connection, P>,
-    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + Send + 'connection
-    {
-        SerialTcpHandler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
-    }
-}
-
 /// Worker-local adapter that installs application state before user dispatch.
 #[doc(hidden)]
 pub struct LocalAppStateHandler<P, H, AppState> {
-    handler: Rc<H>,
-    app_state: Arc<AppState>,
+    pub(crate) handler: Rc<H>,
+    pub(crate) app_state: Arc<AppState>,
     protocol: PhantomData<fn() -> P>,
 }
 
@@ -456,43 +417,6 @@ impl<P, H, AppState> LocalAppStateHandler<P, H, AppState> {
             app_state,
             protocol: PhantomData,
         }
-    }
-}
-
-#[allow(clippy::future_not_send)]
-impl<P, H, AppState> LocalHandler<TcpRequestContext<P>> for LocalAppStateHandler<P, H, AppState>
-where
-    P: Protocol,
-    H: LocalTcpHandler<P, AppState>,
-{
-    type Completion = TcpHandlerCompletion<P>;
-    type Error = NacelleError;
-
-    fn call(
-        &self,
-        context: TcpRequestContext<P>,
-    ) -> impl Future<Output = Result<Self::Completion, Self::Error>> {
-        LocalHandler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
-    }
-}
-
-#[allow(clippy::future_not_send)]
-impl<P, H, AppState> LocalSerialTcpHandler<P> for LocalAppStateHandler<P, H, AppState>
-where
-    P: Protocol,
-    H: LocalSerialTcpHandler<P, AppState>,
-{
-    fn call<'connection>(
-        &'connection self,
-        context: SerialTcpRequestContext<'connection, P>,
-    ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
-        LocalSerialTcpHandler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
     }
 }
 

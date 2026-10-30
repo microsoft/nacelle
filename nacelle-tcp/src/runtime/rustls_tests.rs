@@ -155,6 +155,15 @@ async fn tcp_tls_self_signed_server_accepts_request() {
                 context.respond(TcpResponse::bytes("ok")).await
             },
         ))
+        .tcp_config(
+            crate::NacelleTcpConfig::default()
+                .with_head_read_limits(crate::TcpHeadReadLimits::new(1, 16).unwrap()),
+        )
+        .admission(
+            nacelle_core::AllowAll,
+            nacelle_core::AdmissionConfig::new(Duration::from_secs(1), 8).unwrap(),
+        )
+        .unwrap()
         .build()
         .expect("server should build");
     let server_task = tokio::spawn(serve_tcp_tls_listener_with_shutdown_deadline(

@@ -21,7 +21,7 @@ use crate::connection::{
 use crate::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use crate::options::NacelleTlsDetectionOptions;
-use crate::protocol::{LocalSerialTcpHandler, LocalTcpHandler, Protocol};
+use crate::protocol::Protocol;
 use crate::serial_server::LocalSerialTcpServer;
 use crate::server::LocalTcpServer;
 
@@ -43,7 +43,7 @@ pub async fn serve_local_tcp_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
+    H: crate::admission::LocalTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -119,7 +119,7 @@ pub async fn serve_local_serial_tcp_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
+    H: crate::admission::LocalSerialTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -197,7 +197,7 @@ pub async fn serve_local_tcp_tls_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
+    H: crate::admission::LocalTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -294,7 +294,7 @@ pub async fn serve_local_tcp_openssl_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P> + 'static,
+    H: crate::admission::LocalTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -395,7 +395,7 @@ pub async fn serve_local_serial_tcp_openssl_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
+    H: crate::admission::LocalSerialTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");
@@ -497,7 +497,7 @@ pub async fn serve_local_serial_tcp_optional_openssl_listener<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P> + 'static,
+    H: crate::admission::LocalSerialTcpService<P> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");

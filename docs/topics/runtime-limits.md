@@ -11,6 +11,7 @@ Key budgets include:
 - optional per-peer connections
 - request and response body size
 - core handler timeout
+- optional application-admission deadline and finite policy waiter capacity
 - TCP read, write, final shutdown, and idle timeouts through `NacelleTcpLimits`
 - HTTP header, body, write, keep-alive, and connection-age limits through `NacelleHttpLimits`
 - TLS handshake timeouts through the TLS config types
@@ -107,6 +108,45 @@ its own rate window and counter history. A shared scope identifies one state,
 not necessarily the entire process if the caller constructed separate states.
 
 ## Startup configuration
+
+### Application admission budgets
+
+Use `AdmissionConfig::new(timeout, max_pending)` with one concrete application
+policy. Both values must be positive; timeouts must be representable, and
+capacity must be below `usize::MAX`. Configure TCP head-read limits before
+enabling TCP admission. HTTP uses Hyper's parser bounds, not TCP's exact H/B
+allowance; see [HTTP hardening](../reference/http-hardening.md#parser-and-body-boundaries).
+
+The framework acquires request capacity and then a finite waiter slot before
+invoking the policy. Waiter accounting covers the policy invocation, including
+an immediately ready result, and ends when admission resolves or is cancelled.
+Server clones share this count. Independently constructed listeners and worker
+factories have independent counts: size their combined waiting-head budget
+explicitly. A process-wide backend budget belongs in shared application state,
+for example an `Arc<Semaphore>` returning an owned permit.
+
+The admission deadline begins on the first pending poll. On TCP it also covers
+flushing prior output. The handler deadline starts only after allowance; body
+read and response-write deadlines retain their transport responsibilities.
+A blocking policy cannot be preempted by an async timeout. Queue discipline
+belongs to the policy: Tokio semaphore FIFO is preserved by awaiting the same
+future, but Nacelle does not promise fairness across listeners or workers.
+
+Application permits remain held through body resolution and response
+production. They do not extend runtime request metrics to remote delivery.
+Silent TCP completion releases after body resolution; HTTP response bodies own
+their permits after the service future returns. EOF, response error, early
+drop, task cancellation, and suppressed HEAD/empty bodies release ownership.
+No application permit is retained just to flush queued output.
+
+For admission-enabled TCP failures, the admission timeout supplies a finite
+fallback for error-response writes and closing flush/shutdown when those TCP
+timeouts were disabled. Normal admitted responses retain the selected
+transport deadlines. Cancellation during a prior-response flush abandons that
+delivery and closes without retrying partially written bytes or generating
+another error response.
+
+### Transport and body settings
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and

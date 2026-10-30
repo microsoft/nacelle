@@ -5,7 +5,7 @@ use std::time::Duration;
 use openssl::ssl::Ssl;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions, NacelleTlsDetectionOptions};
-use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
+use crate::protocol::{Protocol, SharedProtocol};
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
 use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
@@ -28,7 +28,7 @@ pub async fn serve_tcp_optional_openssl<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -43,7 +43,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown(
@@ -66,7 +66,7 @@ pub async fn serve_tcp_optional_openssl_with_shutdown_timeout<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -90,7 +90,7 @@ pub async fn serve_tcp_optional_openssl_with_options<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -115,7 +115,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown<P, H, Observer
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -142,7 +142,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_timeout<P, H, 
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_optional_openssl_with_options_and_shutdown_deadline(
@@ -170,7 +170,7 @@ pub async fn serve_tcp_optional_openssl_with_options_and_shutdown_deadline<P, H,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
@@ -198,7 +198,7 @@ pub async fn serve_tcp_optional_openssl_with_bind_options_and_shutdown_deadline<
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -231,7 +231,7 @@ pub async fn serve_tcp_optional_openssl_listener_with_options_and_shutdown_deadl
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let handshake_timeout = tls_config.handshake_timeout();
@@ -333,7 +333,7 @@ pub async fn serve_serial_tcp_optional_openssl<P, H, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -350,7 +350,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_shutdown<P, H, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
@@ -376,7 +376,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_shutdown_timeout<P, H, Obser
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -402,7 +402,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_options<P, H, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -429,7 +429,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown<P, H, O
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout(
@@ -457,7 +457,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_timeout
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_optional_openssl_with_options_and_shutdown_deadline(
@@ -486,7 +486,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_options_and_shutdown_deadlin
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_deadline(
@@ -519,7 +519,7 @@ pub async fn serve_serial_tcp_optional_openssl_with_bind_options_and_shutdown_de
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -553,7 +553,7 @@ pub async fn serve_serial_tcp_optional_openssl_listener_with_options_and_shutdow
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");

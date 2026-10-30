@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::protocol::{SharedProtocol, TcpHandler};
+use crate::protocol::SharedProtocol;
 use crate::server::TcpServer;
 use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -19,7 +19,7 @@ pub async fn serve_tcp_tls<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -35,7 +35,7 @@ pub async fn serve_tcp_tls_with_shutdown<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_tls_with_shutdown_timeout(server, addr, tls_config, shutdown, Duration::from_secs(30))
@@ -52,7 +52,7 @@ pub async fn serve_tcp_tls_with_shutdown_timeout<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_tls_with_shutdown_deadline(
@@ -75,7 +75,7 @@ pub async fn serve_tcp_tls_with_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &Default::default())?;
@@ -99,7 +99,7 @@ pub async fn serve_tcp_tls_listener_with_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let handshake_timeout = tls_config.handshake_timeout();

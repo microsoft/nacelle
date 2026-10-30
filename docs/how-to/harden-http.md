@@ -11,6 +11,37 @@ Defaults:
 - `NacelleHttpLimits::max_connection_age`: disabled by default.
 - request and response body size limits: 16 MiB each.
 
+Configure parser bounds separately from post-parse header policy:
+
+```rust
+use nacelle::http::{HttpParserLimits, NacelleHttpLimits};
+
+let limits = NacelleHttpLimits::default()
+    .with_parser_limits(HttpParserLimits::new(16 * 1024, None)?);
+```
+
+The minimum buffer setting is 8192 bytes. It controls Hyper's parser strategy,
+not an exact read allowance: complete heads may include body read-ahead beyond
+that threshold. `None` keeps the stack-backed 100-header parser; a different
+header count opts into an allocation per request.
+
+Use typed admission when requests must obtain application capacity before body
+work. The [HTTP admission example](../../examples/nacelle-examples/src/bin/http_admission.rs)
+shares an owned semaphore permit through `AppState` and accepts `/work`:
+
+```sh
+cargo run -p nacelle-examples --features http --bin http_admission -- 127.0.0.1:8080
+curl -H 'Expect: 100-continue' --data 'work' http://127.0.0.1:8080/work
+```
+
+Install one policy with `.with_admission(policy, AdmissionConfig::new(timeout,
+max_pending)?)`. Size waiter capacity across independently constructed workers
+and listeners, and share the backend semaphore explicitly when its budget must
+be process-wide. Pending admission does not poll the body or send `100 Continue`.
+Rejection/deadline with an unread body closes HTTP/1, even when a following
+request is already buffered. See the [status mapping and permit
+lifetime](../reference/http-hardening.md#application-admission).
+
 `NacelleHttpPolicy` can reject requests before the handler runs:
 
 - allowed Host headers

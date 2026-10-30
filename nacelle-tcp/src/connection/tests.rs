@@ -1872,7 +1872,7 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
     let serve = serve_serial_stream_without_connection_limit(
         &mut server_io,
         Arc::new(SerialCounterProtocol),
-        Arc::new(SerialCounterHandler),
+        Arc::new(crate::admission::SerialHandlerAdapter(SerialCounterHandler)),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),
@@ -1961,7 +1961,7 @@ fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
     let serial = serve_serial_stream_without_connection_limit(
         &mut serial_io,
         Arc::new(SerialCounterProtocol),
-        Arc::new(SerialCounterHandler),
+        Arc::new(crate::admission::SerialHandlerAdapter(SerialCounterHandler)),
         NacelleTcpConfig::default(),
         NacelleTelemetry::default(),
         NacelleRuntimeState::default(),

@@ -19,6 +19,15 @@ use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::LocalTcpServer;
 use crate::server::TcpServer;
 
+fn admission_tcp_config() -> crate::NacelleTcpConfig {
+    crate::NacelleTcpConfig::default()
+        .with_head_read_limits(crate::TcpHeadReadLimits::new(1024, 1024).unwrap())
+}
+
+fn admission_config() -> nacelle_core::AdmissionConfig {
+    nacelle_core::AdmissionConfig::new(Duration::from_secs(1), 8).unwrap()
+}
+
 #[cfg(feature = "experimental-openssl-detection")]
 use super::local::serve_local_serial_tcp_optional_openssl_listener;
 use super::local::{serve_local_serial_tcp_openssl_listener, serve_local_tcp_openssl_listener};
@@ -144,6 +153,7 @@ async fn required_openssl_rejects_plaintext_before_handler() {
     let handler_called = Arc::new(AtomicBool::new(false));
     let server = TcpServer::<PlainProtocol>::builder()
         .protocol(PlainProtocol)
+        .tcp_config(admission_tcp_config())
         .handler(handler_fn({
             let handler_called = handler_called.clone();
             move |context: TcpRequestContext<PlainProtocol>| {
@@ -151,6 +161,8 @@ async fn required_openssl_rejects_plaintext_before_handler() {
                 async move { context.respond(TcpResponse::empty()).await }
             }
         }))
+        .admission(nacelle_core::AllowAll, admission_config())
+        .unwrap()
         .build()
         .expect("server should build");
     let server_task = tokio::spawn(serve_tcp_openssl_listener_with_shutdown_deadline(
@@ -204,7 +216,12 @@ async fn serial_required_openssl_accepts_tls_request() {
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     let connector = connector.build();
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server = Arc::new(
+        SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_tcp_config(admission_tcp_config())
+            .with_admission(nacelle_core::AllowAll, admission_config())
+            .unwrap(),
+    );
     let server_task = tokio::spawn(
         serve_serial_tcp_openssl_listener_with_options_and_shutdown_deadline(
             server,
@@ -254,7 +271,12 @@ async fn serial_optional_openssl_preserves_plaintext_request() {
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server = Arc::new(
+        SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_tcp_config(admission_tcp_config())
+            .with_admission(nacelle_core::AllowAll, admission_config())
+            .unwrap(),
+    );
     let server_task = tokio::spawn(
         serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
             server,
@@ -299,7 +321,12 @@ async fn serial_optional_openssl_accepts_tls_request() {
     connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
     let connector = connector.build();
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-    let server = Arc::new(SerialTcpServer::new(PlainProtocol, SerialHandler));
+    let server = Arc::new(
+        SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_tcp_config(admission_tcp_config())
+            .with_admission(nacelle_core::AllowAll, admission_config())
+            .unwrap(),
+    );
     let server_task = tokio::spawn(
         serve_serial_tcp_optional_openssl_listener_with_options_and_shutdown_deadline(
             server,
@@ -357,12 +384,17 @@ async fn local_required_openssl_accepts_tls_request() {
             connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
             let connector = connector.build();
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-            let server = std::rc::Rc::new(LocalTcpServer::new(
-                PlainProtocol,
-                local_handler_fn(|context: TcpRequestContext<PlainProtocol>| async move {
-                    context.respond(TcpResponse::bytes("ok")).await
-                }),
-            ));
+            let server = std::rc::Rc::new(
+                LocalTcpServer::new(
+                    PlainProtocol,
+                    local_handler_fn(|context: TcpRequestContext<PlainProtocol>| async move {
+                        context.respond(TcpResponse::bytes("ok")).await
+                    }),
+                )
+                .with_tcp_config(admission_tcp_config())
+                .with_admission(nacelle_core::AllowAll, admission_config())
+                .unwrap(),
+            );
             let server_task = tokio::task::spawn_local(serve_local_tcp_openssl_listener(
                 server,
                 listener,
@@ -429,8 +461,12 @@ async fn local_serial_required_openssl_accepts_tls_request() {
             connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
             let connector = connector.build();
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-            let server =
-                std::rc::Rc::new(LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler));
+            let server = std::rc::Rc::new(
+                LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_tcp_config(admission_tcp_config())
+                    .with_admission(nacelle_core::AllowAll, admission_config())
+                    .unwrap(),
+            );
             let server_task = tokio::task::spawn_local(serve_local_serial_tcp_openssl_listener(
                 server,
                 listener,
@@ -483,8 +519,12 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
                 .expect("listener should bind");
             let addr = listener.local_addr().expect("listener should have addr");
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-            let server =
-                std::rc::Rc::new(LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler));
+            let server = std::rc::Rc::new(
+                LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_tcp_config(admission_tcp_config())
+                    .with_admission(nacelle_core::AllowAll, admission_config())
+                    .unwrap(),
+            );
             let server_task =
                 tokio::task::spawn_local(serve_local_serial_tcp_optional_openssl_listener(
                     server,
@@ -532,8 +572,12 @@ async fn local_serial_optional_openssl_accepts_tls_request() {
             connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
             let connector = connector.build();
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
-            let server =
-                std::rc::Rc::new(LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler));
+            let server = std::rc::Rc::new(
+                LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_tcp_config(admission_tcp_config())
+                    .with_admission(nacelle_core::AllowAll, admission_config())
+                    .unwrap(),
+            );
             let server_task =
                 tokio::task::spawn_local(serve_local_serial_tcp_optional_openssl_listener(
                     server,

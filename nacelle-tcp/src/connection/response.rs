@@ -107,6 +107,7 @@ pub(super) struct ResponseDelivery {
     pending: BytesMut,
     base_capacity: usize,
     policy: ResponseWritePolicy,
+    abandoned: bool,
 }
 
 impl ResponseDelivery {
@@ -115,6 +116,7 @@ impl ResponseDelivery {
             pending: BytesMut::with_capacity(config.response_buffer_capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
+            abandoned: false,
         }
     }
 
@@ -134,6 +136,11 @@ impl ResponseDelivery {
     /// Whether bytes from prior responses remain buffered (coalesced).
     pub(super) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    pub(super) fn abandon(&mut self) {
+        self.pending.clear();
+        self.abandoned = true;
     }
 
     fn reset(&mut self) {
@@ -261,6 +268,9 @@ impl ResponseDelivery {
         W: AsyncWrite + Unpin,
         Observer: NacelleTelemetryObserver,
     {
+        if self.abandoned {
+            return Ok(0);
+        }
         let pending_bytes = self.pending.len();
         let delivered_bytes = if self.pending.is_empty() {
             self.reset();
@@ -352,7 +362,7 @@ impl ResponseDelivery {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn deliver_response<P, W, Observer>(
+pub(super) async fn deliver_response<P, W, Observer, Permit>(
     protocol: &P,
     completion: GuardedResponseCompletion<P::Response, P::ResponseContext>,
     writer: &mut W,
@@ -362,6 +372,7 @@ pub(super) async fn deliver_response<P, W, Observer>(
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase_duration_metrics: bool,
+    application_permit: Option<Permit>,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
@@ -416,6 +427,7 @@ where
             return Err(error);
         }
     };
+    drop(application_permit);
     // Delivery callbacks require a write-and-flush boundary under every policy.
     if let Some(guard) = guard {
         match delivery
@@ -639,6 +651,7 @@ where
                 telemetry,
                 metrics_context,
                 phase_duration_metrics,
+                None::<()>,
             )
             .await
         }

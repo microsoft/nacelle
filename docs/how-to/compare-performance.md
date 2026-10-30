@@ -85,6 +85,22 @@ Response delivery policies have a separate end-to-end benchmark:
 cargo bench -p nacelle-tcp --bench response_delivery -- --noplot
 ```
 
+Measure optional application-admission overhead separately:
+
+```bash
+cargo bench -p nacelle-examples --bench admission --features "bench tcp http" -- --noplot
+```
+
+The TCP cases use four in-memory connections with 64 pipelined 32-byte requests
+each, comparing default and H=24/B=4096 bounded reads, ready allowance, and
+capacity-four/capacity-one semaphores under immediate and coalesced delivery.
+Handlers yield once in every case to exercise queued admission. HTTP uses four
+loopback connections per iteration, empty or 64 KiB requests, and empty or
+four-chunk responses. Both use default telemetry without a recorder. TCP uses
+one current-thread runtime; HTTP uses two Tokio workers. These are enabled-policy
+cost profiles, not substitutes for unchanged-harness parent/default comparisons,
+allocation measurements, or tail-latency and memory workloads.
+
 ## Compare a tag or commit
 
 The PowerShell comparison scripts keep data under

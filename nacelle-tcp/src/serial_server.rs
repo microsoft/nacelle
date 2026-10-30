@@ -7,15 +7,15 @@ use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::admission::{LocalTcpAdmitted, SerialHandlerAdapter, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
 use crate::connection::{
     serve_local_serial_stream_without_connection_limit,
     serve_serial_stream_without_connection_limit,
 };
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{
-    LocalAppStateHandler, LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedAppStateHandler,
-};
+use crate::protocol::{LocalAppStateHandler, Protocol, SharedAppStateHandler};
+use nacelle_core::AdmissionConfig;
 
 /// Shared-runtime TCP server with exclusive mutable connection state.
 ///
@@ -61,10 +61,10 @@ pub type AppStateSerialTcpServer<P, H, Observer, AppState> =
 
 impl<P, H> SerialTcpServer<P, H, NoopObserver> {
     /// Construct a serial server with one handler for all requests.
-    pub fn new(protocol: P, handler: H) -> Self {
-        Self {
+    pub fn new(protocol: P, handler: H) -> SerialTcpServer<P, SerialHandlerAdapter<H>> {
+        SerialTcpServer {
             protocol: Arc::new(protocol),
-            handler: Arc::new(handler),
+            handler: Arc::new(SerialHandlerAdapter(handler)),
             config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
@@ -75,6 +75,30 @@ impl<P, H> SerialTcpServer<P, H, NoopObserver> {
 }
 
 impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
+    /// Install admission over an exclusively borrowed head and connection state.
+    ///
+    /// # Errors
+    ///
+    /// Head-read limits must already be configured.
+    pub fn with_admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> Result<SerialTcpServer<P, SharedTcpAdmitted<H, A>, Observer>, NacelleError> {
+        if self.config.head_read_limits.is_none() {
+            return Err(nacelle_core::NacelleConfigurationError::AdmissionReadBounds.into());
+        }
+        Ok(SerialTcpServer {
+            protocol: self.protocol,
+            handler: Arc::new(TcpAdmitted::new(self.handler, policy, config)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        })
+    }
+
     /// Bind application state before serial request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
@@ -84,7 +108,7 @@ impl<P, H, Observer> SerialTcpServer<P, H, Observer> {
     where
         P: Protocol,
         P::ConnectionState: Send,
-        H: SerialTcpHandler<P, AppState>,
+        H: crate::admission::SerialTcpService<P, AppState>,
         AppState: Send + Sync + 'static,
     {
         SerialTcpServer {
@@ -103,7 +127,7 @@ impl<P, H, Observer> SerialTcpServer<P, H, Observer>
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     /// Set TCP framing and buffering configuration.
@@ -279,10 +303,10 @@ pub type LocalAppStateSerialTcpServer<P, H, Observer, AppState> =
 
 impl<P, H> LocalSerialTcpServer<P, H, NoopObserver> {
     /// Construct a worker-local serial server with one handler for all requests.
-    pub fn new(protocol: P, handler: H) -> Self {
-        Self {
+    pub fn new(protocol: P, handler: H) -> LocalSerialTcpServer<P, SerialHandlerAdapter<H>> {
+        LocalSerialTcpServer {
             protocol: Rc::new(protocol),
-            handler: Rc::new(handler),
+            handler: Rc::new(SerialHandlerAdapter(handler)),
             config: NacelleTcpConfig::default(),
             telemetry: NacelleTelemetry::default(),
             runtime_state: NacelleRuntimeState::default(),
@@ -293,6 +317,30 @@ impl<P, H> LocalSerialTcpServer<P, H, NoopObserver> {
 }
 
 impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
+    /// Install worker-local admission over exclusive connection state.
+    ///
+    /// # Errors
+    ///
+    /// Head-read limits must already be configured.
+    pub fn with_admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> Result<LocalSerialTcpServer<P, LocalTcpAdmitted<H, A>, Observer>, NacelleError> {
+        if self.config.head_read_limits.is_none() {
+            return Err(nacelle_core::NacelleConfigurationError::AdmissionReadBounds.into());
+        }
+        Ok(LocalSerialTcpServer {
+            protocol: self.protocol,
+            handler: Rc::new(TcpAdmitted::new(self.handler, policy, config)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        })
+    }
+
     /// Bind application state before worker-local serial request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
@@ -301,7 +349,7 @@ impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
     ) -> LocalAppStateSerialTcpServer<P, H, Observer, AppState>
     where
         P: Protocol,
-        H: LocalSerialTcpHandler<P, AppState>,
+        H: crate::admission::LocalSerialTcpService<P, AppState>,
         AppState: 'static,
     {
         LocalSerialTcpServer {
@@ -319,7 +367,7 @@ impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer> {
 impl<P, H, Observer> LocalSerialTcpServer<P, H, Observer>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P>,
+    H: crate::admission::LocalSerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     /// Set worker-local TCP framing and buffering configuration.

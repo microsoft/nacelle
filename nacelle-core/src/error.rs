@@ -18,6 +18,10 @@ pub enum NacelleConfigurationError {
     PartitionCount,
     /// A builder cannot replace state already shared with handles or listeners.
     RuntimeStateInUse,
+    /// Admission requires finite nonzero waiter capacity and a valid deadline.
+    AdmissionLimits,
+    /// Admission requires configured transport head-read bounds.
+    AdmissionReadBounds,
 }
 
 impl Display for NacelleConfigurationError {
@@ -28,6 +32,8 @@ impl Display for NacelleConfigurationError {
             Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
+            Self::AdmissionLimits => "admission requires a positive finite timeout and waiter capacity",
+            Self::AdmissionReadBounds => "request admission requires bounded head reads",
         })
     }
 }
@@ -49,6 +55,8 @@ pub enum NacelleResourceLimitReason {
     /// Peer-rate table capacity is too small for worker partitioning.
     /// Concurrent in-flight request capacity.
     InFlightRequests,
+    /// Concurrent application admission invocation capacity.
+    AdmissionWaiters,
     /// Per-peer connection-open rate.
     PeerConnectionRate,
     /// Peer-rate limiter state is unavailable.
@@ -93,6 +101,7 @@ impl NacelleResourceLimitReason {
         match self {
             Self::Connections => "connections",
             Self::InFlightRequests => "in_flight_requests",
+            Self::AdmissionWaiters => "admission_waiters",
             Self::PeerConnectionRate => "peer_connection_rate",
             Self::PeerConnectionRateTable => "peer_connection_rate_table",
             Self::PeerConnectionRateTableFull => "peer_connection_rate_table_full",
@@ -127,6 +136,8 @@ impl Display for NacelleResourceLimitReason {
 pub enum NacelleTimeoutReason {
     /// Application handler execution.
     Handler,
+    /// Waiting for application admission, including pre-wait delivery.
+    Admission,
     /// HTTP request-body read.
     HttpBodyRead,
     /// HTTP response-body write.
@@ -164,6 +175,7 @@ impl NacelleTimeoutReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Handler => "handler",
+            Self::Admission => "admission",
             Self::HttpBodyRead => "http_body_read",
             Self::HttpBodyWrite => "http_body_write",
             Self::HttpHeaders => "http_headers",
@@ -192,6 +204,7 @@ impl Display for NacelleTimeoutReason {
 #[derive(Debug)]
 pub enum NacelleError {
     Configuration(NacelleConfigurationError),
+    AdmissionRejected(crate::admission::AdmissionRejection),
     MissingProtocol,
     InvalidFrame(&'static str),
     FrameTooLarge { len: usize, max: usize },
@@ -221,6 +234,7 @@ impl NacelleError {
             Self::Configuration(_) => Some(
                 "configure startup state before sharing it; use its control handle for live thresholds",
             ),
+            Self::AdmissionRejected(_) => Some("check the application's request admission policy"),
             Self::MissingProtocol => {
                 Some("call TcpServer::<YourProtocol>::builder().protocol(...) before build")
             }
@@ -298,6 +312,7 @@ impl Display for NacelleError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Configuration(error) => write!(f, "configuration error: {error}"),
+            Self::AdmissionRejected(reason) => write!(f, "request admission rejected: {reason}"),
             Self::MissingProtocol => f.write_str("protocol is required"),
             Self::InvalidFrame(message) => write!(f, "invalid frame: {message}"),
             Self::FrameTooLarge { len, max } => {

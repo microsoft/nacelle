@@ -36,9 +36,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{
-    LocalSerialTcpHandler, Protocol, SerialTcpHandler, SharedProtocol, TcpHandler,
-};
+use crate::protocol::{Protocol, SharedProtocol};
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::pipeline::ConnectionInfo;
@@ -76,7 +74,7 @@ pub async fn serve_connection<P, H, R, W, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -109,7 +107,7 @@ pub async fn serve_connection_with_connection_meta<P, H, R, W, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -142,7 +140,7 @@ pub(crate) async fn serve_connection_with_connection_meta_and_tcp_state<P, H, R,
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -177,7 +175,7 @@ async fn drive_connection<P, H, R, W, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
@@ -216,6 +214,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    if handler.admission_state().is_some() && config.head_read_limits.is_none() {
+        return Err(nacelle_core::NacelleConfigurationError::AdmissionReadBounds.into());
+    }
     if config.head_read_limits.is_some() {
         drive_connection_with_head_reads::<P, PO, D, R, W, Observer, true>(
             reader,
@@ -404,10 +405,21 @@ where
     }
     .await;
 
+    let mut closing_limits = tcp_limits;
+    if result.is_err()
+        && let Some(admission) = handler.admission_state()
+    {
+        closing_limits
+            .write_timeout
+            .get_or_insert(admission.config().timeout());
+        closing_limits
+            .shutdown_timeout
+            .get_or_insert(admission.config().timeout());
+    }
     let result = match response_delivery
         .flush(
             &mut writer,
-            &tcp_limits,
+            &closing_limits,
             &telemetry,
             connection_metrics.as_ref(),
             telemetry_plan.phase_duration,
@@ -417,7 +429,7 @@ where
         Ok(_) => result,
         Err(error) => Err(error.error),
     };
-    let shutdown_result = shutdown_with_timeout(&mut writer, &tcp_limits).await;
+    let shutdown_result = shutdown_with_timeout(&mut writer, &closing_limits).await;
     if let Err(error) = &shutdown_result {
         record_tcp_error(
             &telemetry,
@@ -452,7 +464,7 @@ pub async fn serve_local_stream_without_connection_limit<P, H, IO, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: crate::protocol::LocalTcpHandler<P>,
+    H: crate::admission::LocalTcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + 'static,
 {
@@ -489,7 +501,7 @@ pub async fn serve_serial_stream_without_connection_limit<P, H, IO, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -522,7 +534,7 @@ pub async fn serve_local_serial_stream_without_connection_limit<P, H, IO, Observ
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P>,
+    H: crate::admission::LocalSerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + 'static,
 {
@@ -552,7 +564,7 @@ pub async fn serve_stream<P, H, IO, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -581,7 +593,7 @@ pub async fn serve_stream_with_connection_meta<P, H, IO, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -611,7 +623,7 @@ pub(crate) async fn serve_stream_with_connection_meta_and_tcp_state<P, H, IO, Ob
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -641,7 +653,7 @@ pub async fn serve_stream_without_connection_limit<P, H, IO, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -670,7 +682,7 @@ pub async fn serve_stream_without_connection_limit_with_connection_meta<P, H, IO
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -705,7 +717,7 @@ pub(crate) async fn serve_stream_without_connection_limit_with_connection_meta_a
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -735,7 +747,7 @@ async fn serve_stream_inner<P, H, IO, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
