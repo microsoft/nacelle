@@ -25,6 +25,7 @@ hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["server", "tokio"] }
 nacelle-core = { workspace = true }
 nacelle-rustls = { workspace = true, optional = true }
+pin-project-lite = { workspace = true }
 rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = { workspace = true, optional = true }

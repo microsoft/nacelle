@@ -1903,6 +1903,22 @@ mod tests {
         drop(probe);
         let workers = WorkerSet::first(1).expect("one worker should be available");
         let shutdown = NacelleShutdown::new();
+        let config = LocalHttpRuntimeConfig::new(
+            ThreadPerCoreConfig::new(workers),
+            addr,
+            ThreadPerCoreLimits::worker(
+                NacelleLimits::default().with_connection_tracking(
+                    nacelle_core::NacelleConnectionTracking::new(4).unwrap(),
+                ),
+                1,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .with_shutdown(shutdown.clone())
+        .with_drain_timeout(std::time::Duration::from_secs(1));
+        let control = config.runtime_control();
+        let client_control = control.clone();
         let client_shutdown = shutdown.clone();
         let client = thread::spawn(move || {
             let mut stream = loop {
@@ -1929,26 +1945,44 @@ mod tests {
             assert_eq!(response.matches("HTTP/1.1 200 OK").count(), 2);
             assert!(response.contains("\r\n3\r\n1:3"));
             assert!(response.contains("\r\n3\r\n2:4"));
+            let mut idle = std::net::TcpStream::connect(addr).expect("idle connection");
+            idle.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let peer = idle.local_addr().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let snapshot = loop {
+                if let Some(snapshot) = client_control
+                    .connections(4)
+                    .unwrap()
+                    .into_iter()
+                    .find(|snapshot| snapshot.connection.peer_addr == Some(peer))
+                {
+                    break snapshot;
+                }
+                assert!(std::time::Instant::now() < deadline, "HTTP registration");
+                thread::yield_now();
+            };
+            assert_eq!(snapshot.partition, 0);
+            assert!(!snapshot.capabilities.idle_reclaim);
+            assert_eq!(
+                client_control.retire_connection(
+                    snapshot.connection.connection_id,
+                    std::time::Duration::from_secs(1)
+                ),
+                nacelle_core::NacelleRetireOutcome::Selected,
+            );
+            assert_eq!(idle.read(&mut [0]).expect("retirement EOF"), 0);
             client_shutdown.shutdown();
         });
 
-        let result = run_local_http_thread_per_core(
-            LocalHttpRuntimeConfig::new(
-                ThreadPerCoreConfig::new(workers),
-                addr,
-                ThreadPerCoreLimits::global(NacelleRuntimeState::default()),
-            )
-            .expect("runtime config")
-            .with_shutdown(shutdown)
-            .with_drain_timeout(std::time::Duration::from_secs(1)),
-            |_worker| {
-                Ok(LocalHyperServer::new(LocalHttpHandlerState {
-                    total_requests: Rc::new(RefCell::new(0)),
-                })
-                .with_connection_state_factory(LocalStateFactory))
-            },
-        );
+        let result = run_local_http_thread_per_core(config, |_worker| {
+            Ok(LocalHyperServer::new(LocalHttpHandlerState {
+                total_requests: Rc::new(RefCell::new(0)),
+            })
+            .with_connection_state_factory(LocalStateFactory))
+        });
         client.join().expect("client thread should join");
         result.expect("worker-local HTTP runtime should shut down cleanly");
+        assert!(control.connections(4).unwrap().is_empty());
     }
 }

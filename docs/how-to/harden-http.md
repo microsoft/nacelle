@@ -119,6 +119,16 @@ Allow enough memory for handlers that aggregate entire bodies, and leave
 separate headroom for Hyper read-ahead and TLS/socket buffers. See [runtime
 limits](../topics/runtime-limits.md) for sizing guidance.
 
+For trusted administrative HTTP/HTTPS controls, enable a finite
+`NacelleConnectionTracking` in startup limits before installing state, and
+retain the installed `runtime_control()`. Use `retire_connection(id, timeout)`
+for deadline-bounded graceful retirement; `close_connection(id)` cancels
+immediately and can truncate output. HTTP idle reclaim is explicitly
+unsupported, so lowering a connection target alone may leave keep-alive
+connections occupying capacity. See the [control example and
+outcomes](../topics/operations.md#administrative-connection-management).
+Do not expose these controls to untrusted callers.
+
 For internet-facing deployments, a reverse proxy or load balancer can still own coarse traffic filtering and certificate automation. Nacelle now also enforces application-level body, request, connection, per-peer connection/request/connection-open-rate, timeout, TLS handshake, security header, and optional Host/header/method/URI limits in-process.
 
 Slowloris-style clients are closed by `NacelleHttpLimits::header_read_timeout`.

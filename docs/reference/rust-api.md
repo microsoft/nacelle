@@ -63,7 +63,7 @@ they do not change request semantics.
   request, streaming-task, and body-size limits. TCP and HTTP
   server configurations add transport timeouts, frame/header policy, and edge
   limits. Listener and direct overloads do not bypass connection capacity or
-  configured TCP/Unix registration. The former public
+  configured connection registration. The former public
   `without_connection_limit` helpers are removed; use `serve_stream`,
   `serve_local_stream`, `serve_serial_stream`, or `serve_local_serial_stream`
   and do not acquire an additional caller-owned connection permit.
@@ -132,7 +132,10 @@ Start with these public entry points:
   controls aggregate process totals while retaining worker-local counters.
 - `nacelle::core::NacelleRuntimeControl` for live connection thresholds.
   `NacelleRuntimeState::startup_limits()` contains only startup configuration;
-  `control.snapshot()` observes live thresholds.
+  `control.snapshot()` observes live thresholds. Opt-in tracking adds bounded
+  metadata snapshots and forced close for TCP/Unix and HTTP/HTTPS. Snapshot
+  capabilities distinguish TCP/Unix idle reclaim from HTTP/HTTPS
+  deadline-bounded `retire_connection`; HTTP idle reclaim is unsupported.
 - `nacelle::runtime::WorkerContext::offload_blocking(...)` for explicit blocking work whose
   completion is awaited back on the originating local worker.
 - `nacelle::tcp::Protocol` for TCP wire-format adapters.

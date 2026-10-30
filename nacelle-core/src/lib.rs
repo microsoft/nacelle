@@ -37,7 +37,8 @@ pub use telemetry::{
     NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
 pub use tracking::{
-    NacelleCloseOutcome, NacelleConnectionActivityState, NacelleConnectionCloseReason,
-    NacelleConnectionLookup, NacelleConnectionSnapshot, NacelleConnectionTracking,
-    NacelleReclaimOutcome, NacelleReclaimPartition,
+    NacelleCloseOutcome, NacelleConnectionActivityState, NacelleConnectionCapabilities,
+    NacelleConnectionCloseReason, NacelleConnectionLookup, NacelleConnectionSnapshot,
+    NacelleConnectionTracking, NacelleReclaimOutcome, NacelleReclaimPartition,
+    NacelleRetireOutcome,
 };

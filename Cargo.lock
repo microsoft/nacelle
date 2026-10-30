@@ -827,6 +827,7 @@ dependencies = [
  "metrics-util",
  "nacelle-core",
  "nacelle-rustls",
+ "pin-project-lite",
  "rustls",
  "tokio",
  "tokio-rustls",

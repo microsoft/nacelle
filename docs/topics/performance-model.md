@@ -97,8 +97,11 @@ This isolates accounting contention, not socket throughput.
 ### Connection tracking costs
 
 Tracking is disabled by default. Enabling it adds connection-time registry
-allocation/locking, one cancellation waiter per connection, and atomic activity
-transitions at input/idle boundaries. It does not add per-request registry locks,
+allocation/locking and a cancellation waiter per connection. TCP uses atomic
+activity transitions at input/idle boundaries. HTTP also waits for graceful
+retirement but adds no request activity hooks; it cannot prove safe idle
+eligibility. Only a selected retirement creates an administrative timer.
+Tracking does not add per-request registry locks,
 timers, or metrics. Bounded registry map storage retains its high-water
 allocation; TLS metadata, snapshots retained by callers, sockets, and transport
 buffers must be budgeted separately.
@@ -127,6 +130,34 @@ Keep allocator, entry count, toolchain, and platform fixed between comparisons.
 Compare tracking-off network throughput with the retained baseline and frozen
 stress client as well; the absence of registry operations does not prove that
 future layout or code generation has no cost.
+
+For HTTP, keep the unchanged `critical_paths` HTTP round-trip cases as the
+tracking-off baseline and run the separate opt-in profiles:
+
+```bash
+cargo bench -p nacelle-examples --features bench,http --bench http_connection_lifecycle
+NACELLE_HTTP_TRACKING=0 NACELLE_HTTP_MEMORY_CONNECTIONS=2048 cargo bench -p nacelle-examples --features bench,http --bench http_connection_lifecycle
+NACELLE_HTTP_TRACKING=1 NACELLE_HTTP_MEMORY_CONNECTIONS=2048 cargo bench -p nacelle-examples --features bench,http --bench http_connection_lifecycle
+NACELLE_HTTP_TRACKING=0 NACELLE_HTTP_LATENCY_REQUESTS=50000 cargo bench -p nacelle-examples --features bench,http --bench http_connection_lifecycle
+NACELLE_HTTP_TRACKING=1 NACELLE_HTTP_LATENCY_REQUESTS=50000 cargo bench -p nacelle-examples --features bench,http --bench http_connection_lifecycle
+```
+
+`http_tracking` compares one and 64 sequential requests per loopback connection
+using identical 32-byte fixed-length responses, a two-worker Tokio runtime, and
+disabled metrics. It includes client parsing/allocation, network I/O, and
+connection churn, not just registry work. `http_retirement` measures selection
+through client-observed EOF and capacity release for established keep-alive
+connections; setup and its warm-up request are excluded. Pending production,
+flush, and deadline cancellation are deterministic tests, not latency claims.
+
+The Linux memory mode holds warmed client/server pairs in one process. Its RSS
+delta includes both endpoints, runtime tasks, buffers, registry, and allocator
+retention, not isolated server allocations or kernel socket memory. Run each
+mode in a fresh process with the same live count. The latency mode reports
+client-observed p50/p99 on one warmed persistent connection; these distributions
+are separate from Criterion batch means. Alternate tracking-off/on repetitions
+without concurrent builds, keep CPU affinity and feature flags fixed, and do
+not generalize these plain HTTP profiles to HTTPS or worker-local topology.
 
 ### Request ownership
 
