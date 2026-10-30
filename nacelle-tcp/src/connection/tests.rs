@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpRequestBodyMode};
+use crate::config::{NacelleTcpConfig, ResponseWritePolicy, TcpHeadReadLimits, TcpRequestBodyMode};
 use bytes::{Bytes, BytesMut};
 use metrics_util::debugging::DebuggingRecorder;
 use nacelle_codec::MessageDecoder;
@@ -41,6 +41,48 @@ struct RecordingIo {
     input: Vec<u8>,
     position: usize,
     writes: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+pub(crate) struct CountingIo<IO> {
+    pub(crate) inner: IO,
+    pub(crate) reads: Arc<std::sync::Mutex<Vec<(usize, usize)>>>,
+}
+
+impl<IO: AsyncRead + Unpin> AsyncRead for CountingIo<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let offered = buf.remaining();
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) {
+            self.reads
+                .lock()
+                .expect("read recorder")
+                .push((offered, buf.filled().len() - before));
+        }
+        result
+    }
+}
+
+impl<IO: AsyncWrite + Unpin> AsyncWrite for CountingIo<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 struct FailingErrorWriteIo {
@@ -813,6 +855,118 @@ async fn fragmented_body_does_not_consume_following_frame() {
         .expect("server should finish")
         .expect("server task should join")
         .expect("connection should close cleanly");
+}
+
+#[tokio::test]
+async fn bounded_head_rejection_caps_actual_read_ahead_in_both_body_modes() {
+    for mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+        for bounded in [false, true] {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut input = vec![b'x'; 1024 * 1024];
+            *input.first_mut().expect("head byte") = 200;
+            let io = CountingIo {
+                inner: RecordingIo {
+                    input,
+                    position: 0,
+                    writes: Arc::default(),
+                },
+                reads: reads.clone(),
+            };
+            let mut config = NacelleTcpConfig::default().with_request_body_mode(mode);
+            if bounded {
+                config =
+                    config.with_head_read_limits(TcpHeadReadLimits::new(1, 16).expect("limits"));
+            }
+            let result = serve_stream_with_connection_meta(
+                io,
+                Arc::new(PhaseProtocol {
+                    authenticated: false,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }),
+                handler_fn(|_: TcpRequestContext<PhaseProtocol>| async {
+                    panic!("body-limit rejection must precede the handler")
+                }),
+                config,
+                NacelleTelemetry::default(),
+                NacelleRuntimeState::default(),
+                NacelleConnectionMeta::tcp(None, None),
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::RequestBodyBytes
+                ))
+            ));
+            let expected = if bounded { 16 } else { 64 * 1024 };
+            assert_eq!(*reads.lock().expect("reads"), [(expected, expected)]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn bounded_body_modes_preserve_buffered_and_unread_next_heads() {
+    for mode in [TcpRequestBodyMode::Buffered, TcpRequestBodyMode::Streaming] {
+        for body_len in [2_u8, 200] {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut input = vec![body_len];
+            input.extend(std::iter::repeat_n(b'x', usize::from(body_len)));
+            input.push(0);
+            let io = CountingIo {
+                inner: RecordingIo {
+                    input,
+                    position: 0,
+                    writes: Arc::default(),
+                },
+                reads: reads.clone(),
+            };
+            serve_stream_with_connection_meta(
+                io,
+                Arc::new(PhaseProtocol {
+                    authenticated: true,
+                    request_wire_bytes: None,
+                    encoder_writes_then_errors: false,
+                }),
+                handler_fn({
+                    let bodies = bodies.clone();
+                    move |mut context: TcpRequestContext<PhaseProtocol>| {
+                        let bodies = bodies.clone();
+                        async move {
+                            let mut body = Vec::new();
+                            while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                                body.extend_from_slice(&chunk?);
+                            }
+                            bodies.lock().expect("bodies").push(body);
+                            Ok(context.complete())
+                        }
+                    }
+                }),
+                NacelleTcpConfig::default()
+                    .with_head_read_limits(TcpHeadReadLimits::new(1, 16).expect("limits"))
+                    .with_request_body_mode(mode)
+                    .with_request_body_chunk_size(64),
+                NacelleTelemetry::default(),
+                NacelleRuntimeState::default(),
+                NacelleConnectionMeta::tcp(None, None),
+            )
+            .await
+            .expect("connection");
+            assert_eq!(
+                *bodies.lock().expect("bodies"),
+                [vec![b'x'; usize::from(body_len)], Vec::new()]
+            );
+            let expected = match (body_len, mode) {
+                (2, _) => vec![(16, 4), (16, 0)],
+                (_, TcpRequestBodyMode::Buffered) => vec![(16, 16), (185, 185), (16, 1), (16, 0)],
+                (_, TcpRequestBodyMode::Streaming) => {
+                    vec![(16, 16), (64, 64), (64, 64), (57, 57), (16, 1), (16, 0)]
+                }
+            };
+            assert_eq!(*reads.lock().expect("reads"), expected);
+        }
+    }
 }
 
 #[tokio::test]

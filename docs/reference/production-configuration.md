@@ -72,6 +72,20 @@ when the decoded request head, immutable connection metadata, or concrete
 hook runs before body-specific allocation or additional body reads; normal
 decoder read-ahead may already have placed bytes in the connection buffer.
 
+Set `NacelleTcpConfig::with_head_read_limits(TcpHeadReadLimits::new(H, B)?)`
+when that pre-check read-ahead must be bounded. `H` caps encoded head bytes and
+`B` caps cumulative undecided plaintext, including inherited body/next-request
+prefixes; require `0 < H <= B <= isize::MAX`. The reference protocol uses `H = 24`.
+The default is `None`, retaining existing batching. Choose `B` for the workload:
+smaller values reduce plaintext prefetch but can require more reads.
+
+This is not a process memory cap: buffer capacity, shared decoded allocations,
+decoder-owned memory, TLS transport buffers (including decrypted record data),
+and kernel buffers are excluded. Existing
+body/frame limits still govern admitted bodies. See
+[bounded head reads](protocol.md#bounded-head-reads) for EOF behavior, stable
+rejection reasons, and the decoder allocation contract.
+
 `NacelleTcpOptions` controls accepted TCP stream behavior. Defaults preserve the
 existing behavior: `TCP_NODELAY` enabled and TCP keepalive disabled.
 `NacelleTcpBindOptions` adds listener bind controls such as IPv6-only mode for

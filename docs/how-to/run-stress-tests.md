@@ -46,6 +46,23 @@ true clearing flag in the same file are an error; omitted or false flags leave
 the prior value unchanged. These files configure startup thresholds, not a
 remote administrative endpoint.
 
+To measure opt-in bounded head reads, add this table to a copy of the plain TCP
+profile; leave the baseline profile unchanged:
+
+```toml
+[head_read_limits]
+max_head_bytes = 24
+max_undecided_bytes = 4096
+```
+
+Both fields are required together, and invalid bounds reject the file before
+applying its settings. Omitting the table preserves earlier configuration; code
+defaults leave head-read limits disabled. The effective configuration prints the
+selected limits. Report enabled-budget results separately from the default
+baseline; `B` changes read-ahead and can change read counts. See
+[bounded head reads](../reference/protocol.md#bounded-head-reads) for the
+plaintext scope and body/EOF contracts.
+
 Linux example:
 
 ```bash

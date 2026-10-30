@@ -530,6 +530,13 @@ pub trait Protocol: Send + Sync + 'static {
     }
 
     /// Create a decoder for one connection.
+    ///
+    /// `max_frame_len` remains the protocol frame limit, not a head-size limit.
+    /// With [`crate::TcpHeadReadLimits`], the runtime presents at most `H` head
+    /// bytes and rejects a decoder that still needs input at that boundary.
+    /// Consume only the encoded head; leave body bytes in the cumulative buffer.
+    /// Bound decoder-owned allocations separately, since shared decoded slices
+    /// may retain a backing allocation larger than their readable length.
     fn decoder(&self, max_frame_len: usize) -> Self::Decoder;
 
     /// Construct connection state once after accept/TLS handshake.

@@ -54,11 +54,40 @@ buffer. `freeze()` converts it to `Bytes` without copying. Use
 `Bytes::copy_from_slice` or `BytesMut::from` when the decoded message needs an
 independent allocation.
 
+## Bounded reads
+
+`read_message_bounded(B)` decodes buffered input before attempting another read.
+`read_more_bounded(B)` performs one read without decoding. Both cap the supplied
+destination to `B - buffer.len()`, even when the allocation has much more spare
+capacity. The allowance is cumulative, not renewed on each syscall. Following
+message/body prefixes already buffered count toward `B`.
+
+An initial buffer larger than `B` returns
+`MessageReadError::ReadBudgetExceeded { limit, buffered }` before decoding or
+polling, preserving its bytes. At exactly `B`, a complete message succeeds;
+needing another read returns that error without polling a zero-length
+destination. A zero budget cannot discover EOF. Exhaustion does not mark EOF:
+the caller can resume with a larger budget or explicitly consume admitted bytes.
+
+Normal decoding, progress checks, cancellation, and shared-slice ownership
+remain unchanged. Once a transport read observes EOF, `decode_eof` runs as
+usual, including incomplete-input errors. An EOF-delimited message that fills
+the entire budget cannot discover EOF and needs spare allowance. Known EOF does
+not poll the transport again.
+
+The bound covers plaintext returned into the cumulative buffer. Allocation
+capacity, retained shared messages, decoder-owned allocations, TLS transport
+buffers (including decrypted record data), and kernel buffers have separate
+lifetimes and limits. Mixing bounded calls with unbounded reads or
+direct buffer mutation is the caller's responsibility; the next bounded call
+rejects an oversized buffer rather than trimming it.
+
 ## Limits
 
 The length-delimited codecs reject frames larger than their configured maximum.
 Custom decoders are responsible for rejecting oversized input before the
 cumulative `MessageReader` buffer grows indefinitely.
+They must also bound their own allocations independently of reader budgets.
 
 `MessageWriter::feed` queues encoded bytes. `flush`, `send`, and `shutdown`
 write queued bytes to the transport.

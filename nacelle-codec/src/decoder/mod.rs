@@ -6,6 +6,8 @@ use bytes::BytesMut;
 ///
 /// A decoder instance belongs to one connection. Return `Ok(None)` without
 /// consuming input when a complete message has not arrived.
+/// Bound internal allocations independently of any reader input budget; decoded
+/// slices may retain the cumulative buffer's larger backing allocation.
 pub trait MessageDecoder {
     /// Decoded message type.
     type Message;

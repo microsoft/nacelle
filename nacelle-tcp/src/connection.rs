@@ -52,7 +52,7 @@ mod metrics;
 mod request;
 mod response;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
@@ -199,6 +199,55 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn drive_connection_with_dispatch<P, PO, D, R, W, Observer>(
     reader: R,
+    writer: W,
+    protocol: PO,
+    handler: D,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    PO: Deref<Target = P>,
+    D: RequestDispatch<P>,
+    Observer: NacelleTelemetryObserver,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if config.head_read_limits.is_some() {
+        drive_connection_with_head_reads::<P, PO, D, R, W, Observer, true>(
+            reader,
+            writer,
+            protocol,
+            handler,
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        )
+        .await
+    } else {
+        drive_connection_with_head_reads::<P, PO, D, R, W, Observer, false>(
+            reader,
+            writer,
+            protocol,
+            handler,
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+        )
+        .await
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_connection_with_head_reads<P, PO, D, R, W, Observer, const BOUNDED: bool>(
+    reader: R,
     mut writer: W,
     protocol: PO,
     handler: D,
@@ -234,7 +283,10 @@ where
         telemetry_plan.phase_duration,
     );
     let decoder = InstrumentedDecoder::new(
-        protocol.decoder(config.max_frame_len),
+        framing::HeadDecoder::<_, BOUNDED>::new(
+            protocol.decoder(config.max_frame_len),
+            config.head_read_limits,
+        ),
         &telemetry,
         connection_metrics.as_ref(),
         telemetry_plan.phase_duration,
@@ -251,7 +303,14 @@ where
             #[cfg(feature = "buffer-rotation")]
             request_reader.rotate_empty_buffer(config.read_buffer_capacity);
 
-            let read_result = read_message_with_timeout(&mut request_reader, &tcp_limits).await;
+            let read_result = read_message_with_timeout::<_, _, BOUNDED>(
+                &mut request_reader,
+                &tcp_limits,
+                config
+                    .head_read_limits
+                    .map_or(0, crate::TcpHeadReadLimits::max_undecided_bytes),
+            )
+            .await;
             let decoded = match read_result {
                 Ok(Some(decoded)) => decoded,
                 Ok(None) => break 'conn,

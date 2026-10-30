@@ -1,5 +1,7 @@
+use bytes::BufMut;
+#[cfg(test)]
 use bytes::BytesMut;
-use nacelle_codec::{MessageDecoder, MessageReader};
+use nacelle_codec::{MessageDecoder, MessageReadError, MessageReader};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::framing::MessageReadFailure;
@@ -11,9 +13,10 @@ const REQUEST_BODY_READ_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::Re
 const TCP_WRITE_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::TcpWrite;
 const TCP_SHUTDOWN_TIMEOUT: NacelleTimeoutReason = NacelleTimeoutReason::TcpShutdown;
 
-pub(super) async fn read_message_with_timeout<R, D>(
+pub(super) async fn read_message_with_timeout<R, D, const BOUNDED: bool>(
     reader: &mut MessageReader<R, D>,
     tcp_limits: &NacelleTcpLimits,
+    max_undecided_bytes: usize,
 ) -> Result<Option<D::Message>, MessageReadFailure>
 where
     R: AsyncRead + Unpin,
@@ -23,7 +26,13 @@ where
         reader
             .decode_buffered()
             .map_err(MessageReadFailure::from_message_read)?;
-        let first_read = reader.read_more();
+        let first_read = async {
+            if BOUNDED {
+                reader.read_more_bounded(max_undecided_bytes).await
+            } else {
+                reader.read_more().await.map_err(MessageReadError::Io)
+            }
+        };
         let result = if let Some(timeout) = tcp_limits.idle_timeout {
             tokio::time::timeout(timeout, first_read)
                 .await
@@ -33,10 +42,16 @@ where
         } else {
             first_read.await
         };
-        result.map_err(|error| MessageReadFailure::transport(NacelleError::from(error)))?;
+        result.map_err(MessageReadFailure::from_message_read)?;
     }
 
-    let future = reader.read_message();
+    let future = async {
+        if BOUNDED {
+            reader.read_message_bounded(max_undecided_bytes).await
+        } else {
+            reader.read_message().await
+        }
+    };
     let result = if let Some(timeout) = tcp_limits.read_timeout {
         tokio::time::timeout(timeout, future)
             .await
@@ -47,13 +62,14 @@ where
     result.map_err(MessageReadFailure::from_message_read)
 }
 
-pub(super) async fn read_buf_with_timeout<R>(
+pub(super) async fn read_buf_with_timeout<R, B>(
     reader: &mut R,
-    buf: &mut BytesMut,
+    buf: &mut B,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<usize, NacelleError>
 where
     R: AsyncRead + Unpin,
+    B: BufMut + Unpin,
 {
     let future = reader.read_buf(buf);
     if let Some(timeout) = tcp_limits.read_timeout {
@@ -156,6 +172,17 @@ mod tests {
 
     use super::*;
 
+    async fn read_message_with_timeout<R, D>(
+        reader: &mut MessageReader<R, D>,
+        limits: &NacelleTcpLimits,
+    ) -> Result<Option<D::Message>, MessageReadFailure>
+    where
+        R: AsyncRead + Unpin,
+        D: MessageDecoder<Error = NacelleError>,
+    {
+        super::read_message_with_timeout::<_, _, false>(reader, limits, 0).await
+    }
+
     struct FixedDecoder(usize);
 
     impl MessageDecoder for FixedDecoder {
@@ -164,6 +191,212 @@ mod tests {
 
         fn decode(&mut self, input: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
             Ok((input.len() >= self.0).then(|| input.split_to(self.0).freeze()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_fragmentation_keeps_absolute_head_deadline() {
+        for inherited in [false, true] {
+            let (mut client, stream) = tokio::io::duplex(64);
+            let buffer = if inherited {
+                BytesMut::from(&b"a"[..])
+            } else {
+                BytesMut::new()
+            };
+            let decoder = super::super::framing::HeadDecoder::<_, true>::new(
+                FixedDecoder(4),
+                Some(crate::TcpHeadReadLimits::new(4, 8).expect("limits")),
+            );
+            let mut reader = MessageReader::with_buffer(stream, decoder, buffer);
+            let limits = NacelleTcpLimits::default();
+            let started = tokio::time::Instant::now();
+            let send = async {
+                if !inherited {
+                    tokio::time::sleep(Duration::from_secs(100)).await;
+                    client.write_all(b"a").await.expect("first byte");
+                }
+                for byte in [b"b", b"c"] {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    client.write_all(byte).await.expect("fragment");
+                }
+            };
+            let (result, ()) = tokio::join!(
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8),
+                send,
+            );
+            assert!(matches!(
+                result.expect_err("head deadline").into_error(),
+                NacelleError::Timeout(NacelleTimeoutReason::TcpRead)
+            ));
+            assert_eq!(
+                started.elapsed(),
+                Duration::from_secs(if inherited { 30 } else { 130 })
+            );
+            assert_eq!(&reader.buffer()[..], b"abc");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_first_read_keeps_idle_timeout_separate() {
+        let (_client, stream) = tokio::io::duplex(64);
+        let mut reader = MessageReader::new(stream, FixedDecoder(2));
+        let limits = NacelleTcpLimits::default().without_read_timeout();
+        let started = tokio::time::Instant::now();
+        assert!(matches!(
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 2)
+                .await
+                .expect_err("idle deadline")
+                .into_error(),
+            NacelleError::Timeout(NacelleTimeoutReason::Idle)
+        ));
+        assert_eq!(started.elapsed(), Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn bounded_head_at_limit_decodes_or_rejects_without_another_read() {
+        for head_len in [4, 5] {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stream = super::super::tests::CountingIo {
+                inner: &b"headbody"[..],
+                reads: reads.clone(),
+            };
+            let decoder = super::super::framing::HeadDecoder::<_, true>::new(
+                FixedDecoder(head_len),
+                Some(crate::TcpHeadReadLimits::new(4, 4).expect("limits")),
+            );
+            let mut reader = MessageReader::with_capacity(stream, decoder, 64 * 1024);
+            let result = super::read_message_with_timeout::<_, _, true>(
+                &mut reader,
+                &NacelleTcpLimits::default(),
+                4,
+            )
+            .await;
+            if head_len == 4 {
+                assert_eq!(result.ok().flatten().expect("exact head"), &b"head"[..]);
+            } else {
+                let failure = result.expect_err("oversized head");
+                assert!(failure.should_encode());
+                assert!(matches!(
+                    failure.into_error(),
+                    NacelleError::InvalidFrame(super::super::framing::HEAD_LIMIT_EXCEEDED)
+                ));
+                assert_eq!(&reader.buffer()[..], b"head");
+            }
+            assert_eq!(*reads.lock().expect("reads"), [(4, 4)]);
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_inherited_prefix_reduces_the_next_read_destination() {
+        let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stream = super::super::tests::CountingIo {
+            inner: &b"abxcdEF"[..],
+            reads: reads.clone(),
+        };
+        let decoder = super::super::framing::HeadDecoder::<_, true>::new(
+            FixedDecoder(2),
+            Some(crate::TcpHeadReadLimits::new(2, 4).expect("limits")),
+        );
+        let mut reader = MessageReader::with_capacity(stream, decoder, 64 * 1024);
+        let limits = NacelleTcpLimits::default();
+        assert_eq!(
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4)
+                .await
+                .ok()
+                .flatten()
+                .expect("first head"),
+            &b"ab"[..],
+        );
+        let mut body = super::super::body::buffered_request_body(reader.buffer_mut(), 1, 64);
+        assert_eq!(
+            body.next_chunk().await.expect("body").expect("chunk"),
+            &b"x"[..]
+        );
+        assert_eq!(&reader.buffer()[..], b"c");
+        assert_eq!(
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4)
+                .await
+                .ok()
+                .flatten()
+                .expect("next head"),
+            &b"cd"[..],
+        );
+        assert_eq!(&reader.buffer()[..], b"EF");
+        assert_eq!(*reads.lock().expect("reads"), [(4, 4), (3, 3)]);
+    }
+
+    #[tokio::test]
+    async fn bounded_tiny_head_allows_large_body_without_reading_next_head() {
+        const BODY_LEN: usize = 1024 * 1024;
+        for streaming in [false, true] {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let mut input = b"ab".to_vec();
+            input.extend(std::iter::repeat_n(b'x', BODY_LEN));
+            input.extend_from_slice(b"cd");
+            let stream = super::super::tests::CountingIo {
+                inner: std::io::Cursor::new(input),
+                reads: reads.clone(),
+            };
+            let head_limits = crate::TcpHeadReadLimits::new(2, 8).expect("limits");
+            let decoder = super::super::framing::HeadDecoder::<_, true>::new(
+                FixedDecoder(2),
+                Some(head_limits),
+            );
+            let mut reader = MessageReader::with_capacity(stream, decoder, 64 * 1024);
+            let limits = NacelleTcpLimits::default();
+            assert_eq!(
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8)
+                    .await
+                    .ok()
+                    .flatten()
+                    .expect("head"),
+                &b"ab"[..],
+            );
+            assert_eq!(*reads.lock().expect("reads"), [(8, 8)]);
+            let (transport, buffer) = reader.transport_and_buffer_mut();
+            let mut received = Vec::new();
+            if streaming {
+                let config = crate::NacelleTcpConfig::default().with_head_read_limits(head_limits);
+                let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+                let pump = super::super::body::pump_request_body(
+                    transport, buffer, BODY_LEN, tx, &config, &limits,
+                );
+                let consume = async {
+                    while let Some(chunk) = rx.recv().await {
+                        received.extend_from_slice(&chunk.expect("chunk"));
+                    }
+                };
+                let (result, ()) = tokio::join!(pump, consume);
+                result.expect("body pump");
+            } else {
+                let mut body = super::super::body::read_buffered_request_body(
+                    transport, buffer, BODY_LEN, true, &limits,
+                )
+                .await
+                .expect("buffered body");
+                while let Some(chunk) = body.next_chunk().await {
+                    received.extend_from_slice(&chunk.expect("chunk"));
+                }
+            }
+            assert_eq!(received, vec![b'x'; BODY_LEN]);
+            assert!(reader.buffer().is_empty());
+            assert_eq!(
+                reads
+                    .lock()
+                    .expect("reads")
+                    .iter()
+                    .map(|(_, returned)| returned)
+                    .sum::<usize>(),
+                BODY_LEN + 2
+            );
+            assert_eq!(
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8)
+                    .await
+                    .ok()
+                    .flatten()
+                    .expect("next head"),
+                &b"cd"[..],
+            );
         }
     }
 

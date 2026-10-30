@@ -13,8 +13,8 @@ use nacelle::core::telemetry::{NacelleTelemetryObserver, NoopObserver};
 use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry};
 use nacelle::tcp::{
     NacelleTcpConfig, NacelleTcpLimits, ResponseWritePolicy, SerialTcpHandler,
-    SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpRequestContext, TcpResponse,
-    TcpServer,
+    SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpHeadReadLimits, TcpRequestContext,
+    TcpResponse, TcpServer,
 };
 use nacelle_reference_protocol::LengthDelimitedProtocol;
 use nacelle_stress_common::STRESS_OPCODE;
@@ -93,6 +93,7 @@ pub struct ServerConfig {
     pub response_buffer_capacity: usize,
     pub request_body_chunk_size: usize,
     pub request_body_channel_capacity: usize,
+    pub head_read_limits: Option<TcpHeadReadLimits>,
     pub low_memory: bool,
     pub byte_metrics: bool,
     pub phase_duration_metrics: bool,
@@ -119,6 +120,7 @@ impl Default for ServerConfig {
             response_buffer_capacity: 16 * 1024,
             request_body_chunk_size: 16 * 1024,
             request_body_channel_capacity: 8,
+            head_read_limits: None,
             low_memory: false,
             byte_metrics: true,
             phase_duration_metrics: false,
@@ -142,6 +144,7 @@ struct ServerConfigFile {
     response_buffer_capacity: Option<usize>,
     request_body_chunk_size: Option<usize>,
     request_body_channel_capacity: Option<usize>,
+    head_read_limits: Option<HeadReadLimitsConfigFile>,
     low_memory: Option<bool>,
     byte_metrics: Option<bool>,
     phase_duration_metrics: Option<bool>,
@@ -181,6 +184,13 @@ struct TcpLimitsConfigFile {
     idle_timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeadReadLimitsConfigFile {
+    max_head_bytes: usize,
+    max_undecided_bytes: usize,
+}
+
 impl ServerConfig {
     fn apply_file(
         &mut self,
@@ -198,6 +208,11 @@ impl ServerConfig {
         &mut self,
         file: ServerConfigFile,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let head_read_limits = file
+            .head_read_limits
+            .as_ref()
+            .map(|limits| TcpHeadReadLimits::new(limits.max_head_bytes, limits.max_undecided_bytes))
+            .transpose()?;
         if let Some(limits) = &file.connection_limits {
             if limits.max_connections.is_some() && limits.unlimited_connections == Some(true) {
                 return Err("choose max_connections or unlimited_connections, not both".into());
@@ -237,6 +252,9 @@ impl ServerConfig {
         }
         if let Some(request_body_channel_capacity) = file.request_body_channel_capacity {
             self.request_body_channel_capacity = request_body_channel_capacity;
+        }
+        if let Some(limits) = head_read_limits {
+            self.head_read_limits = Some(limits);
         }
         if let Some(low_memory) = file.low_memory {
             self.low_memory = low_memory;
@@ -448,12 +466,13 @@ pub fn build_server(
     config: &ServerConfig,
 ) -> Result<StressServer<impl TcpHandler<LengthDelimitedProtocol>>, NacelleError> {
     let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
-    let tcp_config = NacelleTcpConfig::default()
+    let mut tcp_config = NacelleTcpConfig::default()
         .with_read_buffer_capacity(config.read_buffer_capacity)
         .with_response_buffer_capacity(config.response_buffer_capacity)
         .with_request_body_chunk_size(config.request_body_chunk_size)
         .with_request_body_channel_capacity(config.request_body_channel_capacity)
         .with_response_write_policy(config.response_write_mode.into());
+    tcp_config.head_read_limits = config.head_read_limits;
     let runtime_state = NacelleRuntimeState::new(config.limits.clone());
     runtime_state
         .control()
@@ -615,6 +634,7 @@ fn parse_args_with_default_config(
 pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads: usize) {
     println!("nacelle-stress-server effective config:");
     println!("  runtime: {runtime}");
+    println!("  head_read_limits: {:?}", config.head_read_limits);
     println!("  config_sources: {}", config.config_sources.join(" -> "));
     println!("  bind: {}", config.bind);
     println!("  server_threads: {}", config.server_threads);
@@ -826,6 +846,35 @@ pub fn print_help(runtime: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn head_read_limits_validate_before_applying_an_overlay() {
+        let mut config = ServerConfig::default();
+        let valid = toml::from_str::<ServerConfigFile>(
+            "[head_read_limits]\nmax_head_bytes = 24\nmax_undecided_bytes = 4096",
+        )
+        .expect("TOML");
+        config.apply_config_file(valid).expect("valid limits");
+        let expected = TcpHeadReadLimits::new(24, 4096).expect("limits");
+        assert_eq!(config.head_read_limits, Some(expected));
+        config
+            .apply_config_file(ServerConfigFile::default())
+            .expect("empty overlay");
+        assert_eq!(config.head_read_limits, Some(expected));
+        let invalid = toml::from_str::<ServerConfigFile>(
+            "response_bytes = 1\n[head_read_limits]\nmax_head_bytes = 24\nmax_undecided_bytes = 23",
+        )
+        .expect("TOML");
+        assert!(config.apply_config_file(invalid).is_err());
+        assert_eq!(config.head_read_limits, Some(expected));
+        assert_eq!(
+            config.response_bytes,
+            ServerConfig::default().response_bytes
+        );
+        assert!(
+            toml::from_str::<ServerConfigFile>("[head_read_limits]\nmax_head_bytes = 24",).is_err()
+        );
+    }
 
     #[test]
     fn connection_limit_overlays_preserve_zero_and_reject_conflicts() {
