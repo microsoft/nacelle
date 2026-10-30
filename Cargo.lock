@@ -822,6 +822,8 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "metrics",
+ "metrics-util",
  "nacelle-core",
  "nacelle-rustls",
  "rustls",

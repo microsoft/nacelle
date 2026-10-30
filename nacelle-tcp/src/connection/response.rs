@@ -720,7 +720,7 @@ fn validate_response_bytes(
             NacelleResourceLimitReason::ResponseBodyBytes,
         ));
     };
-    if next > runtime_state.limits().max_response_body_bytes {
+    if next > runtime_state.startup_limits().max_response_body_bytes {
         return Err(NacelleError::ResourceLimit(
             NacelleResourceLimitReason::ResponseBodyBytes,
         ));

@@ -10,7 +10,7 @@ use nacelle_core::error::NacelleError;
 #[cfg(all(test, feature = "http"))]
 use nacelle_core::error::NacelleResourceLimitReason;
 use nacelle_core::lifecycle::NacelleShutdown;
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 
 use crate::host::NacelleHost;
@@ -26,8 +26,9 @@ use nacelle_tcp::NacelleUnixSocketOptions;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::{NacelleTcpBindOptions, NacelleTcpOptions};
 
-type ListenerInstaller<Observer, AppState> =
-    Box<dyn FnOnce(&mut NacelleHost<Observer, AppState>) + Send + 'static>;
+type ListenerInstaller<Observer, AppState> = Box<
+    dyn FnOnce(&mut NacelleHost<Observer, AppState>) -> Result<(), NacelleError> + Send + 'static,
+>;
 
 /// Canonical application composition root.
 ///
@@ -163,16 +164,20 @@ where
         }
     }
 
-    /// Set process-wide limits used by every registered listener.
-    pub fn with_limits(mut self, limits: NacelleLimits) -> Self {
-        self.runtime_state = NacelleRuntimeState::new(limits);
-        self
+    /// Set the process-wide runtime state used by every registered listener.
+    ///
+    /// Returns a configuration error if the previous state has been shared.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        Ok(self)
     }
 
-    /// Set the process-wide runtime state used by every registered listener.
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.runtime_state = runtime_state;
-        self
+    /// Obtain a handle for the state installed by [`Self::run`].
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
     }
 
     /// Set the shared application shutdown source.
@@ -249,7 +254,8 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_serial_tcp_with_bind_options(name, addr, bind_options, server);
+            host.enable_serial_tcp_with_bind_options(name, addr, bind_options, server)
+                .map(|_| ())
         }));
         self
     }
@@ -287,7 +293,8 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_tcp_with_bind_options(name, addr, bind_options, server);
+            host.enable_tcp_with_bind_options(name, addr, bind_options, server)
+                .map(|_| ())
         }));
         self
     }
@@ -299,7 +306,7 @@ where
         name: impl Into<String>,
         port: u16,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> Self
+    ) -> Result<Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -310,13 +317,16 @@ where
 
     #[cfg(feature = "tcp")]
     /// Register IPv4 and IPv6 TCP listeners with socket options.
+    ///
+    /// Installs app state before cloning the server. Configure startup state
+    /// first; conflicting exported server handles return a configuration error.
     pub fn tcp_dual_stack_with_options<P, H, ServerObserver>(
         self,
         name: impl Into<String>,
         port: u16,
         options: NacelleTcpOptions,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
-    ) -> Self
+    ) -> Result<Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -326,8 +336,10 @@ where
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
         let ipv6_options = NacelleTcpBindOptions::from(options.clone()).with_ipv6_only(true);
-        self.tcp_with_options(format!("{name}-ipv4"), ipv4_addr, options, server.clone())
-            .tcp_with_bind_options(format!("{name}-ipv6"), ipv6_addr, ipv6_options, server)
+        let server = server.with_runtime_state(self.runtime_state.clone())?;
+        Ok(self
+            .tcp_with_options(format!("{name}-ipv4"), ipv4_addr, options, server.clone())
+            .tcp_with_bind_options(format!("{name}-ipv6"), ipv6_addr, ipv6_options, server))
     }
 
     #[cfg(all(feature = "tcp", unix))]
@@ -363,7 +375,8 @@ where
         let name = name.into();
         let path = path.as_ref().to_path_buf();
         self.listeners.push(Box::new(move |host| {
-            host.enable_unix_socket_with_options(name, path, options, server);
+            host.enable_unix_socket_with_options(name, path, options, server)
+                .map(|_| ())
         }));
         self
     }
@@ -408,7 +421,8 @@ where
         let name = name.into();
         let path = path.as_ref().to_path_buf();
         self.listeners.push(Box::new(move |host| {
-            host.enable_serial_unix_socket_with_options(name, path, options, server);
+            host.enable_serial_unix_socket_with_options(name, path, options, server)
+                .map(|_| ())
         }));
         self
     }
@@ -429,7 +443,8 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_tcp_tls(name, addr, server, tls_config);
+            host.enable_tcp_tls(name, addr, server, tls_config)
+                .map(|_| ())
         }));
         self
     }
@@ -474,7 +489,8 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_tcp_openssl_with_bind_options(name, addr, server, tls_config, bind_options);
+            host.enable_tcp_openssl_with_bind_options(name, addr, server, tls_config, bind_options)
+                .map(|_| ())
         }));
         self
     }
@@ -527,20 +543,24 @@ where
                 server,
                 tls_config,
                 bind_options,
-            );
+            )
+            .map(|_| ())
         }));
         self
     }
 
     #[cfg(all(feature = "tcp", feature = "openssl"))]
     /// Register IPv4 and IPv6 OpenSSL TCP listeners.
+    ///
+    /// Configure startup state first. State installation errors are returned
+    /// before the server is cloned for the two listeners.
     pub fn tcp_openssl_dual_stack<P, H, ServerObserver>(
         self,
         name: impl Into<String>,
         port: u16,
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
-    ) -> Self
+    ) -> Result<Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -549,19 +569,21 @@ where
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-        self.tcp_openssl(
-            format!("{name}-ipv4"),
-            ipv4_addr,
-            server.clone(),
-            tls_config.clone(),
-        )
-        .tcp_openssl_with_bind_options(
-            format!("{name}-ipv6"),
-            ipv6_addr,
-            NacelleTcpBindOptions::default().with_ipv6_only(true),
-            server,
-            tls_config,
-        )
+        let server = server.with_runtime_state(self.runtime_state.clone())?;
+        Ok(self
+            .tcp_openssl(
+                format!("{name}-ipv4"),
+                ipv4_addr,
+                server.clone(),
+                tls_config.clone(),
+            )
+            .tcp_openssl_with_bind_options(
+                format!("{name}-ipv6"),
+                ipv6_addr,
+                NacelleTcpBindOptions::default().with_ipv6_only(true),
+                server,
+                tls_config,
+            ))
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
@@ -614,7 +636,8 @@ where
                 tls_config,
                 bind_options,
                 detection_options,
-            );
+            )
+            .map(|_| ())
         }));
         self
     }
@@ -671,13 +694,17 @@ where
                 tls_config,
                 bind_options,
                 detection_options,
-            );
+            )
+            .map(|_| ())
         }));
         self
     }
 
     #[cfg(feature = "experimental-openssl-detection")]
     /// Register IPv4 and IPv6 plain-or-OpenSSL TCP listeners.
+    ///
+    /// Configure startup state first. State installation errors are returned
+    /// before the server is cloned for the two listeners.
     pub fn tcp_optional_openssl_dual_stack<P, H, ServerObserver>(
         self,
         name: impl Into<String>,
@@ -685,7 +712,7 @@ where
         server: nacelle_tcp::TcpServer<P, H, ServerObserver>,
         tls_config: NacelleOpenSslConfig,
         detection_options: NacelleTlsDetectionOptions,
-    ) -> Self
+    ) -> Result<Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
         H: nacelle_tcp::TcpHandler<P, AppState>,
@@ -694,22 +721,24 @@ where
         let name = name.into();
         let ipv4_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
         let ipv6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
-        self.tcp_optional_openssl_with_options(
-            format!("{name}-ipv4"),
-            ipv4_addr,
-            NacelleTcpBindOptions::default(),
-            detection_options.clone(),
-            server.clone(),
-            tls_config.clone(),
-        )
-        .tcp_optional_openssl_with_options(
-            format!("{name}-ipv6"),
-            ipv6_addr,
-            NacelleTcpBindOptions::default().with_ipv6_only(true),
-            detection_options,
-            server,
-            tls_config,
-        )
+        let server = server.with_runtime_state(self.runtime_state.clone())?;
+        Ok(self
+            .tcp_optional_openssl_with_options(
+                format!("{name}-ipv4"),
+                ipv4_addr,
+                NacelleTcpBindOptions::default(),
+                detection_options.clone(),
+                server.clone(),
+                tls_config.clone(),
+            )
+            .tcp_optional_openssl_with_options(
+                format!("{name}-ipv6"),
+                ipv6_addr,
+                NacelleTcpBindOptions::default().with_ipv6_only(true),
+                detection_options,
+                server,
+                tls_config,
+            ))
     }
 
     #[cfg(feature = "http")]
@@ -727,7 +756,7 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_http(name, addr, server);
+            host.enable_http(name, addr, server).map(|_| ())
         }));
         self
     }
@@ -748,7 +777,8 @@ where
     {
         let name = name.into();
         self.listeners.push(Box::new(move |host| {
-            host.enable_http_tls(name, addr, server, tls_config);
+            host.enable_http_tls(name, addr, server, tls_config)
+                .map(|_| ())
         }));
         self
     }
@@ -760,22 +790,30 @@ where
     /// # Errors
     ///
     /// Returns the first listener or supervised-task error after requesting
-    /// shutdown from the remaining listeners.
+    /// shutdown from the remaining listeners. If listener installation fails,
+    /// drains already-installed listeners using the configured timeout before
+    /// returning the original installation error.
     ///
     /// # Panics
     ///
     /// Tokio may panic if this future is polled outside an entered runtime.
     pub async fn run(self) -> Result<(), NacelleError> {
-        let ctrl_c_task = self
-            .ctrl_c_shutdown
-            .then(|| spawn_ctrl_c_shutdown(self.shutdown.clone()));
+        let shutdown = self.shutdown.clone();
         let mut host = NacelleHost::with_shared_state_and_telemetry(self.app_state, self.telemetry)
-            .with_runtime_state(self.runtime_state)
+            .with_runtime_state(self.runtime_state)?
             .with_shutdown(self.shutdown)
             .with_shutdown_drain_timeout(self.drain_timeout);
         for install in self.listeners {
-            install(&mut host);
+            if let Err(error) = install(&mut host) {
+                host.shutdown();
+                // Preserve the installation error even if draining also fails.
+                let _ = host.wait().await;
+                return Err(error);
+            }
         }
+        let ctrl_c_task = self
+            .ctrl_c_shutdown
+            .then(|| spawn_ctrl_c_shutdown(shutdown));
         let result = host.wait().await;
         if let Some(task) = ctrl_c_task {
             task.abort();
@@ -827,6 +865,61 @@ mod tests {
         let app = NacelleApp::new().with_ctrl_c_shutdown();
 
         assert!(app.ctrl_c_shutdown);
+    }
+
+    #[test]
+    fn app_rejects_replacing_state_with_an_exported_control() {
+        let app = NacelleApp::new();
+        let control = app.runtime_control();
+        assert!(matches!(
+            app.with_runtime_state(NacelleRuntimeState::default()),
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::RuntimeStateInUse
+            ))
+        ));
+        assert_eq!(control.scope(), nacelle_core::NacelleControlScope::Shared);
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn installation_failure_shuts_down_and_drains_installed_listeners() {
+        let listener_state = std::sync::Arc::new(());
+        let handler_state = listener_state.clone();
+        let server = nacelle_http::HyperServer::new(handler_fn(
+            move |_context: nacelle_http::HttpRequestContext<()>| {
+                let _ = &handler_state;
+                async { Err(NacelleError::ConnectionClosed) }
+            },
+        ));
+        let invalid_server = nacelle_http::HyperServer::new(handler_fn(
+            |_context: nacelle_http::HttpRequestContext<()>| async {
+                Err(NacelleError::ConnectionClosed)
+            },
+        ));
+        let _server_control = invalid_server.runtime_control();
+        let shutdown = NacelleShutdown::new();
+        let shutdown_token = shutdown.token();
+        let addr = "127.0.0.1:0".parse().expect("valid socket address");
+        let app = NacelleApp::new()
+            .with_shutdown(shutdown)
+            .http("installed", addr, server)
+            .http("invalid", addr, invalid_server);
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), app.run())
+            .await
+            .expect("installation failure should finish draining")
+            .expect_err("exported server control should prevent installation");
+
+        assert!(matches!(
+            error,
+            NacelleError::Configuration(nacelle_core::NacelleConfigurationError::RuntimeStateInUse)
+        ));
+        assert!(shutdown_token.is_shutdown());
+        assert_eq!(
+            std::sync::Arc::strong_count(&listener_state),
+            1,
+            "installed listener must release its handler before run returns"
+        );
     }
 
     #[cfg(feature = "tcp")]
@@ -929,6 +1022,37 @@ mod tests {
 
         assert_eq!(app.listener_count(), 1);
 
+        let dual_server = TcpServer::<TestProtocol>::builder()
+            .protocol(TestProtocol)
+            .handler(handler_fn(
+                |context: TcpRequestContext<TestProtocol>| async move {
+                    context.respond(TcpResponse::empty()).await
+                },
+            ))
+            .build()
+            .expect("dual server");
+        let dual_app = NacelleApp::new();
+        let control = dual_app.runtime_control();
+        let dual_app = dual_app
+            .tcp_dual_stack("dual", 0, dual_server)
+            .expect("dual registration");
+        assert_eq!(dual_app.listener_count(), 2);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let _entered = runtime.enter();
+        let mut host = NacelleHost::new()
+            .with_runtime_state(dual_app.runtime_state.clone())
+            .expect("app state");
+        for install in dual_app.listeners {
+            install(&mut host).expect("both cloned servers retain the installed state");
+        }
+        control
+            .set_max_connections(Some(0))
+            .expect("shared control");
+        assert_eq!(host.runtime_control().snapshot().max_connections, Some(0));
+        drop(host);
+
         let state_handler = handler_fn(
             |context: TcpRequestContext<TestProtocol, String>| async move {
                 assert_eq!(context.app_state(), "application-state");
@@ -978,7 +1102,7 @@ mod tests {
 
     #[cfg(feature = "tcp")]
     #[tokio::test]
-    async fn app_with_concrete_sink_observer_propagates_connection_events() {
+    async fn app_control_and_observer_reach_installed_tcp_listener() {
         struct Decoder;
 
         impl MessageDecoder for Decoder {
@@ -1084,8 +1208,12 @@ mod tests {
 
         assert_eq!(app.listener_count(), 1);
 
+        let control = app.runtime_control();
+        control
+            .set_max_connections(Some(0))
+            .expect("pause before run");
         let app_task = tokio::spawn(app.run());
-        let client = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let mut client = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 match tokio::net::TcpStream::connect(addr).await {
                     Ok(client) => break client,
@@ -1095,6 +1223,30 @@ mod tests {
         })
         .await
         .expect("application should start accepting connections");
+
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                tokio::io::AsyncReadExt::read(&mut client, &mut byte),
+            )
+            .await
+            .expect("rejected connection closes")
+            .expect("read EOF"),
+            0
+        );
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| event.kind == NacelleTelemetryEventKind::ConnectionOpened)
+        );
+        control
+            .set_max_connections(Some(1))
+            .expect("resume live listener");
+        let client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("resumed listener");
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {

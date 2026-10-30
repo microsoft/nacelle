@@ -56,8 +56,9 @@ Keep a compact behavioral evidence ledger, not only a file inventory. Record:
 
 - The requested target, exact base/head and merge-base, included working-tree
   changes, and relevant feature/configuration choices.
-- Each high-risk invariant, triggering condition or state transition, and
-  expected observable outcome, with its review owner.
+- Each high-risk invariant, relevant state transition, obligations established
+  or inherited in that state, and expected observable outcome, with its review
+  owner.
 - Concrete production call sites, affected callers/consumers, and error or
   cleanup exits that establish or contradict the invariant.
 - Evidence marked **exercised**, **source-backed**, or **unresolved**, with
@@ -111,12 +112,21 @@ existing review comments to reconcile the implementation with the requested
 outcome and avoid duplicate findings. Treat performance and readiness claims as
 claims requiring evidence.
 
-State the affected invariants before treating existing tests as coverage.
-Trace success, rejection, ordinary error, cancellation, and teardown paths where
-relevant, including unchanged helpers, sibling call sites, and adapters. Follow
-ownership, partial progress, cleanup, and telemetry attribution across those
-paths. Record which cases were inspected and why omitted cases do not apply;
-do not infer sibling-path correctness from one passing path.
+Review transitions, not only operations. For each changed behavior, identify
+the reachable states and obligations established by earlier operations or
+inherited from callers. Trace how success, rejection, error, cancellation, and
+teardown satisfy or transfer those obligations, including after partial
+progress. Follow ownership, side effects, cleanup, and telemetry attribution
+through relevant helpers, sibling call sites, and adapters. Error propagation,
+automatic destruction, and task cancellation are mechanisms; establish whether
+their observable outcomes satisfy the affected contracts.
+
+Derive review cases from these obligations before consulting existing tests.
+For each high-risk obligation, record a concrete production execution trace
+that establishes it, a counterexample, or an explicit evidence gap in the ledger.
+Record why omitted cases do not apply. Passing tests establish only the
+transitions they exercise, not the correctness of sibling paths or other
+reachable states.
 
 Do not expand the review into unrelated cleanup or a repository-wide audit.
 Check sibling paths when a changed contract affects them, but identify

@@ -119,10 +119,22 @@ where
     }
 
     /// Replace the runtime limits and accounting state.
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime_state = runtime_state;
-        self
+    ///
+    /// Returns a configuration error while the previous state has live handles
+    /// or clones, unless reinstalling that same state.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        self.telemetry
+            .register_runtime_state(self.runtime_state.clone());
+        Ok(self)
+    }
+
+    /// Control the installed state; sharing it prevents subsequent replacement.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
     }
 
     /// Replace telemetry with one concrete observer type.
@@ -147,23 +159,24 @@ where
 
     #[doc(hidden)]
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> SerialTcpServer<P, H, Next>
+    ) -> Result<SerialTcpServer<P, H, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
-        SerialTcpServer {
+        self.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        Ok(SerialTcpServer {
             protocol: self.protocol,
             handler: self.handler,
             config: self.config,
             telemetry,
-            runtime_state,
+            runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-        }
+        })
     }
 
     /// Set the stable listener label recorded in connection metadata.
@@ -322,10 +335,22 @@ where
     }
 
     /// Set worker-local runtime limits and accounting.
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
-        self.telemetry.register_runtime_state(runtime_state.clone());
-        self.runtime_state = runtime_state;
-        self
+    ///
+    /// Returns a configuration error while the previous state has live handles
+    /// or clones, unless reinstalling that same state.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime_state.replace(runtime_state)?;
+        self.telemetry
+            .register_runtime_state(self.runtime_state.clone());
+        Ok(self)
+    }
+
+    /// Control the installed state; sharing it prevents subsequent replacement.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime_state.control()
     }
 
     /// Replace worker-local telemetry with one concrete observer type.
@@ -350,23 +375,24 @@ where
 
     #[doc(hidden)]
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> LocalSerialTcpServer<P, H, Next>
+    ) -> Result<LocalSerialTcpServer<P, H, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
-        LocalSerialTcpServer {
+        self.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime_state.clone());
+        Ok(LocalSerialTcpServer {
             protocol: self.protocol,
             handler: self.handler,
             config: self.config,
             telemetry,
-            runtime_state,
+            runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
-        }
+        })
     }
 
     /// Set the stable listener label recorded in connection metadata.

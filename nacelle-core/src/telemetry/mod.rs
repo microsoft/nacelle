@@ -923,6 +923,7 @@ where
 
 fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     match error {
+        crate::error::NacelleError::Configuration(_) => Some("configuration"),
         crate::error::NacelleError::ResourceLimit(reason) => Some(reason.as_str()),
         crate::error::NacelleError::Timeout(reason) => Some(reason.as_str()),
         crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
@@ -939,6 +940,7 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
 
 fn error_kind(error: &crate::error::NacelleError) -> &'static str {
     match error {
+        crate::error::NacelleError::Configuration(_) => "configuration",
         crate::error::NacelleError::ResourceLimit(_) => "resource_limit",
         crate::error::NacelleError::Timeout(_) => "timeout",
         crate::error::NacelleError::InvalidFrame(_) => "invalid_frame",
@@ -1092,8 +1094,8 @@ mod tests {
             telemetry.request_finished_with_context(
                 &context,
                 "ok",
-                0,
-                0,
+                3,
+                5,
                 Duration::from_millis(250),
             );
             telemetry.request_failed(
@@ -1136,6 +1138,116 @@ mod tests {
         assert_eq!(units["server.request.duration"], Some(&Unit::Seconds));
         assert_eq!(units["server.request.body.size"], Some(&Unit::Bytes));
         assert_eq!(units["server.response.body.size"], Some(&Unit::Bytes));
+
+        for (name, expected) in [
+            ("server.request.completed", DebugValue::Counter(1)),
+            (
+                "server.request.duration",
+                DebugValue::Histogram(vec![0.25.into()]),
+            ),
+            (
+                "server.request.body.size",
+                DebugValue::Histogram(vec![3.0.into()]),
+            ),
+            (
+                "server.response.body.size",
+                DebugValue::Histogram(vec![5.0.into()]),
+            ),
+        ] {
+            let matching: Vec<_> = snapshot
+                .iter()
+                .filter(|(key, _, _, _)| {
+                    key.key().name() == name
+                        && key.key().labels().any(|label| label.key() == "protocol")
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{name}");
+            let (key, _, _, value) = matching[0];
+            assert_eq!(*value, expected, "{name}");
+            let mut labels: Vec<_> = key
+                .key()
+                .labels()
+                .map(|label| (label.key(), label.value()))
+                .collect();
+            labels.sort_unstable();
+            assert_eq!(
+                labels,
+                vec![
+                    ("listener", "test"),
+                    ("protocol", "test"),
+                    ("status", "ok"),
+                    ("tls", "none"),
+                    ("transport", "tcp"),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_gauges_balance_peer_rejection_and_permit_drop() {
+        for (release, expected) in [(false, 1.0), (true, 0.0)] {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                let state = crate::limits::NacelleRuntimeState::new(
+                    crate::limits::NacelleLimits::default().with_max_connections_per_peer(1),
+                );
+                NacelleTelemetry::default().register_runtime_state(state.clone());
+                let peer = "127.0.0.1".parse().expect("peer");
+                let connection = state.acquire_connection_for_peer(peer).expect("capacity");
+                assert!(state.acquire_connection_for_peer(peer).is_err());
+                let request = state.acquire_request().expect("request capacity");
+                let stream = state.acquire_streaming_task().expect("stream capacity");
+                if release {
+                    drop((connection, request, stream));
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                assert_eq!(snapshot.len(), 3);
+                for (key, _, _, value) in snapshot {
+                    assert!(matches!(
+                        key.key().name(),
+                        "server.connection.active"
+                            | "server.request.active"
+                            | "server.streaming_task.active"
+                    ));
+                    assert_eq!(key.key().labels().count(), 0);
+                    assert_eq!(value, DebugValue::Gauge(expected.into()));
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn live_rate_rejection_rolls_back_peer_capacity_and_gauge() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let state = crate::NacelleRuntimeState::new(
+                crate::NacelleLimits::default().with_max_connections_per_peer(1),
+            );
+            let control = state.control();
+            control.set_connection_open_rate(Some(0)).expect("pause");
+            let peer = "127.0.0.1".parse().expect("peer");
+            assert!(matches!(
+                state.acquire_connection_for_peer(peer),
+                Err(crate::NacelleError::ResourceLimit(
+                    crate::NacelleResourceLimitReason::PeerConnectionRate
+                ))
+            ));
+            assert_eq!(state.active_connections(), 0);
+            control.set_connection_open_rate(None).expect("disable");
+            drop(
+                state
+                    .acquire_connection_for_peer(peer)
+                    .expect("peer capacity rolled back"),
+            );
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_eq!(snapshot.len(), 1);
+            let (key, _, _, value) = &snapshot[0];
+            assert_eq!(key.key().name(), "server.connection.active");
+            assert_eq!(key.key().labels().count(), 0);
+            assert_eq!(*value, DebugValue::Gauge(0.0.into()));
+        });
     }
 
     #[test]

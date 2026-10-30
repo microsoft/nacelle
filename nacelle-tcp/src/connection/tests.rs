@@ -351,11 +351,12 @@ async fn response_write_policies_reduce_writes_and_preserve_order() {
 fn direct_stream_applies_disabled_metrics_before_runtime_permits() {
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
-    let runtime_state = NacelleRuntimeState::new(
-        NacelleLimits::default()
-            .with_max_connections(1)
-            .with_max_in_flight_requests(1),
-    );
+    let runtime_state =
+        NacelleRuntimeState::new(NacelleLimits::default().with_max_in_flight_requests(1));
+    runtime_state
+        .control()
+        .set_max_connections(Some(1))
+        .expect("connection cap");
     let permit_observed = Arc::new(AtomicBool::new(false));
 
     metrics::with_local_recorder(&recorder, || {
@@ -443,13 +444,27 @@ fn request_failure_metrics_do_not_require_an_observer() {
     });
 
     let snapshot = snapshotter.snapshot().into_vec();
-    for name in ["server.request.failed", "server.request.timed_out"] {
-        assert!(
-            snapshot
-                .iter()
-                .any(|(key, _, _, _)| key.key().name() == name),
-            "missing metric {name}"
-        );
+    for (name, labels) in [
+        ("server.request.failed", vec![("transport", "tcp")]),
+        (
+            "server.request.timed_out",
+            vec![("operation", "handler"), ("transport", "tcp")],
+        ),
+    ] {
+        let matching: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == name)
+            .collect();
+        assert_eq!(matching.len(), 1, "{name}");
+        let (key, _, _, value) = matching[0];
+        assert_eq!(*value, metrics_util::debugging::DebugValue::Counter(1));
+        let mut actual_labels: Vec<_> = key
+            .key()
+            .labels()
+            .map(|label| (label.key(), label.value()))
+            .collect();
+        actual_labels.sort_unstable();
+        assert_eq!(actual_labels, labels);
     }
 }
 
@@ -1725,7 +1740,11 @@ async fn borrowed_serial_connection_releases_io_on_cancellation() {
 #[tokio::test]
 async fn by_value_connection_releases_io_and_permit_on_cancellation() {
     let (mut client, server_io) = tokio::io::duplex(64);
-    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let runtime_state = NacelleRuntimeState::default();
+    runtime_state
+        .control()
+        .set_max_connections(Some(1))
+        .expect("connection cap");
     let server = TcpServer::<PhaseProtocol>::builder()
         .protocol(PhaseProtocol {
             authenticated: true,
@@ -1738,6 +1757,7 @@ async fn by_value_connection_releases_io_and_permit_on_cancellation() {
             },
         ))
         .runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .build()
         .expect("server should build");
 
@@ -1902,7 +1922,8 @@ async fn serial_state_transition_changes_next_body_limit() {
     let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
         .with_runtime_state(NacelleRuntimeState::new(
             NacelleLimits::default().with_max_request_body_bytes(4),
-        ));
+        ))
+        .expect("runtime configuration");
     let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
 
     client
@@ -1958,7 +1979,8 @@ async fn serial_handler_timeout_cancels_mutable_loan_without_reentry() {
     )
     .with_runtime_state(NacelleRuntimeState::new(
         NacelleLimits::default().with_handler_timeout(Duration::from_millis(10)),
-    ));
+    ))
+    .expect("runtime configuration");
     let server_task = tokio::spawn(async move { server.serve_io(server_io).await });
 
     client
@@ -2218,7 +2240,8 @@ async fn shared_serial_listener_serves_and_drains_connection_permits() {
     let runtime_state = NacelleRuntimeState::default();
     let server = Arc::new(
         SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
-            .with_runtime_state(runtime_state.clone()),
+            .with_runtime_state(runtime_state.clone())
+            .expect("runtime configuration"),
     );
     let shutdown = NacelleShutdown::new();
     let server_task = tokio::spawn(
@@ -2267,12 +2290,17 @@ async fn shared_serial_listener_connection_churn_does_not_leak_permits() {
         .await
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener address");
-    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let runtime_state = NacelleRuntimeState::default();
+    runtime_state
+        .control()
+        .set_max_connections(Some(1))
+        .expect("connection cap");
     let observer = NacelleInMemoryObserver::new();
     let server = Arc::new(
         SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
             .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
-            .with_runtime_state(runtime_state.clone()),
+            .with_runtime_state(runtime_state.clone())
+            .expect("runtime configuration"),
     );
     let shutdown = NacelleShutdown::new();
     let server_task = tokio::spawn(
@@ -2345,7 +2373,8 @@ async fn graceful_drain_delivers_completed_coalesced_response() {
                 .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
         )
         .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
-        .with_runtime_state(runtime_state.clone()),
+        .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration"),
     );
     let shutdown = NacelleShutdown::new();
     let server_task = tokio::spawn(
@@ -2408,7 +2437,8 @@ async fn forced_drain_deadline_aborts_idle_connection() {
                     .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
             )
             .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
-            .with_runtime_state(runtime_state.clone()),
+            .with_runtime_state(runtime_state.clone())
+            .expect("runtime configuration"),
     );
     let shutdown = NacelleShutdown::new();
     let server_task = tokio::spawn(
@@ -2453,17 +2483,41 @@ async fn forced_drain_deadline_aborts_idle_connection() {
 }
 
 #[tokio::test]
+async fn serial_direct_entry_reads_live_connection_control() {
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);
+    let control = server.runtime_control();
+    control.set_max_connections(Some(0)).expect("pause");
+    let (io, peer) = tokio::io::duplex(16);
+    drop(peer);
+    assert!(matches!(
+        server.serve_io(io).await,
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::Connections
+        ))
+    ));
+    control.set_max_connections(Some(1)).expect("resume");
+    let (io, peer) = tokio::io::duplex(16);
+    drop(peer);
+    server.serve_io(io).await.expect("resumed direct entry");
+}
+
+#[tokio::test]
 async fn shared_serial_listener_records_connection_rejection() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener address");
-    let runtime_state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(1));
+    let runtime_state = NacelleRuntimeState::default();
+    runtime_state
+        .control()
+        .set_max_connections(Some(1))
+        .expect("connection cap");
     let observer = NacelleInMemoryObserver::new();
     let server = Arc::new(
         SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
             .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()))
-            .with_runtime_state(runtime_state.clone()),
+            .with_runtime_state(runtime_state.clone())
+            .expect("runtime configuration"),
     );
     let shutdown = NacelleShutdown::new();
     let server_task = tokio::spawn(
@@ -2523,7 +2577,8 @@ async fn local_serial_listener_serves_non_send_state_and_drains() {
             let runtime_state = NacelleRuntimeState::default();
             let server = std::rc::Rc::new(
                 LocalSerialTcpServer::new(LocalOnlyProtocol, LocalOnlyHandler)
-                    .with_runtime_state(runtime_state.clone()),
+                    .with_runtime_state(runtime_state.clone())
+                    .expect("runtime configuration"),
             );
             let shutdown = NacelleShutdown::new();
             let listener_task =

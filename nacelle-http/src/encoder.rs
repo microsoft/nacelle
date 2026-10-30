@@ -70,7 +70,7 @@ async fn pump_incoming_body<Observer>(
     Observer: NacelleTelemetryObserver,
 {
     if let Some(body_len_hint) = body_len_hint
-        && body_len_hint > runtime_state.limits().max_request_body_bytes
+        && body_len_hint > runtime_state.startup_limits().max_request_body_bytes
     {
         let _ = tx
             .send(Err(NacelleError::ResourceLimit(
@@ -121,7 +121,7 @@ async fn pump_incoming_body<Observer>(
                             .await;
                         break;
                     };
-                    if next > runtime_state.limits().max_request_body_bytes {
+                    if next > runtime_state.startup_limits().max_request_body_bytes {
                         let _ = tx
                             .send(Err(NacelleError::ResourceLimit(
                                 NacelleResourceLimitReason::RequestBodyBytes,
@@ -214,7 +214,7 @@ where
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 };
-                if next > this.runtime_state.limits().max_response_body_bytes {
+                if next > this.runtime_state.startup_limits().max_response_body_bytes {
                     this.response_body_metric_pending = false;
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,

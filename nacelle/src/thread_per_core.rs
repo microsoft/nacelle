@@ -8,7 +8,7 @@ use std::thread;
 
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason};
 use nacelle_core::lifecycle::{NacelleShutdown, NacelleShutdownToken};
-use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
+use nacelle_core::limits::{NacelleLimits, NacelleRuntimeControl, NacelleRuntimeState};
 #[cfg(any(feature = "tcp", feature = "http"))]
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver, NoopObserver};
 #[cfg(all(feature = "openssl", feature = "tcp"))]
@@ -142,17 +142,25 @@ pub struct ThreadPerCoreConfig {
 
 /// Resource accounting policy selected once for a thread-per-core runtime.
 #[derive(Debug, Clone)]
-pub enum ThreadPerCoreLimits {
-    /// Existing process-wide runtime state shared by workers.
+pub struct ThreadPerCoreLimits {
+    accounting: Accounting,
+}
+
+#[derive(Debug, Clone)]
+enum Accounting {
     Global(NacelleRuntimeState),
-    /// Worker-local counters.
-    Worker(Vec<NacelleRuntimeState>),
+    Worker {
+        states: Vec<NacelleRuntimeState>,
+        control: NacelleRuntimeControl,
+    },
 }
 
 impl ThreadPerCoreLimits {
     /// Use one existing process-wide runtime state on every worker.
     pub const fn global(state: NacelleRuntimeState) -> Self {
-        Self::Global(state)
+        Self {
+            accounting: Accounting::Global(state),
+        }
     }
 
     /// Partition capacity deterministically across worker-local runtime states.
@@ -166,24 +174,38 @@ impl ThreadPerCoreLimits {
                 NacelleResourceLimitReason::WorkerCount,
             ));
         }
-        if limits.max_connection_opens_per_peer_per_second.is_some()
-            && limits.connection_rate_limit_table_capacity < worker_count
-        {
-            return Err(NacelleError::ResourceLimit(
-                NacelleResourceLimitReason::ConnectionRateLimitTableCapacity,
-            ));
-        }
         let partitions: Vec<_> = (0..worker_count)
             .map(|worker| partition_limits(&limits, worker_count, worker))
             .collect();
-        Ok(Self::Worker(NacelleRuntimeState::partitioned(partitions)?))
+        let (states, control) = NacelleRuntimeState::partitioned(partitions)?;
+        Ok(Self {
+            accounting: Accounting::Worker { states, control },
+        })
+    }
+
+    /// Control the process total, shared or divided across the configured workers.
+    pub fn control(&self) -> NacelleRuntimeControl {
+        match &self.accounting {
+            Accounting::Global(state) => state.control(),
+            Accounting::Worker { control, .. } => control.clone(),
+        }
+    }
+
+    #[cfg(any(feature = "tcp", feature = "http"))]
+    fn validate_workers(&self, count: usize) -> Result<(), NacelleError> {
+        if let Accounting::Worker { states, .. } = &self.accounting
+            && states.len() != count
+        {
+            return Err(nacelle_core::NacelleConfigurationError::PartitionCount.into());
+        }
+        Ok(())
     }
 
     /// Resolve the runtime state for one configured worker.
     pub fn state_for(&self, worker: Worker) -> Result<NacelleRuntimeState, NacelleError> {
-        match self {
-            Self::Global(state) => Ok(state.clone()),
-            Self::Worker(states) => {
+        match &self.accounting {
+            Accounting::Global(state) => Ok(state.clone()),
+            Accounting::Worker { states, .. } => {
                 states
                     .get(worker.index)
                     .cloned()
@@ -197,20 +219,14 @@ impl ThreadPerCoreLimits {
 
 fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> NacelleLimits {
     let mut partition = limits.clone();
-    partition.max_connections = partition_capacity(limits.max_connections, workers, worker);
     partition.max_in_flight_requests =
         partition_capacity(limits.max_in_flight_requests, workers, worker);
     partition.max_streaming_tasks = partition_capacity(limits.max_streaming_tasks, workers, worker);
     partition.max_connections_per_peer = limits
         .max_connections_per_peer
         .map(|limit| partition_capacity(limit, workers, worker));
-    partition.max_connection_opens_per_peer_per_second = limits
-        .max_connection_opens_per_peer_per_second
-        .map(|limit| partition_capacity(limit, workers, worker));
-    if limits.max_connection_opens_per_peer_per_second.is_some() {
-        partition.connection_rate_limit_table_capacity =
-            partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
-    }
+    partition.connection_rate_limit_table_capacity =
+        partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
     partition
 }
 
@@ -547,21 +563,25 @@ pub struct LocalHttpRuntimeConfig<Observer = NoopObserver, AppState = ()> {
 
 #[cfg(feature = "http")]
 impl LocalHttpRuntimeConfig<NoopObserver, ()> {
-    /// Construct local HTTP runtime configuration with global accounting.
+    /// Select global or partitioned accounting before exporting control handles.
+    ///
+    /// Returns a configuration error if partition count differs from the
+    /// effective worker count after applying the runtime's thread cap.
     pub fn new(
         runtime: ThreadPerCoreConfig,
         addr: SocketAddr,
-        runtime_state: NacelleRuntimeState,
-    ) -> Self {
-        Self {
+        limits: ThreadPerCoreLimits,
+    ) -> Result<Self, NacelleError> {
+        limits.validate_workers(runtime.workers().len())?;
+        Ok(Self {
             runtime,
             shutdown: NacelleShutdown::new(),
-            limits: ThreadPerCoreLimits::global(runtime_state),
+            limits,
             telemetry: NacelleTelemetry::default(),
             app_state: Arc::new(()),
             addr,
             drain_timeout: std::time::Duration::from_secs(30),
-        }
+        })
     }
 }
 
@@ -589,10 +609,9 @@ where
         self
     }
 
-    /// Select global or partitioned worker resource accounting.
-    pub fn with_limits(mut self, limits: ThreadPerCoreLimits) -> Self {
-        self.limits = limits;
-        self
+    /// Control the exact states selected before worker creation.
+    pub fn runtime_control(&self) -> NacelleRuntimeControl {
+        self.limits.control()
     }
 
     /// Set telemetry shared by all workers.
@@ -623,22 +642,26 @@ where
 
 #[cfg(feature = "tcp")]
 impl LocalTcpRuntimeConfig<NoopObserver, ()> {
-    /// Construct local TCP runtime configuration with global accounting.
+    /// Select global or partitioned accounting before exporting control handles.
+    ///
+    /// Returns a configuration error if partition count differs from the
+    /// effective worker count after applying the runtime's thread cap.
     pub fn new(
         runtime: ThreadPerCoreConfig,
         addr: SocketAddr,
-        runtime_state: NacelleRuntimeState,
-    ) -> Self {
-        Self {
+        limits: ThreadPerCoreLimits,
+    ) -> Result<Self, NacelleError> {
+        limits.validate_workers(runtime.workers().len())?;
+        Ok(Self {
             runtime,
             shutdown: NacelleShutdown::new(),
-            limits: ThreadPerCoreLimits::global(runtime_state),
+            limits,
             telemetry: NacelleTelemetry::default(),
             app_state: Arc::new(()),
             addr,
             tcp_options: NacelleTcpOptions::default(),
             drain_timeout: std::time::Duration::from_secs(30),
-        }
+        })
     }
 }
 
@@ -667,10 +690,9 @@ where
         self
     }
 
-    /// Select global or partitioned worker resource accounting.
-    pub fn with_limits(mut self, limits: ThreadPerCoreLimits) -> Self {
-        self.limits = limits;
-        self
+    /// Control the exact states selected before worker creation.
+    pub fn runtime_control(&self) -> NacelleRuntimeControl {
+        self.limits.control()
     }
 
     /// Set telemetry shared by all workers.
@@ -746,7 +768,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         Ok(async move {
@@ -797,7 +819,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         Ok(async move {
@@ -849,7 +871,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         let tls_config = tls_config.clone();
@@ -903,7 +925,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         let tls_config = tls_config.clone();
@@ -964,7 +986,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         let tls_config = tls_config.clone();
@@ -1026,7 +1048,7 @@ where
         let server = std::rc::Rc::new(
             server_factory(context.worker)?
                 .with_app_state(app_state.clone())
-                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?),
+                .with_runtime_context(telemetry.clone(), limits.state_for(context.worker)?)?,
         );
         let tcp_options = tcp_options.clone();
         let tls_config = tls_config.clone();
@@ -1084,7 +1106,7 @@ where
                 telemetry.clone(),
                 limits.state_for(context.worker)?,
                 shared_state.clone(),
-            );
+            )?;
         Ok(async move {
             server
                 .serve_listener(
@@ -1136,7 +1158,7 @@ where
                 telemetry.clone(),
                 limits.state_for(context.worker)?,
                 shared_state.clone(),
-            );
+            )?;
         let tls_config = tls_config.clone();
         Ok(async move {
             server
@@ -1289,10 +1311,13 @@ mod tests {
     #[test]
     fn worker_limits_partition_capacity() {
         let limits = NacelleLimits::default()
-            .with_max_connections(5)
             .with_max_in_flight_requests(7)
             .with_max_streaming_tasks(4);
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("worker limits should build");
+        policy
+            .control()
+            .set_max_connections(Some(5))
+            .expect("process cap");
         let first = policy
             .state_for(Worker {
                 index: 0,
@@ -1306,12 +1331,12 @@ mod tests {
             })
             .expect("second worker state");
 
-        assert_eq!(first.limits().max_connections, 3);
-        assert_eq!(second.limits().max_connections, 2);
-        assert_eq!(first.limits().max_in_flight_requests, 4);
-        assert_eq!(second.limits().max_in_flight_requests, 3);
-        assert_eq!(first.limits().max_streaming_tasks, 2);
-        assert_eq!(second.limits().max_streaming_tasks, 2);
+        assert_eq!(first.control().snapshot().max_connections, Some(3));
+        assert_eq!(second.control().snapshot().max_connections, Some(2));
+        assert_eq!(first.startup_limits().max_in_flight_requests, 4);
+        assert_eq!(second.startup_limits().max_in_flight_requests, 3);
+        assert_eq!(first.startup_limits().max_streaming_tasks, 2);
+        assert_eq!(second.startup_limits().max_streaming_tasks, 2);
 
         let first_request = first.acquire_request().expect("first worker request");
         let second_request = second.acquire_request().expect("second worker request");
@@ -1324,14 +1349,53 @@ mod tests {
 
     #[test]
     fn worker_limits_require_one_rate_limit_slot_per_worker() {
-        let limits = NacelleLimits::default()
-            .with_max_connection_opens_per_peer_per_second(1)
-            .with_connection_rate_limit_table_capacity(1);
-
+        let limits = NacelleLimits::default().with_connection_rate_limit_table_capacity(1);
+        let policy = ThreadPerCoreLimits::worker(limits, 2).expect("disabled rate");
         assert!(matches!(
-            ThreadPerCoreLimits::worker(limits, 2),
-            Err(NacelleError::ResourceLimit(
-                NacelleResourceLimitReason::ConnectionRateLimitTableCapacity
+            policy.control().set_connection_open_rate(Some(1)),
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::ConnectionRateTableCapacity
+            ))
+        ));
+    }
+
+    #[test]
+    fn global_control_updates_the_state_shared_by_every_worker() {
+        let policy = ThreadPerCoreLimits::global(NacelleRuntimeState::default());
+        let control = policy.control();
+        assert_eq!(control.scope(), nacelle_core::NacelleControlScope::Shared);
+        control.set_max_connections(Some(1)).expect("process cap");
+        let first = policy
+            .state_for(Worker {
+                index: 0,
+                core_id: 0,
+            })
+            .expect("first");
+        let second = policy
+            .state_for(Worker {
+                index: 1,
+                core_id: 1,
+            })
+            .expect("second");
+        let permit = first.acquire_connection().expect("shared capacity");
+        assert!(second.acquire_connection().is_err());
+        control.set_max_connections(Some(0)).expect("pause");
+        drop(permit);
+        assert!(second.acquire_connection().is_err());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "tcp"))]
+    #[test]
+    fn local_config_rejects_mismatched_partition_count() {
+        let workers = WorkerSet::first(1).expect("worker");
+        assert!(matches!(
+            LocalTcpRuntimeConfig::new(
+                ThreadPerCoreConfig::new(workers),
+                "127.0.0.1:8080".parse().expect("address"),
+                ThreadPerCoreLimits::worker(NacelleLimits::default(), 2).expect("partitions"),
+            ),
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::PartitionCount
             ))
         ));
     }
@@ -1645,6 +1709,19 @@ mod tests {
         drop(probe);
         let workers = WorkerSet::first(1).expect("one worker should be available");
         let shutdown = NacelleShutdown::new();
+        let config = LocalTcpRuntimeConfig::new(
+            ThreadPerCoreConfig::new(workers),
+            addr,
+            ThreadPerCoreLimits::worker(NacelleLimits::default(), 1)
+                .expect("worker limits should build"),
+        )
+        .expect("runtime config")
+        .with_shutdown(shutdown.clone())
+        .with_drain_timeout(std::time::Duration::from_secs(1));
+        let control = config.runtime_control();
+        control
+            .set_max_connections(Some(0))
+            .expect("pause before worker startup");
         let client_shutdown = shutdown.clone();
         let client = thread::spawn(move || {
             let mut stream = loop {
@@ -1658,6 +1735,15 @@ mod tests {
             };
             use std::io::{Read, Write};
             stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("read timeout");
+            assert_eq!(stream.read(&mut [0]).expect("rejected connection EOF"), 0);
+            control.set_max_connections(Some(1)).expect("resume worker");
+            let mut stream = std::net::TcpStream::connect(addr).expect("resumed listener");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("read timeout");
+            stream
                 .write_all(&[4, 0, 0, 0, b'p', b'i', b'n', b'g'])
                 .expect("request should write");
             let mut response = [0_u8; 8];
@@ -1668,27 +1754,14 @@ mod tests {
             client_shutdown.shutdown();
         });
 
-        let result = run_local_tcp_thread_per_core(
-            LocalTcpRuntimeConfig::new(
-                ThreadPerCoreConfig::new(workers),
-                addr,
-                NacelleRuntimeState::default(),
-            )
-            .with_shutdown(shutdown)
-            .with_limits(
-                ThreadPerCoreLimits::worker(NacelleLimits::default(), 1)
-                    .expect("worker limits should build"),
-            )
-            .with_drain_timeout(std::time::Duration::from_secs(1)),
-            |_worker| {
-                Ok(LocalTcpServer::new(
-                    TestProtocol,
-                    LocalStateHandler {
-                        requests: Rc::new(RefCell::new(0)),
-                    },
-                ))
-            },
-        );
+        let result = run_local_tcp_thread_per_core(config, |_worker| {
+            Ok(LocalTcpServer::new(
+                TestProtocol,
+                LocalStateHandler {
+                    requests: Rc::new(RefCell::new(0)),
+                },
+            ))
+        });
         client.join().expect("client thread should join");
         result.expect("worker-local TCP runtime should shut down cleanly");
 
@@ -1724,13 +1797,11 @@ mod tests {
             LocalTcpRuntimeConfig::new(
                 ThreadPerCoreConfig::new(serial_workers),
                 serial_addr,
-                NacelleRuntimeState::default(),
-            )
-            .with_shutdown(serial_shutdown)
-            .with_limits(
                 ThreadPerCoreLimits::worker(NacelleLimits::default(), 1)
                     .expect("worker limits should build"),
             )
+            .expect("runtime config")
+            .with_shutdown(serial_shutdown)
             .with_drain_timeout(std::time::Duration::from_secs(1)),
             |_worker| {
                 Ok(LocalSerialTcpServer::new(
@@ -1831,8 +1902,9 @@ mod tests {
             LocalHttpRuntimeConfig::new(
                 ThreadPerCoreConfig::new(workers),
                 addr,
-                NacelleRuntimeState::default(),
+                ThreadPerCoreLimits::global(NacelleRuntimeState::default()),
             )
+            .expect("runtime config")
             .with_shutdown(shutdown)
             .with_drain_timeout(std::time::Duration::from_secs(1)),
             |_worker| {

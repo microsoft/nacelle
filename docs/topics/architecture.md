@@ -130,8 +130,21 @@ shared lifecycle/limit enforcement in core.
 `NacelleRuntimeState` owns shared budgets and counters. Connection, request, and
 streaming-task limits are non-blocking atomic bounded counters.
 
-This keeps the common request path allocation-light while still enforcing
-bounded defaults.
+`NacelleLimits` stores startup-only configuration. `NacelleRuntimeControl`
+publishes total connection and per-peer connection-open rate thresholds through
+atomics on those same states. Default request handling does not read the live
+connection fields. Administrative updates neither reset counters nor revoke
+permits; rate-table initialization is lazy, bounded, and completed before enable.
+Optional per-peer concurrency retains its sharded locks.
+
+App, host, and direct-server handles remain attached to installed state.
+Replacing shared builder state is a configuration error. Global worker
+accounting shares one handle; partitioned accounting exposes aggregate totals
+and deterministic shares, including zero. Fan-out is administrative, not an
+instantaneous cross-worker cutover. Startup rate-table capacity is divided
+before first enable rather than allocated independently from the process
+budget on each worker. See [runtime control](runtime-limits.md#live-connection-control)
+for update and installation contracts.
 
 ## Bodies
 

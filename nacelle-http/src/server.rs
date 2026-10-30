@@ -41,6 +41,9 @@ use crate::pipeline::{
     NoHttpConnectionState, SharedHttpAppStateHandler,
 };
 
+#[cfg(test)]
+mod baseline;
+
 trait HttpDispatch<State, Observer>
 where
     Observer: NacelleTelemetryObserver,
@@ -330,30 +333,38 @@ where
     }
 
     /// Install final worker telemetry and runtime state atomically.
+    ///
+    /// Rejects replacement while the previous state has live handles or clones.
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
         shared_state: LocalHttpSharedState,
-    ) -> LocalHyperServer<H, F, Next>
+    ) -> Result<LocalHyperServer<H, F, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
+        self.runtime.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime.runtime_state.clone());
         let peer_rate_limiter = shared_state.peer_rate_limiter(&self.runtime.http_policy);
-        LocalHyperServer {
+        Ok(LocalHyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
             runtime: HttpRuntime {
                 telemetry,
-                runtime_state,
+                runtime_state: self.runtime.runtime_state,
                 http_limits: self.runtime.http_limits,
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 peer_rate_limiter,
             },
-        }
+        })
+    }
+
+    /// Control this worker server's installed state.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime.runtime_state.control()
     }
 
     /// Set worker-local HTTP edge limits.
@@ -614,37 +625,50 @@ where
         }
     }
 
-    pub fn with_runtime_state(mut self, runtime_state: NacelleRuntimeState) -> Self {
+    /// Install startup state before exporting controls or sharing the server.
+    ///
+    /// Reinstalling the same state is allowed; replacing shared state is a
+    /// configuration error.
+    pub fn with_runtime_state(
+        mut self,
+        runtime_state: NacelleRuntimeState,
+    ) -> Result<Self, NacelleError> {
+        self.runtime.runtime_state.replace(runtime_state)?;
         self.runtime
             .telemetry
-            .register_runtime_state(runtime_state.clone());
-        self.runtime.runtime_state = runtime_state;
-        self
+            .register_runtime_state(self.runtime.runtime_state.clone());
+        Ok(self)
+    }
+
+    /// Control the state used by this server's listeners and direct connections.
+    pub fn runtime_control(&self) -> nacelle_core::NacelleRuntimeControl {
+        self.runtime.runtime_state.control()
     }
 
     #[doc(hidden)]
     pub fn with_runtime_context<Next>(
-        self,
+        mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-    ) -> HyperServer<H, F, Next>
+    ) -> Result<HyperServer<H, F, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
-        telemetry.register_runtime_state(runtime_state.clone());
-        HyperServer {
+        self.runtime.runtime_state.replace(runtime_state)?;
+        telemetry.register_runtime_state(self.runtime.runtime_state.clone());
+        Ok(HyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
             runtime: HttpRuntime {
                 telemetry,
-                runtime_state,
+                runtime_state: self.runtime.runtime_state,
                 http_limits: self.runtime.http_limits,
                 http_policy: self.runtime.http_policy,
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
-        }
+        })
     }
 
     pub fn with_http_limits(mut self, http_limits: NacelleHttpLimits) -> Self {
@@ -1057,7 +1081,7 @@ where
             .upper()
             .and_then(|bytes| usize::try_from(bytes).ok());
         if body_len_hint
-            .is_some_and(|bytes| bytes > self.runtime_state.limits().max_request_body_bytes)
+            .is_some_and(|bytes| bytes > self.runtime_state.startup_limits().max_request_body_bytes)
         {
             let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
             self.telemetry.request_failed(
@@ -1133,13 +1157,14 @@ where
                 () = &mut body_pump => handler_future.await,
             }
         };
-        let handler_result = if let Some(timeout) = self.runtime_state.limits().handler_timeout {
-            tokio::time::timeout(timeout, handler_with_body)
-                .await
-                .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
-        } else {
-            handler_with_body.await
-        };
+        let handler_result =
+            if let Some(timeout) = self.runtime_state.startup_limits().handler_timeout {
+                tokio::time::timeout(timeout, handler_with_body)
+                    .await
+                    .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
+            } else {
+                handler_with_body.await
+            };
 
         match handler_result {
             Ok(completion) => {
@@ -1428,6 +1453,7 @@ fn http_close_reason(result: &Result<(), NacelleError>) -> &'static str {
             "invalid_frame"
         }
         Err(NacelleError::MissingProtocol) => "missing_protocol",
+        Err(NacelleError::Configuration(_)) => "configuration",
     }
 }
 
@@ -1639,6 +1665,53 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn live_control_pauses_and_resumes_the_installed_http_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let addr = listener.local_addr().expect("address");
+        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+            context
+                .respond(HttpResponse::bytes(StatusCode::OK, "resumed"))
+                .await
+        }));
+        let control = server.runtime_control();
+        control.set_max_connections(Some(0)).expect("pause");
+        let shutdown = nacelle_core::NacelleShutdown::new();
+        let token = shutdown.token();
+        let task =
+            tokio::spawn(async move { server.serve_listener_with_shutdown(listener, token).await });
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte))
+                .await
+                .expect("rejection")
+                .expect("EOF"),
+            0
+        );
+        control.set_max_connections(None).expect("resume");
+        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("request");
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("response deadline")
+            .expect("response");
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(
+            response
+                .windows(b"resumed".len())
+                .any(|chunk| chunk == b"resumed")
+        );
+        shutdown.shutdown();
+        task.await.expect("task").expect("shutdown");
+    }
+
     #[cfg(feature = "tls-self-signed")]
     fn test_certificate(pem: &[u8]) -> rustls::pki_types::CertificateDer<'static> {
         let parsed = nacelle_rustls::parse_pem_certificates(pem);
@@ -1743,7 +1816,8 @@ mod tests {
             NacelleTelemetry::default(),
             NacelleRuntimeState::default(),
             shared_state.clone(),
-        );
+        )
+        .expect("runtime configuration");
         let second = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
             |_context: crate::LocalHttpRequestContext<()>| async move {
                 Err(NacelleError::ResourceLimit(
@@ -1756,7 +1830,8 @@ mod tests {
             NacelleTelemetry::default(),
             NacelleRuntimeState::default(),
             shared_state,
-        );
+        )
+        .expect("runtime configuration");
         let peer = "127.0.0.1".parse().expect("valid peer ip");
 
         assert_eq!(
@@ -2108,7 +2183,8 @@ mod tests {
                         .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
                         .await
                 }))
-                .with_runtime_state(runtime_state.clone());
+                .with_runtime_state(runtime_state.clone())
+                .expect("runtime configuration");
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
             let server_task = tokio::spawn(async move {
                 server
@@ -2170,6 +2246,7 @@ mod tests {
             }
         }))
         .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .with_telemetry(NacelleTelemetry::new().with_observer(observer.clone()));
         let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
         let server_task = tokio::spawn(async move {
@@ -2269,7 +2346,8 @@ mod tests {
                 .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
                 .await
         }))
-        .with_runtime_state(runtime_state.clone());
+        .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration");
         let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
         let server_task = tokio::spawn(async move {
             server
@@ -2311,6 +2389,7 @@ mod tests {
                 .await
         }))
         .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .with_http_limits(http_limits);
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 
@@ -2352,7 +2431,8 @@ mod tests {
                 }
             }
         }))
-        .with_runtime_state(runtime_state.clone());
+        .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration");
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 
         let mut client = tokio::net::TcpStream::connect(addr)
@@ -2421,7 +2501,8 @@ mod tests {
                 }
             }
         }))
-        .with_runtime_state(runtime_state.clone());
+        .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration");
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 
         let mut client = tokio::net::TcpStream::connect(addr)
@@ -2466,7 +2547,8 @@ mod tests {
                 .respond(HttpResponse::bytes(StatusCode::OK, "ok"))
                 .await
         }))
-        .with_runtime_state(runtime_state.clone());
+        .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration");
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 
         let mut client = tokio::net::TcpStream::connect(addr)
@@ -2576,6 +2658,7 @@ mod tests {
                 .await
         }))
         .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .with_http_limits(http_limits);
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 
@@ -2994,6 +3077,7 @@ mod tests {
                 .await
         }))
         .with_runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
         .with_telemetry(telemetry);
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
 

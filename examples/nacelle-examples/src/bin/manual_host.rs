@@ -28,7 +28,7 @@ async fn main() -> Result<(), NacelleError> {
         .build()?;
 
     let mut host = NacelleHost::new();
-    host.enable_tcp("manual-echo", addr, server);
+    host.enable_tcp("manual-echo", addr, server)?;
     println!("manual-host echo server listening on {addr}");
     host.wait().await
 }

@@ -4,18 +4,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::error::{NacelleError, NacelleResourceLimitReason};
+use crate::error::{NacelleConfigurationError, NacelleError, NacelleResourceLimitReason};
 use crate::peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
 
+/// Startup-only limits. Live connection thresholds belong to [`NacelleRuntimeControl`].
 #[derive(Debug, Clone)]
 pub struct NacelleLimits {
-    pub max_connections: usize,
     pub max_in_flight_requests: usize,
     pub max_streaming_tasks: usize,
     pub max_connections_per_peer: Option<usize>,
-    pub max_connection_opens_per_peer_per_second: Option<usize>,
     pub connection_rate_limit_table_capacity: usize,
     pub max_request_body_bytes: usize,
     pub max_response_body_bytes: usize,
@@ -25,11 +24,9 @@ pub struct NacelleLimits {
 impl Default for NacelleLimits {
     fn default() -> Self {
         Self {
-            max_connections: 16_384,
             max_in_flight_requests: 65_536,
             max_streaming_tasks: 8_192,
             max_connections_per_peer: None,
-            max_connection_opens_per_peer_per_second: None,
             connection_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
             max_request_body_bytes: 16 * 1024 * 1024,
             max_response_body_bytes: 16 * 1024 * 1024,
@@ -39,17 +36,6 @@ impl Default for NacelleLimits {
 }
 
 impl NacelleLimits {
-    pub fn with_max_connections(mut self, max: usize) -> Self {
-        self.max_connections = max.max(1);
-        self
-    }
-
-    /// Disable the process-wide concurrent connection limit.
-    pub fn without_max_connections(mut self) -> Self {
-        self.max_connections = usize::MAX;
-        self
-    }
-
     pub fn with_max_in_flight_requests(mut self, max: usize) -> Self {
         self.max_in_flight_requests = max.max(1);
         self
@@ -65,18 +51,14 @@ impl NacelleLimits {
         self
     }
 
-    pub fn with_max_connection_opens_per_peer_per_second(mut self, max: usize) -> Self {
-        self.max_connection_opens_per_peer_per_second = Some(max.max(1));
-        self
-    }
-
     /// Set the maximum number of peers tracked by the connection-open rate limiter.
     ///
     /// When the bounded table is full or cannot find an inactive entry within
     /// its fixed probe budget, new peers are rejected. This bound applies only when
-    /// [`Self::with_max_connection_opens_per_peer_per_second`] is enabled.
+    /// connection-open rate limiting is enabled through [`NacelleRuntimeControl`].
+    /// Zero reserves no table capacity and prevents enabling rate limiting.
     pub fn with_connection_rate_limit_table_capacity(mut self, capacity: usize) -> Self {
-        self.connection_rate_limit_table_capacity = capacity.max(1);
+        self.connection_rate_limit_table_capacity = capacity;
         self
     }
 
@@ -229,6 +211,9 @@ impl PeerConnectionMap {
 #[derive(Debug)]
 struct NacelleRuntimeStateInner {
     limits: NacelleLimits,
+    max_connections: AtomicUsize,
+    connection_open_rate: AtomicUsize,
+    control_update: Mutex<()>,
     metrics_enabled: AtomicBool,
     active_connections: PaddedCounter,
     active_requests: PaddedCounter,
@@ -237,7 +222,181 @@ struct NacelleRuntimeStateInner {
     active_requests_metric: OnceLock<metrics::Gauge>,
     active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
     peer_connections: PeerConnectionMap,
-    peer_connection_rates: Option<NacellePeerRateLimiter>,
+    peer_connection_rates: OnceLock<NacellePeerRateLimiter>,
+}
+
+/// Owned administrative observation of live connection thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NacelleConnectionLimits {
+    /// `None` is unlimited; `Some(0)` rejects all new connections.
+    pub max_connections: Option<usize>,
+    /// `None` disables rate accounting; `Some(0)` rejects IP-based admissions.
+    pub max_connection_opens_per_peer_per_second: Option<usize>,
+}
+
+impl Default for NacelleConnectionLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: Some(16_384),
+            max_connection_opens_per_peer_per_second: None,
+        }
+    }
+}
+
+/// The counters addressed by a control handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NacelleControlScope {
+    /// One runtime state, shared by its installed listeners.
+    Shared,
+    /// Aggregate totals divided in the original partition order.
+    Partitioned { partitions: usize },
+}
+
+/// Cloneable administrative handle; updates never revoke existing permits.
+///
+/// Admissions racing an update may finish with the threshold they observed.
+/// Partition updates are serialized but are not an instantaneous cross-worker
+/// cutover. Use the aggregate handle rather than independently updating workers.
+///
+/// ```
+/// use nacelle_core::NacelleRuntimeState;
+///
+/// # fn main() -> Result<(), nacelle_core::NacelleError> {
+/// let state = NacelleRuntimeState::default();
+/// let control = state.control();
+/// control.set_max_connections(Some(1))?;
+/// let connection = state.acquire_connection()?;
+/// control.set_max_connections(Some(0))?;
+/// assert!(state.acquire_connection().is_err());
+/// assert_eq!(state.active_connections(), 1);
+/// drop(connection);
+/// control.set_max_connections(None)?;
+/// control.set_connection_open_rate(Some(100))?;
+/// control.set_connection_open_rate(None)?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct NacelleRuntimeControl {
+    target: ControlTarget,
+}
+
+#[derive(Debug, Clone)]
+enum ControlTarget {
+    Shared(NacelleRuntimeState),
+    Partitioned(Arc<PartitionedControl>),
+}
+
+#[derive(Debug)]
+struct PartitionedControl {
+    states: Vec<NacelleRuntimeState>,
+    update: Mutex<()>,
+}
+
+impl NacelleRuntimeControl {
+    /// Identify whether values address one state or aggregate partition totals.
+    pub fn scope(&self) -> NacelleControlScope {
+        match &self.target {
+            ControlTarget::Shared(_) => NacelleControlScope::Shared,
+            ControlTarget::Partitioned(control) => NacelleControlScope::Partitioned {
+                partitions: control.states.len(),
+            },
+        }
+    }
+
+    /// Observe current thresholds, not startup copies.
+    ///
+    /// The aggregate snapshot sums finite shares; any unlimited/disabled share
+    /// produces `None` for that threshold. Counter occupancy is available on
+    /// the runtime state and is not part of this administrative snapshot.
+    pub fn snapshot(&self) -> NacelleConnectionLimits {
+        match &self.target {
+            ControlTarget::Shared(state) => {
+                let _guard = state.inner.control_update.lock().expect("control lock");
+                state.connection_limits()
+            }
+            ControlTarget::Partitioned(control) => {
+                let _guard = control.update.lock().expect("control lock");
+                let mut total = NacelleConnectionLimits {
+                    max_connections: Some(0),
+                    max_connection_opens_per_peer_per_second: Some(0),
+                };
+                for state in &control.states {
+                    let limits = state.control().snapshot();
+                    total.max_connections = total
+                        .max_connections
+                        .zip(limits.max_connections)
+                        .map(|(left, right)| left.saturating_add(right));
+                    total.max_connection_opens_per_peer_per_second = total
+                        .max_connection_opens_per_peer_per_second
+                        .zip(limits.max_connection_opens_per_peer_per_second)
+                        .map(|(left, right)| left.saturating_add(right));
+                }
+                total
+            }
+        }
+    }
+
+    /// Set a finite cap, including zero, or `None` for unlimited connections.
+    ///
+    /// `Some(usize::MAX)` is reserved; use `None` instead. Lowering a cap below
+    /// occupancy blocks new admissions without closing existing connections.
+    pub fn set_max_connections(&self, limit: Option<usize>) -> Result<(), NacelleError> {
+        if limit == Some(usize::MAX) {
+            return Err(NacelleConfigurationError::ConnectionLimit.into());
+        }
+        self.publish(limit, false)
+    }
+
+    /// Set opens per peer per second, including zero, or disable with `None`.
+    ///
+    /// Finite rates must fit the limiter's 32-bit count and be below
+    /// `usize::MAX`. First enable initializes bounded tables before publication.
+    /// Disable retains table entries and their clocks; skipped opens are not
+    /// counted retroactively. Every partition needs nonzero startup capacity.
+    pub fn set_connection_open_rate(&self, rate: Option<usize>) -> Result<(), NacelleError> {
+        if rate.is_some_and(|rate| rate == usize::MAX || rate > u32::MAX as usize) {
+            return Err(NacelleConfigurationError::ConnectionOpenRate.into());
+        }
+        self.publish(rate, true)
+    }
+
+    fn publish(&self, value: Option<usize>, rate: bool) -> Result<(), NacelleError> {
+        match &self.target {
+            ControlTarget::Shared(state) => {
+                let _guard = state.inner.control_update.lock().expect("control lock");
+                if rate && value.is_some() {
+                    state.prepare_connection_rate()?;
+                }
+                state.publish_connection_limit(value, rate);
+            }
+            ControlTarget::Partitioned(control) => {
+                let _guard = control.update.lock().expect("control lock");
+                if rate && value.is_some() {
+                    if control.states.iter().any(|state| {
+                        state.startup_limits().connection_rate_limit_table_capacity == 0
+                    }) {
+                        return Err(NacelleConfigurationError::ConnectionRateTableCapacity.into());
+                    }
+                    for state in &control.states {
+                        state.prepare_connection_rate()?;
+                    }
+                }
+                for (index, state) in control.states.iter().enumerate() {
+                    let _guard = state.inner.control_update.lock().expect("control lock");
+                    state.publish_connection_limit(
+                        value.map(|total| partition_capacity(total, control.states.len(), index)),
+                        rate,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn partition_capacity(total: usize, partitions: usize, index: usize) -> usize {
+    total / partitions + usize::from(index < total % partitions)
 }
 
 impl Default for NacelleRuntimeState {
@@ -247,17 +406,16 @@ impl Default for NacelleRuntimeState {
 }
 
 impl NacelleRuntimeState {
+    /// Create counters with startup configuration and default live thresholds.
+    ///
+    /// Configure live thresholds through [`Self::control`] before serving.
     pub fn new(limits: NacelleLimits) -> Self {
-        Self::new_inner(limits)
-    }
-
-    fn new_inner(limits: NacelleLimits) -> Self {
-        let peer_connection_rates = limits
-            .max_connection_opens_per_peer_per_second
-            .map(|_| NacellePeerRateLimiter::new(limits.connection_rate_limit_table_capacity));
         Self {
             inner: Arc::new(NacelleRuntimeStateInner {
                 limits,
+                max_connections: AtomicUsize::new(16_384),
+                connection_open_rate: AtomicUsize::new(usize::MAX),
+                control_update: Mutex::new(()),
                 metrics_enabled: AtomicBool::new(true),
                 active_connections: PaddedCounter::new(),
                 active_requests: PaddedCounter::new(),
@@ -266,20 +424,84 @@ impl NacelleRuntimeState {
                 active_requests_metric: OnceLock::new(),
                 active_streaming_tasks_metric: OnceLock::new(),
                 peer_connections: PeerConnectionMap::new(),
-                peer_connection_rates,
+                peer_connection_rates: OnceLock::new(),
             }),
         }
     }
 
-    /// Construct states with independent counters.
+    /// Construct independent counters and an aggregate control handle.
+    ///
+    /// Startup limits must already be partitioned in the intended order. The
+    /// default connection total is divided across those states, including zero
+    /// shares. Table capacity is reserved by configuration, not allocated here.
     pub fn partitioned(
         limits: impl IntoIterator<Item = NacelleLimits>,
-    ) -> Result<Vec<Self>, NacelleError> {
-        Ok(limits.into_iter().map(Self::new).collect())
+    ) -> Result<(Vec<Self>, NacelleRuntimeControl), NacelleError> {
+        let states: Vec<_> = limits.into_iter().map(Self::new).collect();
+        if states.is_empty() {
+            return Err(NacelleConfigurationError::PartitionCount.into());
+        }
+        let control = NacelleRuntimeControl {
+            target: ControlTarget::Partitioned(Arc::new(PartitionedControl {
+                states: states.clone(),
+                update: Mutex::new(()),
+            })),
+        };
+        control.set_max_connections(Some(16_384))?;
+        Ok((states, control))
     }
 
-    pub fn limits(&self) -> &NacelleLimits {
+    /// Immutable startup-only limits; never contains stale live thresholds.
+    pub fn startup_limits(&self) -> &NacelleLimits {
         &self.inner.limits
+    }
+
+    /// Control this exact state, including listeners and permits sharing it.
+    pub fn control(&self) -> NacelleRuntimeControl {
+        NacelleRuntimeControl {
+            target: ControlTarget::Shared(self.clone()),
+        }
+    }
+
+    /// Replace an unshared builder state, or reinstall the identical state.
+    ///
+    /// A live handle, server clone, listener, or permit prevents replacement.
+    /// This cold-path check keeps exported handles attached to their listeners.
+    pub fn replace(&mut self, replacement: Self) -> Result<(), NacelleError> {
+        if !Arc::ptr_eq(&self.inner, &replacement.inner) && Arc::strong_count(&self.inner) != 1 {
+            return Err(NacelleConfigurationError::RuntimeStateInUse.into());
+        }
+        *self = replacement;
+        Ok(())
+    }
+
+    fn connection_limits(&self) -> NacelleConnectionLimits {
+        let connections = self.inner.max_connections.load(Ordering::Acquire);
+        let rate = self.inner.connection_open_rate.load(Ordering::Acquire);
+        NacelleConnectionLimits {
+            max_connections: (connections != usize::MAX).then_some(connections),
+            max_connection_opens_per_peer_per_second: (rate != usize::MAX).then_some(rate),
+        }
+    }
+
+    fn prepare_connection_rate(&self) -> Result<(), NacelleError> {
+        let capacity = self.inner.limits.connection_rate_limit_table_capacity;
+        if capacity == 0 {
+            return Err(NacelleConfigurationError::ConnectionRateTableCapacity.into());
+        }
+        self.inner
+            .peer_connection_rates
+            .get_or_init(|| NacellePeerRateLimiter::new(capacity));
+        Ok(())
+    }
+
+    fn publish_connection_limit(&self, limit: Option<usize>, rate: bool) {
+        let target = if rate {
+            &self.inner.connection_open_rate
+        } else {
+            &self.inner.max_connections
+        };
+        target.store(limit.unwrap_or(usize::MAX), Ordering::Release);
     }
 
     pub(crate) fn set_metrics_enabled(&self, enabled: bool) {
@@ -315,7 +537,7 @@ impl NacelleRuntimeState {
     pub fn acquire_connection_tracked(&self) -> Result<TrackedPermit, NacelleError> {
         if !try_acquire_counter(
             &self.inner.active_connections,
-            self.inner.limits.max_connections,
+            self.inner.max_connections.load(Ordering::Acquire),
         ) {
             return Err(NacelleError::ResourceLimit(
                 NacelleResourceLimitReason::Connections,
@@ -333,7 +555,7 @@ impl NacelleRuntimeState {
     pub fn acquire_connection_for_peer(&self, peer: IpAddr) -> Result<TrackedPermit, NacelleError> {
         if !try_acquire_counter(
             &self.inner.active_connections,
-            self.inner.limits.max_connections,
+            self.inner.max_connections.load(Ordering::Acquire),
         ) {
             return Err(NacelleError::ResourceLimit(
                 NacelleResourceLimitReason::Connections,
@@ -437,16 +659,17 @@ impl NacelleRuntimeState {
     }
 
     fn acquire_peer_connection_rate(&self, peer: IpAddr) -> Result<(), NacelleError> {
-        let Some(limit) = self.inner.limits.max_connection_opens_per_peer_per_second else {
+        let limit = self.inner.connection_open_rate.load(Ordering::Acquire);
+        if limit == usize::MAX {
             return Ok(());
-        };
-        let limiter =
-            self.inner
-                .peer_connection_rates
-                .as_ref()
-                .ok_or(NacelleError::ResourceLimit(
-                    NacelleResourceLimitReason::PeerConnectionRateTable,
-                ))?;
+        }
+        let limiter = self
+            .inner
+            .peer_connection_rates
+            .get()
+            .ok_or(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRateTable,
+            ))?;
         match limiter.try_acquire(peer, limit) {
             NacellePeerRateLimitResult::Allowed => Ok(()),
             NacellePeerRateLimitResult::RateLimited => Err(NacelleError::ResourceLimit(
@@ -546,10 +769,13 @@ mod tests {
     fn unbounded_limits_still_track_active_counts() {
         let state = NacelleRuntimeState::new(
             NacelleLimits::default()
-                .with_max_connections(usize::MAX)
                 .with_max_in_flight_requests(usize::MAX)
                 .with_max_streaming_tasks(usize::MAX),
         );
+        state
+            .control()
+            .set_max_connections(None)
+            .expect("unlimited");
 
         let connection = state.acquire_connection().expect("connection");
         let request = state.acquire_request().expect("request");
@@ -569,7 +795,11 @@ mod tests {
         const ROUNDS: usize = 32;
         const CONNECTIONS_PER_ROUND: usize = 8;
 
-        let state = NacelleRuntimeState::new(NacelleLimits::default().without_max_connections());
+        let state = NacelleRuntimeState::default();
+        state
+            .control()
+            .set_max_connections(None)
+            .expect("unlimited");
 
         for _ in 0..ROUNDS {
             let connections: Vec<_> = (0..CONNECTIONS_PER_ROUND)
@@ -582,10 +812,12 @@ mod tests {
     }
 
     #[test]
-    fn max_connections_builder_clamps_zero_to_one() {
-        let state = NacelleRuntimeState::new(NacelleLimits::default().with_max_connections(0));
-
-        let _connection = state.acquire_connection().expect("first connection");
+    fn zero_connection_limit_rejects_all() {
+        let state = NacelleRuntimeState::default();
+        state
+            .control()
+            .set_max_connections(Some(0))
+            .expect("zero cap");
         assert!(matches!(
             state.acquire_connection(),
             Err(NacelleError::ResourceLimit(
@@ -646,10 +878,11 @@ mod tests {
     fn default_limits_are_bounded() {
         let limits = NacelleLimits::default();
 
-        assert_ne!(limits.max_connections, usize::MAX);
+        let live = NacelleRuntimeState::default().control().snapshot();
+        assert_eq!(live.max_connections, Some(16_384));
         assert_ne!(limits.max_in_flight_requests, usize::MAX);
         assert_ne!(limits.max_streaming_tasks, usize::MAX);
-        assert!(limits.max_connection_opens_per_peer_per_second.is_none());
+        assert!(live.max_connection_opens_per_peer_per_second.is_none());
         assert_eq!(
             limits.connection_rate_limit_table_capacity,
             DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY
@@ -712,11 +945,12 @@ mod tests {
         const CONTENDERS: usize = 16;
 
         let peer = "127.0.0.1".parse().expect("valid ip");
-        let state = NacelleRuntimeState::new(
-            NacelleLimits::default()
-                .with_max_connections(CONTENDERS)
-                .with_max_connections_per_peer(1),
-        );
+        let state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_connections_per_peer(1));
+        state
+            .control()
+            .set_max_connections(Some(CONTENDERS))
+            .expect("cap");
         let barrier = Arc::new(std::sync::Barrier::new(CONTENDERS + 1));
         let (results_tx, results_rx) = std::sync::mpsc::channel();
         let threads: Vec<_> = (0..CONTENDERS)
@@ -767,10 +1001,12 @@ mod tests {
     fn per_peer_connection_open_rate_rejects_churn_after_drop() {
         let peer = "127.0.0.1".parse().expect("valid ip");
         let state = NacelleRuntimeState::new(
-            NacelleLimits::default()
-                .with_max_connection_opens_per_peer_per_second(1)
-                .with_connection_rate_limit_table_capacity(1),
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(1),
         );
+        state
+            .control()
+            .set_connection_open_rate(Some(1))
+            .expect("rate");
 
         let connection = state
             .acquire_connection_for_peer(peer)
@@ -791,10 +1027,12 @@ mod tests {
         let first_peer = "127.0.0.1".parse().expect("valid first peer");
         let second_peer = "127.0.0.2".parse().expect("valid second peer");
         let state = NacelleRuntimeState::new(
-            NacelleLimits::default()
-                .with_max_connection_opens_per_peer_per_second(1)
-                .with_connection_rate_limit_table_capacity(1),
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(1),
         );
+        state
+            .control()
+            .set_connection_open_rate(Some(1))
+            .expect("rate");
 
         let first = state
             .acquire_connection_for_peer(first_peer)
@@ -808,5 +1046,274 @@ mod tests {
             ))
         ));
         assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
+    fn live_caps_do_not_revoke_occupancy_and_recover_after_updates() {
+        let state = NacelleRuntimeState::default();
+        let control = state.control();
+        control.set_max_connections(Some(2)).expect("cap");
+        let first = state.acquire_connection().expect("first");
+        let second = state.acquire_connection().expect("second");
+        control.set_max_connections(Some(1)).expect("lower");
+        assert_eq!(state.active_connections(), 2);
+        assert!(state.acquire_connection().is_err());
+        drop(first);
+        assert!(state.acquire_connection().is_err());
+        control.set_max_connections(Some(3)).expect("increase");
+        let third = state.acquire_connection().expect("new capacity");
+        control.set_max_connections(Some(0)).expect("pause");
+        assert!(state.acquire_connection().is_err());
+        drop((second, third));
+        assert_eq!(state.active_connections(), 0);
+        control.set_max_connections(None).expect("unlimited");
+        assert!(state.acquire_connection().is_ok());
+        assert!(matches!(
+            control.set_max_connections(Some(usize::MAX)),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::ConnectionLimit
+            ))
+        ));
+        assert_eq!(control.snapshot().max_connections, None);
+    }
+
+    #[test]
+    fn rate_updates_retain_the_table_and_window_without_counting_disabled_opens() {
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(1),
+        );
+        let control = state.control();
+        assert!(state.inner.peer_connection_rates.get().is_none());
+        control.set_connection_open_rate(Some(2)).expect("enable");
+        let limiter = state.inner.peer_connection_rates.get().expect("table");
+        let peer = "127.0.0.1".parse().expect("peer");
+        assert!(limiter.try_acquire_at(peer, 2, 7).is_allowed());
+        control.set_connection_open_rate(None).expect("disable");
+        for _ in 0..10 {
+            drop(
+                state
+                    .acquire_connection_for_peer(peer)
+                    .expect("disabled rate"),
+            );
+        }
+        control
+            .set_connection_open_rate(Some(1))
+            .expect("lower and enable");
+        assert!(std::ptr::eq(
+            limiter,
+            state.inner.peer_connection_rates.get().expect("retained")
+        ));
+        assert_eq!(
+            limiter.try_acquire_at(peer, 1, 7),
+            NacellePeerRateLimitResult::RateLimited
+        );
+        control.set_connection_open_rate(Some(2)).expect("increase");
+        assert!(limiter.try_acquire_at(peer, 2, 7).is_allowed());
+        assert_eq!(
+            limiter.try_acquire_at(peer, 2, 7),
+            NacellePeerRateLimitResult::RateLimited
+        );
+        control
+            .set_connection_open_rate(Some(0))
+            .expect("reject all");
+        assert!(matches!(
+            state.acquire_connection_for_peer(peer),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRate
+            ))
+        ));
+        assert_eq!(state.active_connections(), 0);
+        assert!(control.set_connection_open_rate(Some(usize::MAX)).is_err());
+        assert_eq!(
+            control.snapshot().max_connection_opens_per_peer_per_second,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn aggregate_updates_preserve_zero_shares_and_validate_before_publication() {
+        let (states, control) = NacelleRuntimeState::partitioned([
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(1),
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(0),
+        ])
+        .expect("partitions");
+        assert_eq!(
+            control.scope(),
+            NacelleControlScope::Partitioned { partitions: 2 }
+        );
+        control
+            .set_max_connections(Some(1))
+            .expect("partition total");
+        let first = states[0].acquire_connection().expect("first share");
+        assert!(states[1].acquire_connection().is_err());
+        assert_eq!(control.snapshot().max_connections, Some(1));
+        assert!(matches!(
+            control.set_connection_open_rate(Some(10)),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::ConnectionRateTableCapacity
+            ))
+        ));
+        for state in &states {
+            assert!(state.inner.peer_connection_rates.get().is_none());
+            assert_eq!(
+                state
+                    .control()
+                    .snapshot()
+                    .max_connection_opens_per_peer_per_second,
+                None
+            );
+        }
+        control
+            .set_max_connections(None)
+            .expect("unlimited partitions");
+        assert!(states[1].acquire_connection().is_ok());
+        drop(first);
+    }
+
+    #[test]
+    fn concurrent_control_and_admission_keep_exact_occupancy() {
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default().with_connection_rate_limit_table_capacity(4),
+        );
+        std::thread::scope(|scope| {
+            for worker in 0..6 {
+                let state = &state;
+                scope.spawn(move || {
+                    let peer = format!("127.0.0.{}", worker + 1).parse().expect("peer");
+                    for round in 0..1000 {
+                        if worker < 2 {
+                            let control = state.control();
+                            control
+                                .set_max_connections(if round % 3 == 0 {
+                                    None
+                                } else {
+                                    Some(round % 8)
+                                })
+                                .expect("cap");
+                            control
+                                .set_connection_open_rate(if round % 2 == 0 {
+                                    None
+                                } else {
+                                    Some(round % 5)
+                                })
+                                .expect("rate");
+                        } else {
+                            drop(state.acquire_connection_for_peer(peer));
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(state.active_connections(), 0);
+        state
+            .control()
+            .set_max_connections(Some(0))
+            .expect("settled cap");
+        assert!(state.acquire_connection().is_err());
+        state
+            .control()
+            .set_max_connections(Some(1))
+            .expect("settled cap");
+        let permit = state.acquire_connection().expect("one slot");
+        assert!(state.acquire_connection().is_err());
+        drop(permit);
+        assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
+    fn earlier_rejections_do_not_allocate_rate_entries() {
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_connections_per_peer(1)
+                .with_connection_rate_limit_table_capacity(1),
+        );
+        let control = state.control();
+        let first = "127.0.0.1".parse().expect("peer");
+        let second = "127.0.0.2".parse().expect("peer");
+        let occupied = state.acquire_connection_for_peer(first).expect("capacity");
+        control.set_connection_open_rate(Some(1)).expect("rate");
+        assert!(matches!(
+            state.acquire_connection_for_peer(first),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnections
+            ))
+        ));
+        control.set_max_connections(Some(0)).expect("pause");
+        assert!(matches!(
+            state.acquire_connection_for_peer(first),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections
+            ))
+        ));
+        control.set_max_connections(None).expect("resume");
+        drop(occupied);
+        // A one-entry table still has room for a different peer.
+        drop(
+            state
+                .acquire_connection_for_peer(second)
+                .expect("unused rate capacity"),
+        );
+        assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
+    fn competing_aggregate_updates_publish_complete_totals() {
+        let (states, control) = NacelleRuntimeState::partitioned(
+            (0..3).map(|_| NacelleLimits::default().with_connection_rate_limit_table_capacity(1)),
+        )
+        .expect("partitions");
+        control.set_max_connections(Some(1)).expect("initial total");
+        std::thread::scope(|scope| {
+            for total in [1, 5] {
+                let control = &control;
+                scope.spawn(move || {
+                    for _ in 0..500 {
+                        control.set_max_connections(Some(total)).expect("total");
+                        assert!(matches!(control.snapshot().max_connections, Some(1 | 5)));
+                        control.set_connection_open_rate(Some(total)).expect("rate");
+                        assert!(matches!(
+                            control.snapshot().max_connection_opens_per_peer_per_second,
+                            Some(1 | 5)
+                        ));
+                    }
+                });
+            }
+        });
+        control
+            .set_max_connections(Some(3))
+            .expect("one slot per worker");
+        control
+            .set_connection_open_rate(Some(1))
+            .expect("settled rate");
+        let peer = "127.0.0.1".parse().expect("peer");
+        drop(
+            states[0]
+                .acquire_connection_for_peer(peer)
+                .expect("first share"),
+        );
+        assert!(matches!(
+            states[1].acquire_connection_for_peer(peer),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRate
+            ))
+        ));
+        assert!(states.iter().all(|state| state.active_connections() == 0));
+    }
+
+    #[test]
+    fn exported_handle_prevents_state_replacement() {
+        let mut state = NacelleRuntimeState::default();
+        let control = state.control();
+        assert!(matches!(
+            state.replace(NacelleRuntimeState::default()),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::RuntimeStateInUse
+            ))
+        ));
+        state.replace(state.clone()).expect("same state is safe");
+        control
+            .set_max_connections(Some(0))
+            .expect("still installed");
+        assert!(state.acquire_connection().is_err());
     }
 }

@@ -121,9 +121,20 @@ fn telemetry_paths(c: &mut Criterion) {
         .expect("benchmark runtime");
     let mut group = c.benchmark_group("tcp_connection_request");
 
+    group.bench_function("metrics_disabled", |b| {
+        b.to_async(&runtime).iter(|| async {
+            serve_one_request(NacelleTelemetry::default().with_metrics(false)).await;
+        });
+    });
     group.bench_function("facade_no_recorder", |b| {
         b.to_async(&runtime).iter(|| async {
             serve_one_request(NacelleTelemetry::default()).await;
+        });
+    });
+    group.bench_function("request_timing_enabled", |b| {
+        b.to_async(&runtime).iter(|| async {
+            serve_one_request(NacelleTelemetry::default().with_request_duration_metrics(true))
+                .await;
         });
     });
     #[cfg(feature = "phase-timing")]

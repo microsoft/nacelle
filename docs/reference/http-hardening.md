@@ -24,9 +24,49 @@ Defaults:
 - optional trusted proxy forwarded address handling through `with_trusted_proxy_ips`
 - optional security headers through `with_security_header(...)` or `with_default_security_headers()`
 - optional per-peer connection caps through `NacelleLimits::with_max_connections_per_peer`
-- optional per-peer connection-open rate caps through `NacelleLimits::with_max_connection_opens_per_peer_per_second`
+- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_connection_open_rate`
 
 Rejected requests receive deterministic HTTP responses where the request parser has already accepted the request: `405`, `414`, `421`, `429`, or `431`. Rejections emit low-cardinality telemetry reasons such as `host`, `method_not_allowed`, `uri_too_long`, `header_count`, `header_bytes`, `peer_rate`, and `peer_rate_table_full`.
+
+## Parser and body boundaries
+
+Host, method, URI, and header policies run after Hyper parses the request head,
+before Nacelle starts its body bridge or calls the handler. Header-policy
+limits therefore do not bound how many bytes Hyper has already read or
+allocated. A pending service future can retain body bytes read with the head
+even when no body chunks have been delivered to Nacelle.
+
+In the resolved Hyper 1.10.1 dependency, the low-level HTTP/1 builder's
+`max_buf_size` accepts a minimum of 8192 bytes. It controls parser buffering,
+not a hard per-request plaintext read allowance: a complete head and read-ahead
+can exceed that setting. Explicitly setting Hyper's `max_headers` also changes
+header parsing from default stack storage to per-request heap storage. These
+builder settings are not `NacelleHttpPolicy` settings.
+
+For `Expect: 100-continue`, Hyper waits for the body consumer to request data
+before sending `100 Continue`. A head-policy rejection does not start that
+consumer or send the interim response. Hyper can discard an already-buffered
+rejected body and serve a pipelined next request; when it cannot drain the body
+safely, it closes the connection. Do not assume every rejection closes it.
+
+These observations concern plaintext reads and HTTP parsing. They do not bound
+TLS records, kernel socket buffers, or total process memory.
+
+## Completion and connection retirement
+
+HTTP request-completion telemetry and the runtime request permit finish before
+the response body necessarily finishes production. Response-body byte telemetry
+is emitted separately when that body completes; cancellation does not record a
+partial successful body sample. Neither event acknowledges remote receipt.
+
+Hyper's public graceful-shutdown operation disables keep-alive and still needs
+the connection to be polled through response production and underlying I/O
+flush. It does not expose a public live-idle query covering partial heads,
+pipelined input, and pending output. Request counters alone cannot establish
+that an HTTP connection is safe to reclaim as idle. Nacelle does not expose
+HTTP idle reclamation.
+
+## Peer limits and deployment policy
 
 Per-peer request and connection-open rate limiters use fixed-capacity,
 lock-free tables. They retain active peer entries for 60 seconds and do not

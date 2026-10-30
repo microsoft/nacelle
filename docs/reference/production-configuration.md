@@ -6,11 +6,18 @@ deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
 connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
 and transport timeouts are bounded by default.
 
-`NacelleLimits::without_max_connections()` disables the process-wide connection
+`state.control().set_max_connections(None)?` disables that state's connection
 admission ceiling. Active connections are still counted for telemetry, and any
 configured per-peer connection or connection-open rate limits still apply. Use
 this only when another layer enforces an appropriate connection and memory
 boundary.
+
+Connection thresholds are live: `set_max_connections(Some(n))` sets the total,
+and `set_connection_open_rate(Some(n))` sets opens per peer per second.
+Zero rejects new admissions; `None` disables the respective ceiling.
+Defaults remain 16,384 connections and rate limiting disabled. Startup-only
+limits stay in `NacelleLimits`. See [runtime control](../topics/runtime-limits.md#live-connection-control)
+for installed handles, retained rate history, update errors, and worker scope.
 
 Recommended presets:
 
@@ -33,10 +40,9 @@ library. Custom acceptors own their own protocol policy.
 Memory sizing:
 
 This sizing formula requires a finite effective connection ceiling. Use the
-configured `max_connections` when it is nonzero. When `max_connections` is the
-zero sentinel for unlimited connections, substitute the finite connection
-boundary enforced by the proxy, process supervisor, container, or other
-external layer.
+finite cap from `control.snapshot().max_connections`; for `None`, substitute
+an externally enforced finite boundary. Lowering a live cap does not evict
+existing connections, so also budget for retained occupancy.
 
 ```text
 connection_budget =

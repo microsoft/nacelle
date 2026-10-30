@@ -280,7 +280,7 @@ where
         &request,
         handler.info(connection_context),
         handler.state(connection_context),
-        runtime_state.limits().max_request_body_bytes,
+        runtime_state.startup_limits().max_request_body_bytes,
     );
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
@@ -568,7 +568,7 @@ where
         },
         OptionalResponder::new(TcpResponder::new(response_context)),
     );
-    if let Some(timeout) = runtime_state.limits().handler_timeout {
+    if let Some(timeout) = runtime_state.startup_limits().handler_timeout {
         tokio::time::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?

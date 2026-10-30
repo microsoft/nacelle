@@ -98,6 +98,7 @@ pub struct ServerConfig {
     pub phase_duration_metrics: bool,
     pub tls_self_signed: bool,
     pub limits: NacelleLimits,
+    pub connection_limits: nacelle::core::NacelleConnectionLimits,
     pub tcp_limits: NacelleTcpLimits,
 }
 
@@ -123,6 +124,7 @@ impl Default for ServerConfig {
             phase_duration_metrics: false,
             tls_self_signed: false,
             limits: NacelleLimits::default(),
+            connection_limits: nacelle::core::NacelleConnectionLimits::default(),
             tcp_limits: NacelleTcpLimits::default(),
         }
     }
@@ -145,20 +147,29 @@ struct ServerConfigFile {
     phase_duration_metrics: Option<bool>,
     tls_self_signed: Option<bool>,
     limits: Option<LimitsConfigFile>,
+    connection_limits: Option<ConnectionLimitsConfigFile>,
     tcp_limits: Option<TcpLimitsConfigFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LimitsConfigFile {
-    max_connections: Option<usize>,
     max_connections_per_peer: Option<usize>,
-    max_connection_opens_per_peer_per_second: Option<usize>,
+    connection_rate_limit_table_capacity: Option<usize>,
     max_in_flight_requests: Option<usize>,
     max_streaming_tasks: Option<usize>,
     max_request_body_bytes: Option<usize>,
     max_response_body_bytes: Option<usize>,
     handler_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionLimitsConfigFile {
+    max_connections: Option<usize>,
+    max_connection_opens_per_peer_per_second: Option<usize>,
+    unlimited_connections: Option<bool>,
+    disable_connection_open_rate: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -178,12 +189,28 @@ impl ServerConfig {
         let path = path.as_ref();
         let config = std::fs::read_to_string(path)?;
         let file = toml::from_str::<ServerConfigFile>(&config)?;
-        self.apply_config_file(file);
+        self.apply_config_file(file)?;
         self.config_sources.push(format!("toml {}", path.display()));
         Ok(())
     }
 
-    fn apply_config_file(&mut self, file: ServerConfigFile) {
+    fn apply_config_file(
+        &mut self,
+        file: ServerConfigFile,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(limits) = &file.connection_limits {
+            if limits.max_connections.is_some() && limits.unlimited_connections == Some(true) {
+                return Err("choose max_connections or unlimited_connections, not both".into());
+            }
+            if limits.max_connection_opens_per_peer_per_second.is_some()
+                && limits.disable_connection_open_rate == Some(true)
+            {
+                return Err(
+                    "choose a connection-open rate or disable_connection_open_rate, not both"
+                        .into(),
+                );
+            }
+        }
         if let Some(bind) = file.bind {
             self.bind = bind;
         }
@@ -226,20 +253,34 @@ impl ServerConfig {
         if let Some(limits) = file.limits {
             self.apply_limits_file(limits);
         }
+        if let Some(limits) = file.connection_limits {
+            if let Some(max) = limits.max_connections {
+                self.connection_limits.max_connections = Some(max);
+            }
+            if limits.unlimited_connections == Some(true) {
+                self.connection_limits.max_connections = None;
+            }
+            if let Some(rate) = limits.max_connection_opens_per_peer_per_second {
+                self.connection_limits
+                    .max_connection_opens_per_peer_per_second = Some(rate);
+            }
+            if limits.disable_connection_open_rate == Some(true) {
+                self.connection_limits
+                    .max_connection_opens_per_peer_per_second = None;
+            }
+        }
         if let Some(tcp_limits) = file.tcp_limits {
             self.apply_tcp_limits_file(tcp_limits);
         }
+        Ok(())
     }
 
     fn apply_limits_file(&mut self, file: LimitsConfigFile) {
-        if let Some(max_connections) = file.max_connections {
-            self.limits.max_connections = max_connections.max(1);
-        }
         if let Some(max_connections_per_peer) = file.max_connections_per_peer {
             self.limits.max_connections_per_peer = Some(max_connections_per_peer.max(1));
         }
-        if let Some(max) = file.max_connection_opens_per_peer_per_second {
-            self.limits.max_connection_opens_per_peer_per_second = Some(max.max(1));
+        if let Some(capacity) = file.connection_rate_limit_table_capacity {
+            self.limits.connection_rate_limit_table_capacity = capacity;
         }
         if let Some(max_in_flight_requests) = file.max_in_flight_requests {
             self.limits.max_in_flight_requests = max_in_flight_requests.max(1);
@@ -414,11 +455,19 @@ pub fn build_server(
         .with_request_body_channel_capacity(config.request_body_channel_capacity)
         .with_response_write_policy(config.response_write_mode.into());
     let runtime_state = NacelleRuntimeState::new(config.limits.clone());
+    runtime_state
+        .control()
+        .set_max_connections(config.connection_limits.max_connections)?;
+    runtime_state.control().set_connection_open_rate(
+        config
+            .connection_limits
+            .max_connection_opens_per_peer_per_second,
+    )?;
     let shared_response_payload = response_payload.clone();
     let shared_server = TcpServer::<LengthDelimitedProtocol>::builder()
         .protocol(LengthDelimitedProtocol)
         .tcp_config(tcp_config.clone())
-        .runtime_state(runtime_state.clone())
+        .runtime_state(runtime_state.clone())?
         .tcp_limits(config.tcp_limits)
         .handler(handler_fn(
             move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
@@ -447,7 +496,7 @@ pub fn build_server(
                 SerialEchoHandler { response_payload },
             )
             .with_tcp_config(tcp_config)
-            .with_runtime_state(runtime_state)
+            .with_runtime_state(runtime_state)?
             .with_tcp_limits(config.tcp_limits),
         )),
     }
@@ -598,8 +647,24 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         config.phase_duration_metrics
     );
     println!("  tls_self_signed: {}", config.tls_self_signed);
+    println!("  connection_limits:");
+    println!(
+        "    max_connections: {}",
+        config
+            .connection_limits
+            .max_connections
+            .map(|max| max.to_string())
+            .unwrap_or_else(|| "unlimited".to_string())
+    );
+    println!(
+        "    max_connection_opens_per_peer_per_second: {}",
+        config
+            .connection_limits
+            .max_connection_opens_per_peer_per_second
+            .map(|max| max.to_string())
+            .unwrap_or_else(|| "disabled".to_string())
+    );
     println!("  limits:");
-    println!("    max_connections: {}", config.limits.max_connections);
     println!(
         "    max_connections_per_peer: {}",
         config
@@ -609,12 +674,8 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
             .unwrap_or_else(|| "null".to_string())
     );
     println!(
-        "    max_connection_opens_per_peer_per_second: {}",
-        config
-            .limits
-            .max_connection_opens_per_peer_per_second
-            .map(|max| max.to_string())
-            .unwrap_or_else(|| "null".to_string())
+        "    connection_rate_limit_table_capacity: {}",
+        config.limits.connection_rate_limit_table_capacity
     );
     println!(
         "    max_in_flight_requests: {}",
@@ -766,6 +827,47 @@ pub fn print_help(runtime: &str) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn connection_limit_overlays_preserve_zero_and_reject_conflicts() {
+        let mut config = ServerConfig::default();
+        for invalid in [
+            "[connection_limits]\nmax_connections = 1\nunlimited_connections = true",
+            "[connection_limits]\nmax_connection_opens_per_peer_per_second = 1\ndisable_connection_open_rate = true",
+        ] {
+            let file = toml::from_str::<ServerConfigFile>(invalid).expect("TOML");
+            assert!(config.apply_config_file(file).is_err());
+        }
+        assert_eq!(
+            config.connection_limits,
+            nacelle::core::NacelleConnectionLimits::default()
+        );
+        let zero = toml::from_str::<ServerConfigFile>(
+            "[connection_limits]\nmax_connections = 0\nmax_connection_opens_per_peer_per_second = 0",
+        ).expect("TOML");
+        config.apply_config_file(zero).expect("zero thresholds");
+        assert_eq!(config.connection_limits.max_connections, Some(0));
+        assert_eq!(
+            config
+                .connection_limits
+                .max_connection_opens_per_peer_per_second,
+            Some(0)
+        );
+        let disabled = toml::from_str::<ServerConfigFile>(
+            "[connection_limits]\nunlimited_connections = true\ndisable_connection_open_rate = true",
+        ).expect("TOML");
+        config
+            .apply_config_file(disabled)
+            .expect("disable thresholds");
+        assert_eq!(config.connection_limits.max_connections, None);
+        assert_eq!(
+            config
+                .connection_limits
+                .max_connection_opens_per_peer_per_second,
+            None
+        );
+        assert!(toml::from_str::<ServerConfigFile>("[limits]\nmax_connections = 1").is_err());
+    }
+
     #[cfg(not(feature = "mimalloc-allocator"))]
     #[test]
     #[should_panic(expected = "low-memory mode requires the mimalloc-allocator feature")]
@@ -790,10 +892,12 @@ byte_metrics = true
 phase_duration_metrics = false
 tls_self_signed = true
 
-[limits]
+[connection_limits]
 max_connections = 128000
-max_connections_per_peer = 4096
 max_connection_opens_per_peer_per_second = 2048
+
+[limits]
+max_connections_per_peer = 4096
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
 max_request_body_bytes = 16777216
@@ -808,7 +912,7 @@ idle_timeout_ms = 120000
 "#;
         let file = toml::from_str::<ServerConfigFile>(toml).unwrap();
         let mut config = ServerConfig::default();
-        config.apply_config_file(file);
+        config.apply_config_file(file).expect("configuration");
 
         assert_eq!(config.bind, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(config.server_threads, 4);
@@ -826,10 +930,12 @@ idle_timeout_ms = 120000
         assert!(config.byte_metrics);
         assert!(!config.phase_duration_metrics);
         assert!(config.tls_self_signed);
-        assert_eq!(config.limits.max_connections, 128_000);
+        assert_eq!(config.connection_limits.max_connections, Some(128_000));
         assert_eq!(config.limits.max_connections_per_peer, Some(4_096));
         assert_eq!(
-            config.limits.max_connection_opens_per_peer_per_second,
+            config
+                .connection_limits
+                .max_connection_opens_per_peer_per_second,
             Some(2_048)
         );
         assert_eq!(config.limits.max_in_flight_requests, 64_000);
@@ -968,7 +1074,7 @@ idle_timeout_ms = 120000
         ));
         std::fs::write(
             &path,
-            "server_threads = 2\nresponse_bytes = 128\n[limits]\nmax_connections = 1500\n",
+            "server_threads = 2\nresponse_bytes = 128\n[connection_limits]\nmax_connections = 1500\n",
         )
         .unwrap();
 
@@ -986,7 +1092,7 @@ idle_timeout_ms = 120000
         let _ = std::fs::remove_file(&path);
         assert_eq!(config.server_threads, 8);
         assert_eq!(config.response_bytes, 128);
-        assert_eq!(config.limits.max_connections, 1_500);
+        assert_eq!(config.connection_limits.max_connections, Some(1_500));
     }
 
     #[test]
@@ -999,16 +1105,17 @@ idle_timeout_ms = 120000
     #[test]
     fn missing_toml_values_keep_code_defaults() {
         let file =
-            toml::from_str::<ServerConfigFile>("[limits]\nmax_connections = 1500\n").unwrap();
+            toml::from_str::<ServerConfigFile>("[connection_limits]\nmax_connections = 1500\n")
+                .unwrap();
         let mut config = ServerConfig::default();
         let default_response_bytes = config.response_bytes;
         let default_response_body_bytes = config.limits.max_response_body_bytes;
         let default_handler_timeout = config.limits.handler_timeout;
 
-        config.apply_config_file(file);
+        config.apply_config_file(file).expect("configuration");
 
         assert_eq!(config.response_bytes, default_response_bytes);
-        assert_eq!(config.limits.max_connections, 1_500);
+        assert_eq!(config.connection_limits.max_connections, Some(1_500));
         assert_eq!(
             config.limits.max_response_body_bytes,
             default_response_body_bytes
@@ -1024,7 +1131,7 @@ idle_timeout_ms = 120000
         ));
         std::fs::write(
             &path,
-            "response_bytes = 512\n[limits]\nmax_connections = 1500\n",
+            "response_bytes = 512\n[connection_limits]\nmax_connections = 1500\n",
         )
         .unwrap();
 
@@ -1032,7 +1139,7 @@ idle_timeout_ms = 120000
 
         let _ = std::fs::remove_file(&path);
         assert_eq!(config.response_bytes, 512);
-        assert_eq!(config.limits.max_connections, 1_500);
+        assert_eq!(config.connection_limits.max_connections, Some(1_500));
         assert_eq!(
             config.config_sources,
             vec![
@@ -1054,12 +1161,12 @@ idle_timeout_ms = 120000
         ));
         std::fs::write(
             &base_path,
-            "response_bytes = 128\n[limits]\nmax_connections = 1500\n",
+            "response_bytes = 128\n[connection_limits]\nmax_connections = 1500\n",
         )
         .unwrap();
         std::fs::write(
             &explicit_path,
-            "response_bytes = 256\n[limits]\nmax_connections = 32000\n",
+            "response_bytes = 256\n[connection_limits]\nmax_connections = 32000\n",
         )
         .unwrap();
 
@@ -1078,7 +1185,7 @@ idle_timeout_ms = 120000
         let _ = std::fs::remove_file(base_path);
         let _ = std::fs::remove_file(explicit_path);
         assert_eq!(config.response_bytes, 1024);
-        assert_eq!(config.limits.max_connections, 32_000);
+        assert_eq!(config.connection_limits.max_connections, Some(32_000));
         assert_eq!(config.config_sources.last().unwrap(), "cli args");
     }
 
