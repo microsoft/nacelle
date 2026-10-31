@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::options::{NacelleTcpBindOptions, NacelleTcpOptions};
-use crate::protocol::{Protocol, SerialTcpHandler, SharedProtocol, TcpHandler};
+use crate::protocol::{Protocol, SharedProtocol};
 use crate::serial_server::SerialTcpServer;
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
@@ -25,7 +25,7 @@ pub async fn serve_tcp<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -40,7 +40,7 @@ pub async fn serve_tcp_with_shutdown<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_with_shutdown_timeout(server, addr, shutdown, Duration::from_secs(30)).await
@@ -56,7 +56,7 @@ pub async fn serve_tcp_with_shutdown_timeout<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_with_shutdown_deadline(
@@ -76,7 +76,7 @@ pub async fn serve_tcp_with_options<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -92,7 +92,7 @@ pub async fn serve_tcp_with_options_and_shutdown<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_with_options_and_shutdown_timeout(
@@ -116,7 +116,7 @@ pub async fn serve_tcp_with_options_and_shutdown_timeout<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_with_options_and_shutdown_deadline(
@@ -139,7 +139,7 @@ pub async fn serve_tcp_with_bind_options_and_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -162,7 +162,7 @@ pub async fn serve_tcp_with_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &NacelleTcpBindOptions::default())?;
@@ -186,7 +186,7 @@ pub async fn serve_tcp_with_options_and_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let bind_options = NacelleTcpBindOptions::from(tcp_options.clone());
@@ -210,7 +210,7 @@ pub async fn serve_tcp_listener_with_shutdown_deadline<P, H, Observer>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_tcp_listener_with_options_and_shutdown_deadline(
@@ -233,7 +233,7 @@ pub async fn serve_tcp_listener_with_options_and_shutdown_deadline<P, H, Observe
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     run_accept_loop(
@@ -265,7 +265,7 @@ pub async fn serve_serial_tcp<P, H, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let (_shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
@@ -281,7 +281,7 @@ pub async fn serve_serial_tcp_with_shutdown<P, H, Observer>(
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     serve_serial_tcp_with_bind_options_and_shutdown_deadline(
@@ -305,7 +305,7 @@ pub async fn serve_serial_tcp_with_bind_options_and_shutdown_deadline<P, H, Obse
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let listener = bind_tcp_listener(addr, &bind_options)?;
@@ -330,7 +330,7 @@ pub async fn serve_serial_tcp_listener_with_options_and_shutdown_deadline<P, H, 
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let transport = NacelleTransport::new("tcp");

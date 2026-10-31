@@ -3,6 +3,7 @@
 #[cfg(all(feature = "openssl", feature = "rustls", not(rust_analyzer)))]
 compile_error!("Nacelle supports exactly one TLS backend; enable either `rustls` or `openssl`");
 
+pub mod admission;
 pub mod error;
 pub mod lifecycle;
 pub mod limits;
@@ -12,6 +13,9 @@ pub mod request;
 pub mod runtime;
 pub mod telemetry;
 
+pub use admission::{
+    Admission, AdmissionConfig, AdmissionContext, AdmissionRejection, AllowAll, LocalAdmission,
+};
 pub use error::{
     BoxError, NacelleConfigurationError, NacelleError, NacelleResourceLimitReason,
     NacelleTimeoutReason,

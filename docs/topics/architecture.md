@@ -4,7 +4,8 @@ Nacelle is organized as a small core plus protocol-specific transport crates.
 
 ## Crate Layout
 
-- `nacelle-core`: shared handler, request/response body, limits, lifecycle, telemetry, and negotiated TLS connection metadata.
+- `nacelle-core`: shared handler and admission contracts, request/response body,
+  limits, lifecycle, telemetry, and negotiated TLS connection metadata.
 - `nacelle-openssl`: OpenSSL configuration reload and negotiated metadata extraction.
 - `nacelle-rustls`: Rustls configuration reload, certificate parsing, SNI policy, and negotiated metadata extraction.
 - `nacelle-tcp`: TCP/Unix socket server, protocol trait, connection loop, and listener runtime.
@@ -67,6 +68,7 @@ listener
   -> connection task
   -> protocol/HTTP decode
   -> request limit
+  -> optional typed admission
   -> handler
   -> response body encode/stream
 ```
@@ -124,6 +126,48 @@ HTTP-specific edge policy remains in `nacelle-http`: Host, method, URI/header
 shape checks, per-peer request rate limits, access logging, and security header
 injection. TCP keeps protocol semantics in the protocol implementation and
 shared lifecycle/limit enforcement in core.
+
+### Typed request admission
+
+`Admission<Context>` returns an owned associated `Permit`, or a bounded
+`AdmissionRejection`. `LocalAdmission` permits worker-local `!Send` state,
+futures, and permits. Policies borrow the decoded head, connection metadata
+and state, and the same typed application root as the handler. There is one
+concrete policy, not a chain or a dynamically dispatched future.
+
+TCP owns bounded head reads, prior-output delivery, and protocol error
+responses. HTTP owns Hyper parser configuration, effective peer resolution,
+status mapping, and the head-to-body transition. Core owns neither protocol's
+scheduling. Existing handler traits remain the application interface; internal
+service adapters carry admission and handling together through every server mode.
+
+```mermaid
+flowchart LR
+    Head["Decoded head"] --> Cheap["Size, policy and runtime capacity checks"]
+    Cheap --> Admit["One concrete admission future"]
+    Admit -->|"Pending"| Wait["Finite waiter count and deadline; no body work"]
+    Wait -->|"Allow"| Work["Body resolution and handler"]
+    Admit -->|"Ready allow"| Work
+    Admit -->|"Reject"| Reject["Transport error response; close unread body"]
+    Wait -->|"Deadline or reject"| Reject
+    Work --> Produce["Response production owns permit"]
+    Produce --> Release["Drop application permit"]
+    Release -.-> Deliver["Transport output and flush may remain"]
+```
+
+Only a pending policy starts an admission timer. TCP also flushes prior output
+before awaiting that same pinned future, including buffers inside `AsyncWrite`.
+Ready policies do not force a flush. HTTP creates no body bridge before
+allowance and does not trigger `100 Continue` by polling an unadmitted body.
+Hyper may already have read body bytes with the head; this is not TCP's H/B
+read allowance.
+
+The application permit covers body resolution, handler work, and response
+production, not remote receipt. HTTP cancels or completes its body pump before
+transferring the permit into its concrete response body. TCP releases it after
+encoding, before any completion-callback flush. Error, cancellation, and drop
+release owned capacity. Runtime request gauges and response-byte metrics keep
+their separate existing completion boundaries.
 
 ## Runtime State
 

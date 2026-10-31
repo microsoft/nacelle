@@ -9,6 +9,8 @@ Defaults:
 - `NacelleHttpLimits::response_write_timeout`: 30 seconds, enforced at Hyper's I/O write boundary.
 - `NacelleHttpLimits::keep_alive`: enabled.
 - `NacelleHttpLimits::max_connection_age`: disabled by default.
+- `NacelleHttpLimits::parser`: Hyper's default bounded parser buffer strategy
+  and stack-backed 100-header parser.
 - request and response body size limits: 16 MiB each.
 
 `NacelleHttpPolicy` can reject requests before the handler runs:
@@ -39,18 +41,64 @@ even when no body chunks have been delivered to Nacelle.
 In the resolved Hyper 1.10.1 dependency, the low-level HTTP/1 builder's
 `max_buf_size` accepts a minimum of 8192 bytes. It controls parser buffering,
 not a hard per-request plaintext read allowance: a complete head and read-ahead
-can exceed that setting. Explicitly setting Hyper's `max_headers` also changes
-header parsing from default stack storage to per-request heap storage. These
-builder settings are not `NacelleHttpPolicy` settings.
+can exceed that setting. Explicitly setting Hyper's `max_headers` selects its
+configurable-count parser path.
+Nacelle exposes these separately through validated
+`HttpParserLimits::new(max_buffer_bytes, max_headers)` and
+`NacelleHttpLimits::with_parser_limits(...)`. `None` or `Some(100)` retains
+the default parser path. In the resolved implementation, positive counts
+through 100 use inline header arrays; larger counts allocate those arrays.
+Buffer values below 8192 are rejected before serving. Keep post-parse byte/count
+checks as a separate application policy.
 
 For `Expect: 100-continue`, Hyper waits for the body consumer to request data
 before sending `100 Continue`. A head-policy rejection does not start that
-consumer or send the interim response. Hyper can discard an already-buffered
-rejected body and serve a pipelined next request; when it cannot drain the body
-safely, it closes the connection. Do not assume every rejection closes it.
+consumer or send the interim response. Nacelle sets `Connection: close` on
+rejections with an unread body, including a fully buffered body followed by a
+pipelined request. It does not drain that body or dispatch the following request.
+Rejections of requests whose bodies are already empty may retain keep-alive.
 
 These observations concern plaintext reads and HTTP parsing. They do not bound
 TLS records, kernel socket buffers, or total process memory.
+
+## Application admission
+
+Shared servers accept `.with_admission(policy, AdmissionConfig)` where the
+policy implements `Admission<HttpAdmissionContext<'_, State, AppState>>`.
+Local servers also accept `LocalAdmission<LocalHttpAdmissionContext<...>>`.
+The borrowed `HttpRequestHead` contains method, URI, headers, HTTP version, and
+effective peer IP. Headers are not cloned for admission. Typed application
+state is the same root available to the handler.
+
+Host/method/header policy, effective-peer resolution, rate checks, declared
+body-size checks, and runtime request capacity precede custom admission.
+A separate finite waiter slot is acquired before policy invocation. Only a
+pending policy starts the admission timer; the original future remains pinned.
+Before allowance Nacelle neither creates its body channel nor polls `Incoming`
+or constructs the handler future. This also applies to chunked bodies.
+
+| Admission outcome | HTTP status | Stable reason |
+| --- | --- | --- |
+| `Forbidden` | 403 | `admission_forbidden` |
+| `RateLimited` | 429 | `admission_rate_limited` |
+| `Unavailable` | 503 | `admission_unavailable` |
+| Framework waiter exhaustion | 503 | `admission_waiters` |
+| Admission deadline | 503 | `admission` |
+
+Responses contain only bounded reasons, retain configured security headers and
+response-write deadlines, and close when a body remains unread. The admission
+deadline is separate from the handler/body deadlines. Server clones share waiter
+accounting; separate listeners/workers do not unless they share the same server.
+See [runtime limits](../topics/runtime-limits.md#application-admission-budgets)
+for process-wide capacity planning.
+
+Body-producer failures now return directly to the driver, which cancels the
+handler rather than awaiting an error send into a full channel. Streaming
+request-size violations produce a sanitized 413 response; other body failures
+use the generic 500 response. Do not depend on observing producer errors through
+`next_body_chunk()` to construct a custom response.
+On handler/body failure, Nacelle conservatively closes connections whose
+requests initially had a nonempty body, since the pump may have been cancelled.
 
 ## Completion and connection retirement
 
@@ -58,6 +106,14 @@ HTTP request-completion telemetry and the runtime request permit finish before
 the response body necessarily finishes production. Response-body byte telemetry
 is emitted separately when that body completes; cancellation does not record a
 partial successful body sample. Neither event acknowledges remote receipt.
+
+An application admission permit has a longer lifetime than the runtime request
+gauge: it transfers into the concrete response body after request pumping ends
+or is cancelled. It releases on production EOF, response error, or body drop.
+Hyper's HEAD/empty/final-content-length paths can drop the body without another
+EOF poll; these release the permit as well. Cancellation and write failure drop
+that ownership. It is not retained for a later socket flush, and this adds no
+boxed callback or dynamically dispatched body.
 
 Hyper's public graceful-shutdown operation disables keep-alive and still needs
 the connection to be polled through response production and underlying I/O
@@ -93,7 +149,12 @@ policy.
 the compile-time `rustls` feature. TCP can instead select `openssl`, but the two
 backend features cannot be enabled together and cannot be swapped at runtime.
 
-Enable `HyperServer::with_access_log(true)` when direct edge deployments need structured request logs. Access events are emitted with target `nacelle::access` and include transport, method, URI, status, request bytes, elapsed microseconds, and rejection reason.
+Enable `HyperServer::with_access_log(true)` when direct edge deployments need
+structured request logs. Access events are emitted with target
+`nacelle::access` and include transport, method, URI, status, request bytes,
+elapsed microseconds, and rejection reason. Declared and streamed body-size
+failures both use `request_body_bytes`; body-read deadlines use
+`http_body_read`.
 
 Forwarded peer identity is disabled by default. The immediate socket peer must
 be listed in `NacelleHttpPolicy::with_trusted_proxy_ips(...)`. When trusted,

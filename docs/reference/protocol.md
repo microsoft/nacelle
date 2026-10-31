@@ -73,6 +73,59 @@ awaits completion before decoding the next message, so one connection cannot
 overlap serial handler calls. The same serial context permits either a response
 or explicit silent completion.
 
+## Admission before body work
+
+Implement `nacelle::core::Admission<TcpAdmissionContext<'_, P, AppState>>`
+and return an owned associated `Permit`. Policies inspect `head()`,
+`connection()`, and `app_state()` without copying the head. For serial
+connection state use `SerialTcpAdmissionContext`; its exclusive internal borrow
+allows `Send` but non-`Sync` state across an await. Worker-local policies may
+implement `LocalAdmission` with `!Send` futures and permits.
+
+Configure H/B with `TcpHeadReadLimits`, then call the shared builder's
+`.admission(policy, AdmissionConfig::new(timeout, max_pending)?)?`.
+Local, serial, and local-serial servers use `.with_admission(...)` after
+`.with_tcp_config(...)`. Missing bounded-head configuration fails before I/O.
+Serial handlers that require typed application state can configure TCP limits
+and install admission before the application or worker runtime binds that state.
+An unconfigured server has no policy accounting or timer; explicit `AllowAll`
+uses the configured admission bounds and returns `()`.
+
+Cheap protocol body-size and runtime-capacity checks precede the policy.
+Pending admission neither constructs a body channel nor starts the handler or
+reads additional body bytes. It retains its queue position and first flushes
+prior output, including underlying writer buffers, under one admission deadline.
+Ready allowance/rejection does not add a pre-wait flush or timer.
+
+`Forbidden`, `RateLimited`, and `Unavailable` are bounded application rejection
+categories; TCP passes them through `NacelleError::AdmissionRejected` to
+`Protocol::error_response`. Waiter exhaustion and deadline use
+`AdmissionWaiters` and `Admission`. These terminal failures close the connection
+without interpreting unread body bytes as another head.
+
+The permit covers body resolution, handler work, and response encoding.
+It is released before a completion callback's final flush, not after remote
+receipt. A cancelled or failed prior-output flush closes without retrying the
+write or encoding a replacement error. When the admission deadline cancels that
+flush, TCP records one `server.errors` timeout under `socket_write` when error
+metrics are enabled, not an admission rejection for the waiting request. See
+[admission budgets](../topics/runtime-limits.md#application-admission-budgets)
+for scope, deadlines, cancellation, and disabled-timeout fallbacks.
+
+The runnable example shares a semaphore through typed application state,
+admits opcode 1, and rejects other heads:
+
+```sh
+cargo run -p nacelle-examples --bin tcp_admission -- 127.0.0.1:8080
+```
+
+The example's test also demonstrates timeout cleanup followed by a successful
+request. Constructors now wrap serial handlers in a concrete dispatch adapter;
+prefer inferred server types rather than naming the raw handler as the serial
+server's handler parameter. Custom generic transport helpers use `TcpService`,
+`SerialTcpService`, or their local counterparts; application handlers continue
+implementing the existing handler traits.
+
 ## Responses
 
 Handlers call `context.respond(P::Response).await` or return

@@ -734,7 +734,7 @@ where
         elapsed: Duration,
         error: &crate::error::NacelleError,
     ) {
-        self.request_failed_inner(transport, elapsed, error, true);
+        self.request_failed_inner(transport, elapsed, error, true, true);
     }
 
     #[doc(hidden)]
@@ -744,7 +744,17 @@ where
         elapsed: Duration,
         error: &crate::error::NacelleError,
     ) {
-        self.request_failed_inner(transport, elapsed, error, false);
+        self.request_failed_inner(transport, elapsed, error, false, false);
+    }
+
+    #[doc(hidden)]
+    pub fn request_failed_without_request_metrics(
+        &self,
+        transport: NacelleTransport,
+        elapsed: Duration,
+        error: &crate::error::NacelleError,
+    ) {
+        self.request_failed_inner(transport, elapsed, error, true, false);
     }
 
     fn request_failed_inner(
@@ -752,7 +762,8 @@ where
         transport: NacelleTransport,
         elapsed: Duration,
         error: &crate::error::NacelleError,
-        emit_metrics: bool,
+        emit_error_metrics: bool,
+        emit_request_metrics: bool,
     ) {
         tracing::warn!(
             target: "nacelle",
@@ -767,7 +778,7 @@ where
             reason: error_reason(error),
             count: 1,
         });
-        if emit_metrics && self.error_metrics_enabled() {
+        if emit_error_metrics && self.error_metrics_enabled() {
             metrics::counter!("server.request.failed", "transport" => transport.as_str())
                 .increment(1);
             if matches!(error, crate::error::NacelleError::Timeout(_)) {
@@ -779,7 +790,7 @@ where
                 .increment(1);
             }
         }
-        if emit_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
+        if emit_request_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
             metrics::histogram!(
                 "server.request.duration",
                 "transport" => transport.as_str(),
@@ -924,6 +935,7 @@ where
 fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     match error {
         crate::error::NacelleError::Configuration(_) => Some("configuration"),
+        crate::error::NacelleError::AdmissionRejected(reason) => Some(reason.as_str()),
         crate::error::NacelleError::ResourceLimit(reason) => Some(reason.as_str()),
         crate::error::NacelleError::Timeout(reason) => Some(reason.as_str()),
         crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
@@ -941,6 +953,7 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
 fn error_kind(error: &crate::error::NacelleError) -> &'static str {
     match error {
         crate::error::NacelleError::Configuration(_) => "configuration",
+        crate::error::NacelleError::AdmissionRejected(_) => "admission",
         crate::error::NacelleError::ResourceLimit(_) => "resource_limit",
         crate::error::NacelleError::Timeout(_) => "timeout",
         crate::error::NacelleError::InvalidFrame(_) => "invalid_frame",

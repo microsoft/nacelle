@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use crate::options::NacelleTcpBindOptions;
-use crate::protocol::{SharedProtocol, TcpHandler};
+use crate::protocol::SharedProtocol;
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
@@ -91,7 +91,7 @@ pub(super) fn record_connection_rejection<P, H, Observer>(
     error: &NacelleError,
 ) where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     let context = NacelleMetricsContext::new(
@@ -157,7 +157,7 @@ pub(super) async fn run_accept_loop<P, H, Observer, Prepare, Serve, Fut>(
 ) -> Result<(), NacelleError>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
     Prepare: Fn(&TcpStream) -> Result<(), NacelleError>,
     Serve: FnMut(

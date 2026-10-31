@@ -16,6 +16,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::admission::{HttpAdmitted, HttpRequestHead, HttpService, LocalHttpService};
 use crate::encoder::{HttpBody, incoming_to_body, response_to_http};
 use crate::limits::NacelleHttpLimits;
 use crate::policy::validate_http_policy;
@@ -30,15 +31,15 @@ use nacelle_core::telemetry::{
     NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
     NoopObserver,
 };
+use nacelle_core::{AdmissionConfig, AdmissionContext, AdmissionRejection};
 use nacelle_core::{NacellePeerRateLimitResult, NacellePeerRateLimiter};
 #[cfg(feature = "rustls")]
 use nacelle_rustls::NacelleTlsConfig;
 
 use crate::pipeline::{
-    HttpConnectionStateFactory, HttpHandler, HttpHandlerCompletion, HttpRequest,
-    HttpRequestContext, HttpResponder, HttpResponse, LocalHttpAppStateHandler,
-    LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpRequestContext,
-    NoHttpConnectionState, SharedHttpAppStateHandler,
+    HttpConnectionStateFactory, HttpHandlerCompletion, HttpRequest, HttpRequestContext,
+    HttpResponder, HttpResponse, LocalHttpAppStateHandler, LocalHttpConnectionStateFactory,
+    LocalHttpRequestContext, NoHttpConnectionState, SharedHttpAppStateHandler,
 };
 
 #[cfg(test)]
@@ -48,7 +49,14 @@ trait HttpDispatch<State, Observer>
 where
     Observer: NacelleTelemetryObserver,
 {
+    type Permit;
+
     fn connection_info(&self) -> &ConnectionInfo;
+
+    fn admit<'a>(
+        &'a mut self,
+        head: &'a mut HttpRequestHead,
+    ) -> impl Future<Output = Result<Option<Self::Permit>, NacelleError>> + 'a;
 
     fn call(
         &self,
@@ -73,11 +81,30 @@ impl<H, State> Clone for SharedHttpDispatch<H, State> {
 impl<H, State, Observer> HttpDispatch<State, Observer> for SharedHttpDispatch<H, State>
 where
     State: Send + Sync + 'static,
-    H: HttpHandler<State>,
+    H: HttpService<State>,
     Observer: NacelleTelemetryObserver,
 {
+    type Permit = H::Permit;
+
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
+    }
+
+    async fn admit<'a>(
+        &'a mut self,
+        head: &'a mut HttpRequestHead,
+    ) -> Result<Option<Self::Permit>, NacelleError> {
+        let Some(state) = self.handler.admission_state() else {
+            return Ok(None);
+        };
+        let _waiter = state.acquire()?;
+        crate::admission::wait(
+            self.handler
+                .admit(AdmissionContext::new(head, &mut self.connection, &())),
+            state.config().timeout(),
+        )
+        .await
+        .map(Some)
     }
 
     fn call(
@@ -89,7 +116,7 @@ where
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        nacelle_core::pipeline::Handler::call(self.handler.as_ref(), context)
+        HttpService::call(self.handler.as_ref(), context)
     }
 }
 
@@ -111,11 +138,30 @@ impl<H, State> Clone for LocalHttpDispatch<H, State> {
 impl<H, State, Observer> HttpDispatch<State, Observer> for LocalHttpDispatch<H, State>
 where
     State: 'static,
-    H: LocalHttpHandler<State>,
+    H: LocalHttpService<State>,
     Observer: NacelleTelemetryObserver,
 {
+    type Permit = H::Permit;
+
     fn connection_info(&self) -> &ConnectionInfo {
         &self.connection.info
+    }
+
+    async fn admit<'a>(
+        &'a mut self,
+        head: &'a mut HttpRequestHead,
+    ) -> Result<Option<Self::Permit>, NacelleError> {
+        let Some(state) = self.handler.admission_state() else {
+            return Ok(None);
+        };
+        let _waiter = state.acquire()?;
+        crate::admission::wait(
+            self.handler
+                .admit(AdmissionContext::new(head, &mut self.connection, &())),
+            state.config().timeout(),
+        )
+        .await
+        .map(Some)
     }
 
     fn call(
@@ -127,7 +173,7 @@ where
             RequiredResponder::new(HttpResponder),
             self.connection.clone(),
         );
-        nacelle_core::pipeline::LocalHandler::call(self.handler.as_ref(), context)
+        LocalHttpService::call(self.handler.as_ref(), context)
     }
 }
 
@@ -271,6 +317,19 @@ impl<H> LocalHyperServer<H, NoHttpConnectionState, NoopObserver> {
 }
 
 impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
+    /// Install one worker-local policy before body polling or channel allocation.
+    pub fn with_admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> LocalHyperServer<HttpAdmitted<Rc<H>, A>, F, Observer> {
+        LocalHyperServer {
+            handler: Rc::new(HttpAdmitted::new(self.handler, policy, config)),
+            connection_state_factory: self.connection_state_factory,
+            runtime: self.runtime,
+        }
+    }
+
     /// Replace the worker-local connection state factory.
     pub fn with_connection_state_factory<F2>(self, factory: F2) -> LocalHyperServer<H, F2, Observer>
     where
@@ -291,7 +350,7 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
     ) -> LocalHyperServer<LocalHttpAppStateHandler<H, AppState>, F, Observer>
     where
         F: LocalHttpConnectionStateFactory,
-        H: LocalHttpHandler<F::State, AppState>,
+        H: LocalHttpService<F::State, AppState>,
         AppState: 'static,
     {
         LocalHyperServer {
@@ -305,7 +364,6 @@ impl<H, F, Observer> LocalHyperServer<H, F, Observer> {
 impl<H, F, Observer> LocalHyperServer<H, F, Observer>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State> + 'static,
     Observer: NacelleTelemetryObserver,
 {
     /// Set telemetry for this worker.
@@ -391,7 +449,14 @@ where
         self.runtime.listener = listener.into();
         self
     }
+}
 
+impl<H, F, Observer> LocalHyperServer<H, F, Observer>
+where
+    F: LocalHttpConnectionStateFactory,
+    H: LocalHttpService<F::State>,
+    Observer: NacelleTelemetryObserver,
+{
     /// Serve one worker-local HTTP listener until shared shutdown.
     pub async fn serve_listener(
         self,
@@ -569,6 +634,23 @@ impl<H> HyperServer<H, NoHttpConnectionState, NoopObserver> {
 }
 
 impl<H, F, Observer> HyperServer<H, F, Observer> {
+    /// Install one typed policy before the request body bridge is created.
+    ///
+    /// A pending policy retains its original future under a finite deadline.
+    /// Rejection with an unread body closes HTTP/1 without dispatch or draining.
+    /// The concrete permit follows response production, not socket flush.
+    pub fn with_admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> HyperServer<HttpAdmitted<Arc<H>, A>, F, Observer> {
+        HyperServer {
+            handler: Arc::new(HttpAdmitted::new(self.handler, policy, config)),
+            connection_state_factory: self.connection_state_factory,
+            runtime: self.runtime,
+        }
+    }
+
     pub fn with_connection_state_factory<F2>(self, factory: F2) -> HyperServer<H, F2, Observer>
     where
         F2: HttpConnectionStateFactory,
@@ -588,7 +670,7 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
     ) -> HyperServer<SharedHttpAppStateHandler<H, AppState>, F, Observer>
     where
         F: HttpConnectionStateFactory,
-        H: HttpHandler<F::State, AppState>,
+        H: HttpService<F::State, AppState>,
         AppState: Send + Sync + 'static,
     {
         HyperServer {
@@ -602,7 +684,6 @@ impl<H, F, Observer> HyperServer<H, F, Observer> {
 impl<H, F, Observer> HyperServer<H, F, Observer>
 where
     F: HttpConnectionStateFactory,
-    H: HttpHandler<F::State>,
     Observer: NacelleTelemetryObserver,
 {
     pub fn with_telemetry<Next>(self, telemetry: NacelleTelemetry<Next>) -> HyperServer<H, F, Next>
@@ -695,7 +776,14 @@ where
         self.runtime.listener = listener.into();
         self
     }
+}
 
+impl<H, F, Observer> HyperServer<H, F, Observer>
+where
+    F: HttpConnectionStateFactory,
+    H: HttpService<F::State>,
+    Observer: NacelleTelemetryObserver,
+{
     /// Bind `addr` and serve HTTP/1 connections until failure or cancellation.
     pub async fn serve(self, addr: SocketAddr) -> Result<(), NacelleError> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1001,11 +1089,11 @@ where
         &self,
         request: Request<Incoming>,
         connection: &ConnectionContext<Arc<F::State>>,
-    ) -> Result<Response<HttpBody<Observer>>, NacelleError> {
+    ) -> Result<Response<HttpBody<Observer, H::Permit>>, NacelleError> {
         self.runtime
             .handle_with_dispatch(
                 request,
-                &SharedHttpDispatch {
+                &mut SharedHttpDispatch {
                     handler: self.handler.clone(),
                     connection: connection.clone(),
                 },
@@ -1021,14 +1109,15 @@ where
     async fn handle_with_dispatch<State, D>(
         &self,
         request: Request<Incoming>,
-        dispatch: &D,
-    ) -> Result<Response<HttpBody<Observer>>, NacelleError>
+        dispatch: &mut D,
+    ) -> Result<Response<HttpBody<Observer, D::Permit>>, NacelleError>
     where
         D: HttpDispatch<State, Observer>,
     {
         let request_started = self.request_timing_enabled().then(Instant::now);
         let method = request.method().clone();
         let uri = request.uri().clone();
+        let unread_body = !request.body().is_end_stream();
         let (effective_peer_ip, peer_resolution_reason) =
             self.effective_peer_ip(dispatch.connection_info().peer_ip, &request);
         if let Some(rejection) = validate_http_policy(&self.http_policy, &request) {
@@ -1044,11 +1133,10 @@ where
                 reason: Some(rejection.reason),
                 peer_resolution_reason,
             });
-            return response_to_http(
+            return self.response(
                 HttpResponse::bytes(rejection.status, rejection.reason),
-                self.runtime_state.clone(),
-                self.telemetry.clone(),
-                &self.http_policy,
+                None,
+                unread_body,
             );
         }
         if let Some(peer_ip) = effective_peer_ip {
@@ -1067,11 +1155,10 @@ where
                     reason: Some(reason),
                     peer_resolution_reason,
                 });
-                return response_to_http(
+                return self.response(
                     HttpResponse::bytes(StatusCode::TOO_MANY_REQUESTS, reason),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
+                    None,
+                    unread_body,
                 );
             }
         }
@@ -1099,11 +1186,10 @@ where
                 reason: Some(NacelleResourceLimitReason::RequestBodyBytes.as_str()),
                 peer_resolution_reason,
             });
-            return response_to_http(
+            return self.response(
                 HttpResponse::bytes(StatusCode::PAYLOAD_TOO_LARGE, error.to_string()),
-                self.runtime_state.clone(),
-                self.telemetry.clone(),
-                &self.http_policy,
+                None,
+                unread_body,
             );
         }
         let _request_permit = match self.runtime_state.acquire_request_tracked() {
@@ -1124,12 +1210,42 @@ where
                     reason: Some("in_flight_requests"),
                     peer_resolution_reason,
                 });
-                return response_to_http(
+                return self.response(
                     HttpResponse::bytes(StatusCode::SERVICE_UNAVAILABLE, error.to_string()),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
+                    None,
+                    unread_body,
                 );
+            }
+        };
+        let mut head = HttpRequestHead {
+            method: parts.method,
+            uri: parts.uri,
+            headers: parts.headers,
+            version: parts.version,
+            peer_ip: effective_peer_ip,
+        };
+        let application_permit = match dispatch.admit(&mut head).await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let (status, reason) = admission_rejection(&error);
+                self.telemetry
+                    .request_rejected(NacelleTransport::new("http"), reason);
+                self.telemetry.request_failed(
+                    NacelleTransport::new("http"),
+                    elapsed_since(request_started),
+                    &error,
+                );
+                self.access_log(HttpAccessLog {
+                    method: &method,
+                    uri: &uri,
+                    peer_ip: effective_peer_ip,
+                    status,
+                    request_bytes: 0,
+                    elapsed: elapsed_since(request_started),
+                    reason: Some(reason),
+                    peer_resolution_reason,
+                });
+                return self.response(HttpResponse::bytes(status, reason), None, unread_body);
             }
         };
         let request_body_bytes = AtomicUsize::new(0);
@@ -1141,20 +1257,18 @@ where
             self.http_limits,
             self.telemetry.clone(),
         );
-        let request = HttpRequest::new(
-            parts.method,
-            parts.uri,
-            parts.headers,
-            effective_peer_ip,
-            body,
-        );
+        let request =
+            HttpRequest::new(head.method, head.uri, head.headers, effective_peer_ip, body);
         let handler_future = dispatch.call(request);
         let handler_with_body = async {
             tokio::pin!(handler_future);
             tokio::pin!(body_pump);
             tokio::select! {
                 result = &mut handler_future => result,
-                () = &mut body_pump => handler_future.await,
+                result = &mut body_pump => {
+                    result?;
+                    handler_future.await
+                },
             }
         };
         let handler_result =
@@ -1169,12 +1283,8 @@ where
         match handler_result {
             Ok(completion) => {
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
-                let response = response_to_http(
-                    completion.into_inner().response,
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
-                );
+                let response =
+                    self.response(completion.into_inner().response, application_permit, false);
                 if let Ok(response) = &response {
                     self.access_log(HttpAccessLog {
                         method: &method,
@@ -1196,18 +1306,24 @@ where
                 response
             }
             Err(error) => {
+                drop(application_permit);
                 self.telemetry.request_failed(
                     NacelleTransport::new("http"),
                     elapsed_since(request_started),
                     &error,
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
-                let response = response_to_http(
-                    HttpResponse::bytes(StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
-                    self.runtime_state.clone(),
-                    self.telemetry.clone(),
-                    &self.http_policy,
-                );
+                let reason = request_failure_reason(&error);
+                let (status, message) = if matches!(
+                    &error,
+                    NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes)
+                ) {
+                    (StatusCode::PAYLOAD_TOO_LARGE, "request body too large")
+                } else {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                };
+                let response =
+                    self.response(HttpResponse::bytes(status, message), None, unread_body);
                 if let Ok(response) = &response {
                     self.access_log(HttpAccessLog {
                         method: &method,
@@ -1216,7 +1332,7 @@ where
                         status: response.status(),
                         request_bytes,
                         elapsed: elapsed_since(request_started),
-                        reason: Some("handler"),
+                        reason: Some(reason),
                         peer_resolution_reason,
                     });
                 }
@@ -1229,6 +1345,28 @@ where
                 response
             }
         }
+    }
+
+    fn response<Permit>(
+        &self,
+        response: HttpResponse,
+        permit: Option<Permit>,
+        close: bool,
+    ) -> Result<Response<HttpBody<Observer, Permit>>, NacelleError> {
+        let mut response = response_to_http(
+            response,
+            self.runtime_state.clone(),
+            self.telemetry.clone(),
+            &self.http_policy,
+        )?
+        .map(|body| HttpBody::new(body, permit));
+        if close {
+            response.headers_mut().insert(
+                http::header::CONNECTION,
+                http::HeaderValue::from_static("close"),
+            );
+        }
+        Ok(response)
     }
 
     fn request_timing_enabled(&self) -> bool {
@@ -1299,6 +1437,31 @@ fn peer_rate_rejection_reason(result: NacellePeerRateLimitResult) -> &'static st
     }
 }
 
+fn admission_rejection(error: &NacelleError) -> (StatusCode, &'static str) {
+    let status = match error {
+        NacelleError::AdmissionRejected(AdmissionRejection::Forbidden) => StatusCode::FORBIDDEN,
+        NacelleError::AdmissionRejected(AdmissionRejection::RateLimited) => {
+            StatusCode::TOO_MANY_REQUESTS
+        }
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    let reason = match error {
+        NacelleError::AdmissionRejected(reason) => reason.as_str(),
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
+        NacelleError::Timeout(reason) => reason.as_str(),
+        _ => "admission_unavailable",
+    };
+    (status, reason)
+}
+
+fn request_failure_reason(error: &NacelleError) -> &'static str {
+    match error {
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
+        NacelleError::Timeout(reason) => reason.as_str(),
+        _ => "handler",
+    }
+}
+
 struct HttpAccessLog<'a> {
     method: &'a Method,
     uri: &'a http::Uri,
@@ -1329,7 +1492,7 @@ async fn run_http_connection<H, F, Observer, I>(
 ) -> Result<(), NacelleError>
 where
     F: HttpConnectionStateFactory,
-    H: HttpHandler<F::State>,
+    H: HttpService<F::State>,
     Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -1345,6 +1508,7 @@ where
         async move { server.handle(request, &connection).await }
     });
     let mut builder = http1::Builder::new();
+    server.runtime.http_limits.parser.apply(&mut builder);
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
@@ -1382,7 +1546,7 @@ async fn run_local_http_connection<H, F, Observer, I>(
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State>,
+    H: LocalHttpService<F::State>,
     Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + 'static,
 {
@@ -1398,15 +1562,16 @@ where
     let service_dispatch = dispatch.clone();
     let service = service_fn(move |request| {
         let server = service_server.clone();
-        let dispatch = service_dispatch.clone();
+        let mut dispatch = service_dispatch.clone();
         async move {
             server
                 .runtime
-                .handle_with_dispatch(request, &dispatch)
+                .handle_with_dispatch(request, &mut dispatch)
                 .await
         }
     });
     let mut builder = http1::Builder::new();
+    server.runtime.http_limits.parser.apply(&mut builder);
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(server.runtime.http_limits.header_read_timeout)
@@ -1445,6 +1610,7 @@ fn http_close_reason(result: &Result<(), NacelleError>) -> &'static str {
         Err(NacelleError::UnexpectedEof) => "unexpected_eof",
         Err(NacelleError::ConnectionClosed) => "connection_closed",
         Err(NacelleError::ResourceLimit(_)) => "resource_limit",
+        Err(NacelleError::AdmissionRejected(_)) => "admission",
         Err(NacelleError::Io(_)) => "io",
         Err(NacelleError::Protocol(_)) => "protocol",
         Err(NacelleError::Handler(_)) => "handler",
@@ -1657,13 +1823,30 @@ async fn drain_http_connection_tasks<Observer>(
 mod tests {
     use bytes::Bytes;
     use std::sync::Mutex;
-    use std::sync::atomic::AtomicBool;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use nacelle_core::pipeline::handler_fn;
     use nacelle_core::request::NacelleBody;
 
     use super::*;
+
+    #[test]
+    fn request_failure_reason_preserves_framework_categories() {
+        assert_eq!(
+            request_failure_reason(&NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::RequestBodyBytes,
+            )),
+            "request_body_bytes"
+        );
+        assert_eq!(
+            request_failure_reason(&NacelleError::Timeout(NacelleTimeoutReason::HttpBodyRead,)),
+            "http_body_read"
+        );
+        assert_eq!(
+            request_failure_reason(&NacelleError::handler("test handler failure")),
+            "handler"
+        );
+    }
 
     #[tokio::test]
     async fn live_control_pauses_and_resumes_the_installed_http_listener() {
@@ -1775,13 +1958,19 @@ mod tests {
                             .await
                     },
                 );
-                let task =
-                    tokio::task::spawn_local(LocalHyperServer::new(handler).serve_tls_listener(
-                        listener,
-                        generated.tls_config,
-                        token,
-                        NacelleDrainDeadline::default(),
-                    ));
+                let task = tokio::task::spawn_local(
+                    LocalHyperServer::new(handler)
+                        .with_admission(
+                            nacelle_core::AllowAll,
+                            AdmissionConfig::new(Duration::from_secs(1), 8).unwrap(),
+                        )
+                        .serve_tls_listener(
+                            listener,
+                            generated.tls_config,
+                            token,
+                            NacelleDrainDeadline::default(),
+                        ),
+                );
                 let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
                 let name = rustls::pki_types::ServerName::try_from("localhost").expect("name");
                 let mut client = connector.connect(name, stream).await.expect("handshake");
@@ -1806,7 +1995,7 @@ mod tests {
         let policy = NacelleHttpPolicy::new().with_max_requests_per_peer_per_second(1);
         let first = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
             |_context: crate::LocalHttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit(
+                Err::<HttpHandlerCompletion, _>(NacelleError::ResourceLimit(
                     NacelleResourceLimitReason::Other("unused_test_handler"),
                 ))
             },
@@ -1820,7 +2009,7 @@ mod tests {
         .expect("runtime configuration");
         let second = LocalHyperServer::new(nacelle_core::pipeline::local_handler_fn(
             |_context: crate::LocalHttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit(
+                Err::<HttpHandlerCompletion, _>(NacelleError::ResourceLimit(
                     NacelleResourceLimitReason::Other("unused_test_handler"),
                 ))
             },
@@ -1848,7 +2037,7 @@ mod tests {
     fn http_peer_rate_table_rejects_new_peers_when_full() {
         let server = HyperServer::new(nacelle_core::pipeline::handler_fn(
             |_context: crate::HttpRequestContext<()>| async move {
-                Err(NacelleError::ResourceLimit(
+                Err::<HttpHandlerCompletion, _>(NacelleError::ResourceLimit(
                     NacelleResourceLimitReason::Other("unused_test_handler"),
                 ))
             },
@@ -2472,35 +2661,16 @@ mod tests {
         let runtime_state = nacelle_core::limits::NacelleRuntimeState::new(
             nacelle_core::limits::NacelleLimits::default().with_max_request_body_bytes(4),
         );
-        let saw_limit = Arc::new(AtomicBool::new(false));
-        let server = HyperServer::new(handler_fn({
-            let saw_limit = saw_limit.clone();
-            move |mut context: HttpRequestContext<()>| {
-                let saw_limit = saw_limit.clone();
-                async move {
-                    while let Some(chunk) = context.request_mut().next_body_chunk().await {
-                        match chunk {
-                            Ok(_) => {}
-                            Err(NacelleError::ResourceLimit(
-                                NacelleResourceLimitReason::RequestBodyBytes,
-                            )) => {
-                                saw_limit.store(true, Ordering::SeqCst);
-                                return context
-                                    .respond(HttpResponse::bytes(
-                                        StatusCode::PAYLOAD_TOO_LARGE,
-                                        "too large",
-                                    ))
-                                    .await;
-                            }
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    context
-                        .respond(HttpResponse::bytes(StatusCode::OK, "unexpected"))
-                        .await
+        let server = HyperServer::new(handler_fn(
+            |mut context: HttpRequestContext<()>| async move {
+                while let Some(chunk) = context.request_mut().next_body_chunk().await {
+                    let _ = chunk?;
                 }
-            }
-        }))
+                context
+                    .respond(HttpResponse::bytes(StatusCode::OK, "unexpected"))
+                    .await
+            },
+        ))
         .with_runtime_state(runtime_state.clone())
         .expect("runtime configuration");
         let server_task = tokio::spawn(async move { server.serve_listener(listener).await });
@@ -2528,7 +2698,6 @@ mod tests {
             .await
             .expect("response should read");
         assert!(response.starts_with(b"HTTP/1.1 413 Payload Too Large"));
-        assert!(saw_limit.load(Ordering::SeqCst));
         assert_eq!(runtime_state.active_requests(), 0);
         assert_eq!(runtime_state.active_streaming_tasks(), 0);
         server_task.abort();
@@ -3128,7 +3297,7 @@ mod tests {
         request: &[u8],
     ) -> (String, Vec<nacelle_core::NacelleTelemetryEvent>)
     where
-        H: HttpHandler<()>,
+        H: HttpService<()>,
     {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

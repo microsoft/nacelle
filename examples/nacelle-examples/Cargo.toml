@@ -40,9 +40,19 @@ name = "critical_paths"
 harness = false
 required-features = ["bench", "tcp"]
 
+[[bench]]
+name = "admission"
+harness = false
+required-features = ["bench", "tcp", "http"]
+
 [[bin]]
 name = "echo"
 path = "src/bin/echo.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "tcp_admission"
+path = "src/bin/tcp_admission.rs"
 required-features = ["tcp"]
 
 [[bin]]
@@ -78,6 +88,11 @@ required-features = ["tcp"]
 [[bin]]
 name = "http_echo"
 path = "src/bin/http_echo.rs"
+required-features = ["http"]
+
+[[bin]]
+name = "http_admission"
+path = "src/bin/http_admission.rs"
 required-features = ["http"]
 
 [[bin]]

@@ -2,14 +2,14 @@ use bytes::BytesMut;
 use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::config::{NacelleTcpConfig, TcpRequestBodyMode};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{
-    DecodedRequest, LocalSerialTcpHandler, LocalTcpHandler, Protocol, SerialTcpHandler,
-    SharedProtocol, TcpHandler, TcpHandlerCompletion, TcpRequest, TcpResponder,
+    DecodedRequest, Protocol, SharedProtocol, TcpHandlerCompletion, TcpRequest, TcpResponder,
 };
 use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::limits::NacelleRuntimeState;
@@ -49,6 +49,16 @@ pub(super) trait RequestDispatch<P>: ConnectionAccess<P>
 where
     P: Protocol,
 {
+    type Permit;
+
+    fn admission_state(&self) -> Option<&nacelle_core::admission::AdmissionState>;
+
+    fn admit<'a>(
+        &'a self,
+        head: &'a mut P::Request,
+        connection: &'a mut Self::Connection,
+    ) -> impl Future<Output = Result<Self::Permit, nacelle_core::AdmissionRejection>> + 'a;
+
     fn call<'connection>(
         &'connection self,
         connection: &'connection mut Self::Connection,
@@ -62,10 +72,31 @@ pub(super) struct LocalRequestDispatch<H>(pub(super) Rc<H>);
 pub(super) struct SerialRequestDispatch<H>(pub(super) Arc<H>);
 pub(super) struct LocalSerialRequestDispatch<H>(pub(super) Rc<H>);
 
+macro_rules! dispatch_admission {
+    ($service:ident) => {
+        type Permit = <H as crate::admission::$service<P>>::Permit;
+
+        fn admission_state(&self) -> Option<&nacelle_core::admission::AdmissionState> {
+            crate::admission::$service::admission_state(self.0.as_ref())
+        }
+
+        fn admit<'a>(
+            &'a self,
+            head: &'a mut P::Request,
+            connection: &'a mut Self::Connection,
+        ) -> impl Future<Output = Result<Self::Permit, nacelle_core::AdmissionRejection>> + 'a {
+            crate::admission::$service::admit(
+                self.0.as_ref(),
+                nacelle_core::AdmissionContext::new(head, connection, &()),
+            )
+        }
+    };
+}
+
 impl<P, H> ConnectionAccess<P> for SharedRequestDispatch<H>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
 {
     type Connection = ConnectionContext<Arc<P::ConnectionState>>;
 
@@ -91,7 +122,7 @@ where
 impl<P, H> ConnectionAccess<P> for LocalRequestDispatch<H>
 where
     P: Protocol,
-    H: LocalTcpHandler<P>,
+    H: crate::admission::LocalTcpService<P>,
 {
     type Connection = ConnectionContext<Arc<P::ConnectionState>>;
 
@@ -118,7 +149,7 @@ impl<P, H> ConnectionAccess<P> for SerialRequestDispatch<H>
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
 {
     type Connection = ConnectionContext<P::ConnectionState>;
 
@@ -144,7 +175,7 @@ where
 impl<P, H> ConnectionAccess<P> for LocalSerialRequestDispatch<H>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P>,
+    H: crate::admission::LocalSerialTcpService<P>,
 {
     type Connection = ConnectionContext<P::ConnectionState>;
 
@@ -170,8 +201,10 @@ where
 impl<P, H> RequestDispatch<P> for SharedRequestDispatch<H>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
 {
+    dispatch_admission!(TcpService);
+
     fn call<'connection>(
         &'connection self,
         connection: &'connection mut Self::Connection,
@@ -179,7 +212,7 @@ where
         responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         let context = RequestContext::without_app_state(request, responder, connection.clone());
-        nacelle_core::pipeline::Handler::call(self.0.as_ref(), context)
+        crate::admission::TcpService::call(self.0.as_ref(), context)
     }
 }
 
@@ -187,15 +220,17 @@ impl<P, H> RequestDispatch<P> for SerialRequestDispatch<H>
 where
     P: Protocol,
     P::ConnectionState: Send,
-    H: SerialTcpHandler<P>,
+    H: crate::admission::SerialTcpService<P>,
 {
+    dispatch_admission!(SerialTcpService);
+
     fn call<'connection>(
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
         responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
-        SerialTcpHandler::call(
+        crate::admission::SerialTcpService::call(
             self.0.as_ref(),
             RequestContext::without_app_state(request, responder, connection),
         )
@@ -206,8 +241,10 @@ where
 impl<P, H> RequestDispatch<P> for LocalRequestDispatch<H>
 where
     P: Protocol,
-    H: LocalTcpHandler<P>,
+    H: crate::admission::LocalTcpService<P>,
 {
+    dispatch_admission!(LocalTcpService);
+
     fn call<'connection>(
         &'connection self,
         connection: &'connection mut Self::Connection,
@@ -215,7 +252,7 @@ where
         responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
         let context = RequestContext::without_app_state(request, responder, connection.clone());
-        nacelle_core::pipeline::LocalHandler::call(self.0.as_ref(), context)
+        crate::admission::LocalTcpService::call(self.0.as_ref(), context)
     }
 }
 
@@ -223,15 +260,17 @@ where
 impl<P, H> RequestDispatch<P> for LocalSerialRequestDispatch<H>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P>,
+    H: crate::admission::LocalSerialTcpService<P>,
 {
+    dispatch_admission!(LocalSerialTcpService);
+
     fn call<'connection>(
         &'connection self,
         connection: &'connection mut Self::Connection,
         request: TcpRequest<P::Request>,
         responder: OptionalResponder<TcpResponder<P::Response, P::ResponseContext>>,
     ) -> impl Future<Output = Result<TcpHandlerCompletion<P>, NacelleError>> + 'connection {
-        LocalSerialTcpHandler::call(
+        crate::admission::LocalSerialTcpService::call(
             self.0.as_ref(),
             RequestContext::without_app_state(request, responder, connection),
         )
@@ -268,7 +307,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let request = decoded.request;
+    let mut request = decoded.request;
     let detailed_request_metrics = telemetry_plan.request_metrics;
     let core_request_events = telemetry_plan.request_events;
     let request_started = telemetry_plan
@@ -285,6 +324,8 @@ where
     let mut request_metrics =
         TcpRequestMetricsGuard::new(telemetry, metrics_context, request_bytes, request_started);
     let mut _request_permit = None;
+    let mut application_permit = None;
+    let mut prior_delivery_failed = false;
     let outcome = async {
         if decoded.body_len > max_request_body_bytes {
             let error = NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes);
@@ -298,6 +339,54 @@ where
                 return Err(error);
             }
         });
+        if let Some(admission) = handler.admission_state() {
+            let _waiter = admission.acquire().inspect_err(|error| {
+                record_tcp_error(telemetry, metrics_context, "admission", error);
+                telemetry.request_rejected(
+                    connection.transport,
+                    NacelleResourceLimitReason::AdmissionWaiters.as_str(),
+                );
+            })?;
+            let future = handler.admit(&mut request, connection_context);
+            tokio::pin!(future);
+            let first = std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx))).await;
+            let result = match first {
+                Poll::Ready(result) => result.map_err(NacelleError::AdmissionRejected),
+                Poll::Pending => {
+                    let mut flushed = false;
+                    let wait = async {
+                        delivery.flush(
+                            writer, tcp_limits, telemetry, metrics_context,
+                            telemetry_plan.phase_duration,
+                        ).await.map_err(|error| error.error)?;
+                        flushed = true;
+                        future.await.map_err(NacelleError::AdmissionRejected)
+                    };
+                    let result = match tokio::time::timeout(admission.config().timeout(), wait).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            let error = NacelleError::Timeout(NacelleTimeoutReason::Admission);
+                            if !flushed {
+                                record_tcp_error(telemetry, metrics_context, "socket_write", &error);
+                            }
+                            Err(error)
+                        }
+                    };
+                    prior_delivery_failed = !flushed && result.is_err();
+                    result
+                }
+            };
+            application_permit = Some(result.inspect_err(|error| {
+                if !prior_delivery_failed {
+                    record_tcp_error(telemetry, metrics_context, "admission", error);
+                    let reason = match error {
+                        NacelleError::AdmissionRejected(reason) => reason.as_str(),
+                        _ => NacelleTimeoutReason::Admission.as_str(),
+                    };
+                    telemetry.request_rejected(connection.transport, reason);
+                }
+            })?);
+        }
         let use_buffered_body = use_buffered_body(decoded.body_len, read_buf.len());
         if use_buffered_body {
             let body_started = start_tcp_phase(telemetry_plan.phase_duration);
@@ -432,7 +521,7 @@ where
     match outcome {
         Ok(completion) => {
             let response_bytes = if let Some(completion) = completion {
-                match deliver_response::<P, W, Observer>(
+                match deliver_response::<P, W, Observer, D::Permit>(
                     protocol,
                     completion,
                     writer,
@@ -442,6 +531,7 @@ where
                     telemetry,
                     metrics_context,
                     telemetry_plan.phase_duration,
+                    application_permit.take(),
                 )
                 .await
                 {
@@ -452,6 +542,7 @@ where
                     }
                 }
             } else {
+                drop(application_permit.take());
                 0
             };
             record_core_request_completed(
@@ -466,6 +557,13 @@ where
             request_metrics.complete("ok", response_bytes);
         }
         Err(error) => {
+            drop(application_permit);
+            if prior_delivery_failed {
+                // A cancelled partial write cannot be retried as an error reply.
+                // Its bytes and failure belong to prior response delivery.
+                delivery.abandon();
+                return Err(error);
+            }
             record_core_request_failed(
                 telemetry,
                 core_request_events,
@@ -474,12 +572,18 @@ where
                 request_started,
                 &error,
             );
+            let mut error_limits = *tcp_limits;
+            if let Some(admission) = handler.admission_state() {
+                error_limits
+                    .write_timeout
+                    .get_or_insert(admission.config().timeout());
+            }
             let response_bytes = match write_error::<P, W, Observer>(
                 writer,
                 protocol,
                 Some(error_context),
                 &error,
-                tcp_limits,
+                &error_limits,
                 delivery,
                 runtime_state,
                 telemetry,

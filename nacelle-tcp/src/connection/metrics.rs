@@ -129,7 +129,11 @@ pub(super) fn record_core_request_failed<Observer>(
         if emit_metrics {
             telemetry.request_failed(transport, elapsed_since(started), error);
         } else {
-            telemetry.request_failed_without_metrics(transport, elapsed_since(started), error);
+            telemetry.request_failed_without_request_metrics(
+                transport,
+                elapsed_since(started),
+                error,
+            );
         }
     }
 }
@@ -150,6 +154,7 @@ pub(super) fn tcp_close_reason(result: &Result<(), NacelleError>) -> &'static st
         }
         Err(NacelleError::MissingProtocol) => "missing_protocol",
         Err(NacelleError::Configuration(_)) => "configuration",
+        Err(NacelleError::AdmissionRejected(_)) => "admission",
     }
 }
 

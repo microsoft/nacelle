@@ -2,6 +2,8 @@ use super::*;
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::TcpHandlerCompletion;
 
+mod admission;
+
 #[derive(Clone, Default)]
 struct CustomProtocol {
     errors: Arc<std::sync::Mutex<Vec<Option<u8>>>>,
@@ -124,6 +126,7 @@ impl Protocol for CustomProtocol {
             NacelleError::Handler(_) => "handler",
             NacelleError::Timeout(reason) => reason.as_str(),
             NacelleError::ResourceLimit(reason) => reason.as_str(),
+            NacelleError::AdmissionRejected(reason) => reason.as_str(),
             NacelleError::UnexpectedEof => "eof",
             error => panic!("unexpected error hook input: {error}"),
         };
@@ -165,7 +168,7 @@ async fn exchange<H>(
     runtime_state: NacelleRuntimeState,
 ) -> (Result<(), NacelleError>, Vec<u8>)
 where
-    H: crate::protocol::TcpHandler<CustomProtocol> + Send + Sync + 'static,
+    H: crate::admission::TcpService<CustomProtocol> + Send + Sync + 'static,
 {
     let (mut client, server_io) = tokio::io::duplex(256);
     let server = TcpServer::<CustomProtocol>::builder()

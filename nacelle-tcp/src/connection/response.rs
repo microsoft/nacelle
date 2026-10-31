@@ -107,6 +107,7 @@ pub(super) struct ResponseDelivery {
     pending: BytesMut,
     base_capacity: usize,
     policy: ResponseWritePolicy,
+    abandoned: bool,
 }
 
 impl ResponseDelivery {
@@ -115,6 +116,7 @@ impl ResponseDelivery {
             pending: BytesMut::with_capacity(config.response_buffer_capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
+            abandoned: false,
         }
     }
 
@@ -134,6 +136,11 @@ impl ResponseDelivery {
     /// Whether bytes from prior responses remain buffered (coalesced).
     pub(super) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    pub(super) fn abandon(&mut self) {
+        self.pending.clear();
+        self.abandoned = true;
     }
 
     fn reset(&mut self) {
@@ -261,6 +268,9 @@ impl ResponseDelivery {
         W: AsyncWrite + Unpin,
         Observer: NacelleTelemetryObserver,
     {
+        if self.abandoned {
+            return Ok(0);
+        }
         let pending_bytes = self.pending.len();
         let delivered_bytes = if self.pending.is_empty() {
             self.reset();
@@ -352,7 +362,7 @@ impl ResponseDelivery {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn deliver_response<P, W, Observer>(
+pub(super) async fn deliver_response<P, W, Observer, Permit>(
     protocol: &P,
     completion: GuardedResponseCompletion<P::Response, P::ResponseContext>,
     writer: &mut W,
@@ -362,6 +372,7 @@ pub(super) async fn deliver_response<P, W, Observer>(
     telemetry: &NacelleTelemetry<Observer>,
     metrics_context: Option<&NacelleMetricsContext>,
     phase_duration_metrics: bool,
+    application_permit: Option<Permit>,
 ) -> Result<usize, ResponseDeliveryError>
 where
     P: Protocol,
@@ -385,7 +396,7 @@ where
         if let Some(guard) = guard {
             guard.fail(error.phase_enum(), 0, 0, &error.error);
         }
-        return Err(error);
+        return Err(error.without_current_response_bytes());
     }
     let response_bytes = match encode_response_body(
         protocol,
@@ -416,6 +427,7 @@ where
             return Err(error);
         }
     };
+    drop(application_permit);
     // Delivery callbacks require a write-and-flush boundary under every policy.
     if let Some(guard) = guard {
         match delivery
@@ -528,7 +540,8 @@ where
             metrics_context,
             phase_duration_metrics,
         )
-        .await?;
+        .await
+        .map_err(ResponseDeliveryError::without_current_response_bytes)?;
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
@@ -639,6 +652,7 @@ where
                 telemetry,
                 metrics_context,
                 phase_duration_metrics,
+                None::<()>,
             )
             .await
         }
@@ -674,6 +688,12 @@ impl ResponseDeliveryError {
             delivered_bytes: delivered_previous.saturating_add(self.delivered_bytes),
             kind: self.kind,
         }
+    }
+
+    fn without_current_response_bytes(mut self) -> Self {
+        self.encoded_bytes = 0;
+        self.delivered_bytes = 0;
+        self
     }
 
     fn with_cumulative_final_flush(mut self, response_bytes: usize) -> Self {
@@ -1028,6 +1048,21 @@ mod tests {
 
         assert_eq!(error.encoded_bytes, 10);
         assert_eq!(error.delivered_bytes, 10);
+    }
+
+    #[test]
+    fn prior_output_failure_has_no_current_response_bytes() {
+        let error = ResponseDeliveryError {
+            error: NacelleError::InvalidFrame("test prior write failure"),
+            encoded_bytes: 4,
+            delivered_bytes: 2,
+            kind: ResponseDeliveryErrorKind::SocketWrite,
+        }
+        .without_current_response_bytes();
+
+        assert_eq!(error.encoded_bytes, 0);
+        assert_eq!(error.delivered_bytes, 0);
+        assert_eq!(error.phase(), "socket_write");
     }
 
     #[tokio::test]

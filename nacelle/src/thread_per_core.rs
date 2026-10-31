@@ -17,19 +17,17 @@ use nacelle_openssl::NacelleOpenSslConfig;
 use nacelle_rustls::NacelleTlsConfig;
 
 #[cfg(feature = "http")]
-use nacelle_http::{
-    LocalHttpConnectionStateFactory, LocalHttpHandler, LocalHttpSharedState, LocalHyperServer,
-};
+use nacelle_http::{LocalHttpConnectionStateFactory, LocalHttpSharedState, LocalHyperServer};
+#[cfg(feature = "tcp")]
+use nacelle_tcp::LocalSerialTcpServer;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::options::NacelleTcpOptions;
 #[cfg(feature = "experimental-openssl-detection")]
 use nacelle_tcp::options::NacelleTlsDetectionOptions;
 #[cfg(feature = "tcp")]
-use nacelle_tcp::protocol::{LocalTcpHandler, Protocol};
+use nacelle_tcp::protocol::Protocol;
 #[cfg(feature = "tcp")]
 use nacelle_tcp::server::LocalTcpServer;
-#[cfg(feature = "tcp")]
-use nacelle_tcp::{LocalSerialTcpHandler, LocalSerialTcpServer};
 
 /// Application runtime topology.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -741,7 +739,7 @@ pub fn run_local_tcp_thread_per_core<P, H, Observer, ServerObserver, Factory, Ap
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -792,7 +790,7 @@ pub fn run_local_serial_tcp_thread_per_core<P, H, Observer, ServerObserver, Fact
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalSerialTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -844,7 +842,7 @@ pub fn run_local_tcp_tls_thread_per_core<P, H, Observer, ServerObserver, Factory
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -898,7 +896,7 @@ pub fn run_local_tcp_openssl_thread_per_core<P, H, Observer, ServerObserver, Fac
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -959,7 +957,7 @@ pub fn run_local_serial_tcp_openssl_thread_per_core<
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalSerialTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -1021,7 +1019,7 @@ pub fn run_local_serial_tcp_optional_openssl_thread_per_core<
 ) -> Result<(), NacelleError>
 where
     P: Protocol,
-    H: LocalSerialTcpHandler<P, AppState> + 'static,
+    H: nacelle_tcp::LocalSerialTcpService<P, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -1076,7 +1074,7 @@ pub fn run_local_http_thread_per_core<H, F, Observer, ServerObserver, Factory, A
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State, AppState> + 'static,
+    H: nacelle_http::LocalHttpService<F::State, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,
@@ -1128,7 +1126,7 @@ pub fn run_local_http_tls_thread_per_core<H, F, Observer, ServerObserver, Factor
 ) -> Result<(), NacelleError>
 where
     F: LocalHttpConnectionStateFactory,
-    H: LocalHttpHandler<F::State, AppState> + 'static,
+    H: nacelle_http::LocalHttpService<F::State, AppState> + 'static,
     AppState: Send + Sync + 'static,
     Observer: NacelleTelemetryObserver,
     ServerObserver: NacelleTelemetryObserver,

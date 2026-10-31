@@ -420,7 +420,13 @@ impl SerialTcpHandler<LengthDelimitedProtocol> for SerialEchoHandler {
 
 pub enum StressServer<H, Observer = NoopObserver> {
     Shared(TcpServer<LengthDelimitedProtocol, H, Observer>),
-    Serial(SerialTcpServer<LengthDelimitedProtocol, SerialEchoHandler, Observer>),
+    Serial(
+        SerialTcpServer<
+            LengthDelimitedProtocol,
+            nacelle::tcp::admission::SerialHandlerAdapter<SerialEchoHandler>,
+            Observer,
+        >,
+    ),
 }
 
 impl<H, Observer> Clone for StressServer<H, Observer>

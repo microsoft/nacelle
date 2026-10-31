@@ -171,8 +171,8 @@ where
 /// Shared-runtime adapter that installs application state before user dispatch.
 #[doc(hidden)]
 pub struct SharedHttpAppStateHandler<H, AppState> {
-    handler: Arc<H>,
-    app_state: Arc<AppState>,
+    pub(crate) handler: Arc<H>,
+    pub(crate) app_state: Arc<AppState>,
 }
 
 impl<H, AppState> SharedHttpAppStateHandler<H, AppState> {
@@ -182,60 +182,17 @@ impl<H, AppState> SharedHttpAppStateHandler<H, AppState> {
     }
 }
 
-impl<State, H, AppState> Handler<HttpRequestContext<State>>
-    for SharedHttpAppStateHandler<H, AppState>
-where
-    State: Send + Sync + 'static,
-    H: HttpHandler<State, AppState>,
-    AppState: Send + Sync + 'static,
-{
-    type Completion = HttpHandlerCompletion;
-    type Error = NacelleError;
-
-    fn call(
-        &self,
-        context: HttpRequestContext<State>,
-    ) -> impl std::future::Future<Output = Result<Self::Completion, Self::Error>> + Send {
-        Handler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
-    }
-}
-
 /// Worker-local adapter that installs application state before user dispatch.
 #[doc(hidden)]
 pub struct LocalHttpAppStateHandler<H, AppState> {
-    handler: Rc<H>,
-    app_state: Arc<AppState>,
+    pub(crate) handler: Rc<H>,
+    pub(crate) app_state: Arc<AppState>,
 }
 
 impl<H, AppState> LocalHttpAppStateHandler<H, AppState> {
     #[doc(hidden)]
     pub const fn new(handler: Rc<H>, app_state: Arc<AppState>) -> Self {
         Self { handler, app_state }
-    }
-}
-
-#[allow(clippy::future_not_send)]
-impl<State, H, AppState> LocalHandler<LocalHttpRequestContext<State>>
-    for LocalHttpAppStateHandler<H, AppState>
-where
-    State: 'static,
-    H: LocalHttpHandler<State, AppState>,
-    AppState: 'static,
-{
-    type Completion = HttpHandlerCompletion;
-    type Error = NacelleError;
-
-    fn call(
-        &self,
-        context: LocalHttpRequestContext<State>,
-    ) -> impl std::future::Future<Output = Result<Self::Completion, Self::Error>> {
-        LocalHandler::call(
-            self.handler.as_ref(),
-            context.map_app_state(self.app_state.clone()),
-        )
     }
 }
 
@@ -313,7 +270,7 @@ mod tests {
             connection,
         );
 
-        let _completion = Handler::call(&adapter, context)
+        let _completion = crate::admission::HttpService::call(&adapter, context)
             .await
             .expect("handler should complete");
 

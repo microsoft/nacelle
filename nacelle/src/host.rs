@@ -216,7 +216,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -260,7 +260,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_with_bind_options(
@@ -283,7 +283,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -329,7 +329,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -374,7 +374,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -418,7 +418,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -464,7 +464,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -511,7 +511,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_unix_socket_with_options(
@@ -534,7 +534,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -582,7 +582,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -627,7 +627,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_openssl_with_options(
@@ -651,7 +651,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_openssl_with_bind_options(
@@ -675,7 +675,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -723,7 +723,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_openssl_with_bind_options(
@@ -748,7 +748,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -794,7 +794,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_optional_openssl_with_options(
@@ -820,7 +820,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_tcp_optional_openssl_with_bind_options(
@@ -846,7 +846,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         P: nacelle_tcp::SharedProtocol,
-        H: nacelle_tcp::TcpHandler<P, AppState>,
+        H: nacelle_tcp::TcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -890,7 +890,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         self.enable_serial_tcp_optional_openssl_with_bind_options(
@@ -918,7 +918,7 @@ where
     where
         P: nacelle_tcp::Protocol,
         P::ConnectionState: Send,
-        H: nacelle_tcp::SerialTcpHandler<P, AppState>,
+        H: nacelle_tcp::SerialTcpService<P, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -964,7 +964,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State, AppState>,
+        H: nacelle_http::HttpService<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();
@@ -1004,7 +1004,7 @@ where
     ) -> Result<&mut Self, NacelleError>
     where
         F: nacelle_http::HttpConnectionStateFactory,
-        H: nacelle_http::HttpHandler<F::State, AppState>,
+        H: nacelle_http::HttpService<F::State, AppState>,
         ServerObserver: NacelleTelemetryObserver,
     {
         let name = name.into();

@@ -10,10 +10,13 @@ use tokio::io::ReadBuf;
 
 use super::*;
 
+mod admission;
+
 #[derive(Default)]
 struct Observations {
     read_bytes: AtomicUsize,
     output: Mutex<Vec<u8>>,
+    block_write: AtomicBool,
     block_flush: AtomicBool,
 }
 
@@ -60,6 +63,9 @@ impl AsyncWrite for ObservedIo {
         _cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if self.observations.block_write.load(Ordering::Relaxed) {
+            return Poll::Pending;
+        }
         self.observations
             .output
             .lock()
@@ -225,7 +231,7 @@ async fn expect_continue_is_deferred_until_nacelle_polls_the_body() {
 }
 
 #[tokio::test]
-async fn rejected_expect_request_preserves_buffered_next_request_boundary() {
+async fn rejected_expect_request_closes_even_with_a_buffered_next_request() {
     for buffered_body in [false, true] {
         let head =
             "POST / HTTP/1.1\r\nHost: denied\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n";
@@ -259,13 +265,13 @@ async fn rejected_expect_request_preserves_buffered_next_request_boundary() {
         let output = observed.output.lock().expect("output lock");
         assert!(output.starts_with(b"HTTP/1.1 421 "));
         assert!(!output.windows(12).any(|part| part == b"100 Continue"));
-        assert_eq!(calls.load(Ordering::Relaxed), usize::from(buffered_body));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert_eq!(
             output
                 .windows(9)
                 .filter(|part| *part == b"HTTP/1.1 ")
                 .count(),
-            1 + usize::from(buffered_body)
+            1
         );
         assert_eq!(state.active_connections(), 0);
         assert_eq!(state.active_requests(), 0);

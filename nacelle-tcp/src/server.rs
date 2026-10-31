@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::admission::{LocalTcpAdmitted, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
 use crate::connection::{
     serve_connection_with_connection_meta_and_tcp_state,
@@ -9,8 +10,9 @@ use crate::connection::{
     serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
-use crate::protocol::{LocalAppStateHandler, LocalTcpHandler};
-use crate::protocol::{Protocol, SharedAppStateHandler, SharedProtocol, TcpHandler};
+use crate::protocol::LocalAppStateHandler;
+use crate::protocol::{Protocol, SharedAppStateHandler, SharedProtocol};
+use nacelle_core::AdmissionConfig;
 use nacelle_core::error::NacelleError;
 use nacelle_core::limits::NacelleRuntimeState;
 use nacelle_core::request::NacelleConnectionMeta;
@@ -79,7 +81,35 @@ pub struct LocalTcpServer<P, H, Observer = NoopObserver> {
 pub type LocalAppStateTcpServer<P, H, Observer, AppState> =
     LocalTcpServer<P, LocalAppStateHandler<P, H, AppState>, Observer>;
 
+#[doc(hidden)]
+pub type AdmittedTcpServerBuilder<ProtocolState, P, H, A, Observer> =
+    TcpServerBuilder<ProtocolState, Present, P, SharedTcpAdmitted<H, A>, Observer>;
+
 impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
+    /// Install one worker-local admission policy before body dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Configure [`NacelleTcpConfig::head_read_limits`] before enabling admission.
+    pub fn with_admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> Result<LocalTcpServer<P, LocalTcpAdmitted<H, A>, Observer>, NacelleError> {
+        if self.config.head_read_limits.is_none() {
+            return Err(nacelle_core::NacelleConfigurationError::AdmissionReadBounds.into());
+        }
+        Ok(LocalTcpServer {
+            protocol: self.protocol,
+            handler: Rc::new(TcpAdmitted::new(self.handler, policy, config)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+        })
+    }
+
     /// Bind application state before worker-local request dispatch.
     #[doc(hidden)]
     pub fn with_app_state<AppState>(
@@ -88,7 +118,7 @@ impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
     ) -> LocalAppStateTcpServer<P, H, Observer, AppState>
     where
         P: Protocol,
-        H: LocalTcpHandler<P, AppState>,
+        H: crate::admission::LocalTcpService<P, AppState>,
         AppState: 'static,
     {
         LocalTcpServer {
@@ -103,11 +133,7 @@ impl<P, H, Observer> LocalTcpServer<P, H, Observer> {
     }
 }
 
-impl<P, H> LocalTcpServer<P, H, NoopObserver>
-where
-    P: Protocol,
-    H: LocalTcpHandler<P>,
-{
+impl<P, H> LocalTcpServer<P, H, NoopObserver> {
     /// Construct a worker-local server with one handler for all requests.
     pub fn new(protocol: P, handler: H) -> Self {
         Self {
@@ -124,8 +150,6 @@ where
 
 impl<P, H, Observer> LocalTcpServer<P, H, Observer>
 where
-    P: Protocol,
-    H: LocalTcpHandler<P>,
     Observer: NacelleTelemetryObserver,
 {
     /// Set worker-local TCP framing and buffering configuration.
@@ -287,7 +311,7 @@ impl<P, H, Observer> TcpServer<P, H, Observer> {
     ) -> AppStateTcpServer<P, H, Observer, AppState>
     where
         P: SharedProtocol,
-        H: TcpHandler<P, AppState>,
+        H: crate::admission::TcpService<P, AppState>,
         AppState: Send + Sync + 'static,
     {
         TcpServer {
@@ -321,7 +345,7 @@ impl<P> TcpServer<P, (), NoopObserver> {
 impl<P, H, Observer> TcpServer<P, H, Observer>
 where
     P: SharedProtocol,
-    H: TcpHandler<P>,
+    H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
 {
     pub fn tcp_config(&self) -> &NacelleTcpConfig {
@@ -620,6 +644,40 @@ where
             runtime_state: self.runtime_state,
             tcp_limits: self.tcp_limits,
             listener: self.listener,
+        })
+    }
+}
+
+impl<ProtocolState, P, H, Observer> TcpServerBuilder<ProtocolState, Present, P, H, Observer> {
+    /// Install one concrete admission policy and its finite waiting limits.
+    ///
+    /// The policy sees the typed head and state before body work. Ready policies
+    /// do not start a timer or force a flush; pending policies retain their
+    /// original future while prior output is flushed under the admission deadline.
+    ///
+    /// # Errors
+    ///
+    /// Configure [`NacelleTcpConfig::head_read_limits`] before this call.
+    pub fn admission<A>(
+        self,
+        policy: A,
+        config: AdmissionConfig,
+    ) -> Result<AdmittedTcpServerBuilder<ProtocolState, P, H, A, Observer>, NacelleError> {
+        if self.config.head_read_limits.is_none() {
+            return Err(nacelle_core::NacelleConfigurationError::AdmissionReadBounds.into());
+        }
+        Ok(TcpServerBuilder {
+            protocol: self.protocol,
+            handler: self
+                .handler
+                .map(|handler| TcpAdmitted::new(Arc::new(handler), policy, config)),
+            config: self.config,
+            telemetry: self.telemetry,
+            runtime_state: self.runtime_state,
+            tcp_limits: self.tcp_limits,
+            listener: self.listener,
+            _protocol: PhantomData,
+            _handler: PhantomData,
         })
     }
 }
