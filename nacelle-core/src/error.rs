@@ -22,6 +22,10 @@ pub enum NacelleConfigurationError {
     AdmissionLimits,
     /// Admission requires configured transport head-read bounds.
     AdmissionReadBounds,
+    /// Tracking needs a positive, representable bounded capacity.
+    ConnectionTrackingCapacity,
+    /// A worker group must select tracking consistently at startup.
+    MixedConnectionTracking,
 }
 
 impl Display for NacelleConfigurationError {
@@ -34,6 +38,8 @@ impl Display for NacelleConfigurationError {
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
             Self::AdmissionLimits => "admission requires a positive finite timeout and waiter capacity",
             Self::AdmissionReadBounds => "request admission requires bounded head reads",
+            Self::ConnectionTrackingCapacity => "connection tracking requires a positive finite capacity",
+            Self::MixedConnectionTracking => "all runtime partitions must select the same tracking mode",
         })
     }
 }
@@ -52,6 +58,10 @@ impl From<NacelleConfigurationError> for NacelleError {
 pub enum NacelleResourceLimitReason {
     /// Process-wide concurrent connection capacity.
     Connections,
+    /// Bounded connection registry capacity, including setup and closing.
+    ConnectionRegistry,
+    /// A caller supplied an ID already registered in this control scope.
+    DuplicateConnectionId,
     /// Peer-rate table capacity is too small for worker partitioning.
     /// Concurrent in-flight request capacity.
     InFlightRequests,
@@ -100,6 +110,8 @@ impl NacelleResourceLimitReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Connections => "connections",
+            Self::ConnectionRegistry => "connection_registry",
+            Self::DuplicateConnectionId => "duplicate_connection_id",
             Self::InFlightRequests => "in_flight_requests",
             Self::AdmissionWaiters => "admission_waiters",
             Self::PeerConnectionRate => "peer_connection_rate",
@@ -216,6 +228,7 @@ pub enum NacelleError {
     Protocol(BoxError),
     Handler(BoxError),
     Join(crate::runtime::JoinError),
+    ConnectionTerminated(crate::tracking::NacelleConnectionCloseReason),
 }
 
 impl NacelleError {
@@ -235,6 +248,9 @@ impl NacelleError {
                 "configure startup state before sharing it; use its control handle for live thresholds",
             ),
             Self::AdmissionRejected(_) => Some("check the application's request admission policy"),
+            Self::ConnectionTerminated(_) => {
+                Some("administrative selection cancels work; it does not confirm response delivery")
+            }
             Self::MissingProtocol => {
                 Some("call TcpServer::<YourProtocol>::builder().protocol(...) before build")
             }
@@ -326,6 +342,9 @@ impl Display for NacelleError {
             Self::Protocol(error) => write!(f, "protocol error: {error}"),
             Self::Handler(error) => write!(f, "handler error: {error}"),
             Self::Join(error) => write!(f, "task join error: {error}"),
+            Self::ConnectionTerminated(reason) => {
+                write!(f, "connection cancelled: {}", reason.as_str())
+            }
         }
     }
 }

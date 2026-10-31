@@ -155,6 +155,7 @@ pub(super) fn tcp_close_reason(result: &Result<(), NacelleError>) -> &'static st
         Err(NacelleError::MissingProtocol) => "missing_protocol",
         Err(NacelleError::Configuration(_)) => "configuration",
         Err(NacelleError::AdmissionRejected(_)) => "admission",
+        Err(NacelleError::ConnectionTerminated(reason)) => reason.as_str(),
     }
 }
 

@@ -113,10 +113,9 @@ where
             let _ = stream.set_nodelay(true);
             Ok(())
         },
-        move |server, stream, connection, connection_permit| {
+        move |server, stream, connection, activity| {
             let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
             async move {
-                let _connection_permit = connection_permit;
                 let stream =
                     match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
                         Ok(Ok(stream)) => stream,
@@ -130,9 +129,7 @@ where
                     };
                 let connection =
                     connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
-                server
-                    .serve_io_without_connection_limit(stream, connection)
-                    .await
+                server.serve_io_admitted(stream, connection, activity).await
             }
         },
     )

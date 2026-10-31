@@ -19,6 +19,13 @@ Defaults remain 16,384 connections and rate limiting disabled. Startup-only
 limits stay in `NacelleLimits`. See [runtime control](../topics/runtime-limits.md#live-connection-control)
 for installed handles, retained rate history, update errors, and worker scope.
 
+`NacelleLimits::with_connection_tracking(NacelleConnectionTracking::new(n)?)`
+enables fixed-capacity TCP/Unix management. It is off by default, independent of
+the live connection ceiling, and does not enable HTTP management. Budget for
+registry metadata and high-water storage in addition to socket/body buffers.
+See [tracked connections](../topics/runtime-limits.md#tracked-tcpunix-connections)
+for rejection, selection, cancellation, and worker-capacity semantics.
+
 Recommended presets:
 
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
@@ -100,7 +107,8 @@ threshold is reached or crossed. Read-boundary flushes include the underlying
 `AsyncWrite`, and clean connection teardown performs a writer shutdown bounded
 by `NacelleTcpLimits::shutdown_timeout`; terminal error paths make the same
 bounded attempt. This delivers buffered TLS records and permits a TLS
-`close_notify`.
+`close_notify`. Administrative cancellation instead drops owned work without
+restarting flush or shutdown; it provides no delivery or TLS-close guarantee.
 
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
 and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for

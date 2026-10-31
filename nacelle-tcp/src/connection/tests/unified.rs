@@ -3,6 +3,7 @@ use crate::limits::NacelleTcpLimits;
 use crate::protocol::TcpHandlerCompletion;
 
 mod admission;
+mod tracking;
 
 #[derive(Clone, Default)]
 struct CustomProtocol {
@@ -962,7 +963,7 @@ async fn local_handler_silent_completion_drains_body_without_encoding() {
         let runtime_state = NacelleRuntimeState::default();
         let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
         let calls = Rc::new(std::cell::Cell::new(0));
-        serve_local_stream_without_connection_limit(
+        serve_local_stream(
             RecordingIo {
                 input: b"S\x02hiS\0".to_vec(),
                 position: 0,

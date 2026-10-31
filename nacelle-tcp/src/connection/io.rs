@@ -17,6 +17,7 @@ pub(super) async fn read_message_with_timeout<R, D, const BOUNDED: bool>(
     reader: &mut MessageReader<R, D>,
     tcp_limits: &NacelleTcpLimits,
     max_undecided_bytes: usize,
+    activity: &impl super::lifecycle::Activity,
 ) -> Result<Option<D::Message>, MessageReadFailure>
 where
     R: AsyncRead + Unpin,
@@ -42,7 +43,10 @@ where
         } else {
             first_read.await
         };
-        result.map_err(MessageReadFailure::from_message_read)?;
+        let read = result.map_err(MessageReadFailure::from_message_read)?;
+        if read > 0 {
+            activity.activate().map_err(MessageReadFailure::transport)?;
+        }
     }
 
     let future = async {
@@ -170,6 +174,7 @@ mod tests {
 
     use tokio::io::AsyncWrite;
 
+    use super::super::lifecycle::Untracked;
     use super::*;
 
     async fn read_message_with_timeout<R, D>(
@@ -180,7 +185,7 @@ mod tests {
         R: AsyncRead + Unpin,
         D: MessageDecoder<Error = NacelleError>,
     {
-        super::read_message_with_timeout::<_, _, false>(reader, limits, 0).await
+        super::read_message_with_timeout::<_, _, false>(reader, limits, 0, &Untracked).await
     }
 
     struct FixedDecoder(usize);
@@ -221,7 +226,7 @@ mod tests {
                 }
             };
             let (result, ()) = tokio::join!(
-                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8),
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8, &Untracked),
                 send,
             );
             assert!(matches!(
@@ -243,7 +248,7 @@ mod tests {
         let limits = NacelleTcpLimits::default().without_read_timeout();
         let started = tokio::time::Instant::now();
         assert!(matches!(
-            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 2)
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 2, &Untracked)
                 .await
                 .expect_err("idle deadline")
                 .into_error(),
@@ -269,6 +274,7 @@ mod tests {
                 &mut reader,
                 &NacelleTcpLimits::default(),
                 4,
+                &Untracked,
             )
             .await;
             if head_len == 4 {
@@ -300,7 +306,7 @@ mod tests {
         let mut reader = MessageReader::with_capacity(stream, decoder, 64 * 1024);
         let limits = NacelleTcpLimits::default();
         assert_eq!(
-            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4)
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4, &Untracked)
                 .await
                 .ok()
                 .flatten()
@@ -314,7 +320,7 @@ mod tests {
         );
         assert_eq!(&reader.buffer()[..], b"c");
         assert_eq!(
-            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4)
+            super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 4, &Untracked)
                 .await
                 .ok()
                 .flatten()
@@ -345,7 +351,7 @@ mod tests {
             let mut reader = MessageReader::with_capacity(stream, decoder, 64 * 1024);
             let limits = NacelleTcpLimits::default();
             assert_eq!(
-                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8)
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8, &Untracked)
                     .await
                     .ok()
                     .flatten()
@@ -390,7 +396,7 @@ mod tests {
                 BODY_LEN + 2
             );
             assert_eq!(
-                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8)
+                super::read_message_with_timeout::<_, _, true>(&mut reader, &limits, 8, &Untracked)
                     .await
                     .ok()
                     .flatten()

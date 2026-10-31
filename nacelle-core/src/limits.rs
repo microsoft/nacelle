@@ -8,10 +8,17 @@ use crate::error::{NacelleConfigurationError, NacelleError, NacelleResourceLimit
 use crate::peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
+use crate::tracking::{
+    NacelleCloseOutcome, NacelleConnectionLookup, NacelleConnectionRegistration,
+    NacelleConnectionSnapshot, NacelleConnectionTracking, NacelleReclaimOutcome, Registry,
+    RegistryPartition,
+};
 
 /// Startup-only limits. Live connection thresholds belong to [`NacelleRuntimeControl`].
 #[derive(Debug, Clone)]
 pub struct NacelleLimits {
+    /// Optional bounded TCP/Unix registry, fixed before state installation.
+    pub connection_tracking: Option<NacelleConnectionTracking>,
     pub max_in_flight_requests: usize,
     pub max_streaming_tasks: usize,
     pub max_connections_per_peer: Option<usize>,
@@ -24,6 +31,7 @@ pub struct NacelleLimits {
 impl Default for NacelleLimits {
     fn default() -> Self {
         Self {
+            connection_tracking: None,
             max_in_flight_requests: 65_536,
             max_streaming_tasks: 8_192,
             max_connections_per_peer: None,
@@ -36,6 +44,12 @@ impl Default for NacelleLimits {
 }
 
 impl NacelleLimits {
+    /// Enable bounded connection management for transports implementing tracking.
+    pub fn with_connection_tracking(mut self, tracking: NacelleConnectionTracking) -> Self {
+        self.connection_tracking = Some(tracking);
+        self
+    }
+
     pub fn with_max_in_flight_requests(mut self, max: usize) -> Self {
         self.max_in_flight_requests = max.max(1);
         self
@@ -223,6 +237,7 @@ struct NacelleRuntimeStateInner {
     active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
     peer_connections: PeerConnectionMap,
     peer_connection_rates: OnceLock<NacellePeerRateLimiter>,
+    tracking: Option<RegistryPartition>,
 }
 
 /// Owned administrative observation of live connection thresholds.
@@ -294,6 +309,74 @@ struct PartitionedControl {
 }
 
 impl NacelleRuntimeControl {
+    /// Observe a registered ID, including controlled setup and closing.
+    ///
+    /// Finished IDs are unknown. Custom IDs must not be reused while callers
+    /// can still hold them; lookup does not create a generation-aware handle.
+    pub fn connection(&self, id: u64) -> NacelleConnectionLookup {
+        self.registry().map_or(
+            NacelleConnectionLookup::TrackingDisabled,
+            |(registry, partition)| registry.lookup(partition, id),
+        )
+    }
+
+    /// Return at most `limit` snapshots in unspecified order, or `None` if disabled.
+    ///
+    /// The scan is bounded by registry storage. Snapshots retain metadata only.
+    pub fn connections(&self, limit: usize) -> Option<Vec<NacelleConnectionSnapshot>> {
+        self.registry()
+            .map(|(registry, partition)| registry.snapshots(partition, limit))
+    }
+
+    /// Select forced cancellation, including active requests and pending setup.
+    ///
+    /// Selection does not acknowledge teardown, flush, or delivery. Capacity is
+    /// retained until owned work is dropped. Unresolved response callbacks
+    /// report cancellation; completed callbacks are not repeated.
+    /// Borrowed direct I/O remains the caller's responsibility after cancellation.
+    pub fn close_connection(&self, id: u64) -> NacelleCloseOutcome {
+        self.registry().map_or(
+            NacelleCloseOutcome::TrackingDisabled,
+            |(registry, partition)| registry.close(partition, id),
+        )
+    }
+
+    /// Select idle connections toward the current per-partition targets.
+    ///
+    /// At most `selection_budget` new closes are selected. Already-closing
+    /// entries reserve their slots; active work is never selected. The report
+    /// is a best-effort observation, not confirmation that targets were reached.
+    /// Lowering a target alone never invokes this scan.
+    ///
+    /// The selection budget does not limit entries visited. A scan may traverse
+    /// all allocated registry storage while registration/removal wait for its lock.
+    pub fn reclaim_idle(&self, selection_budget: usize) -> NacelleReclaimOutcome {
+        let Some((registry, _)) = self.registry() else {
+            return NacelleReclaimOutcome::TrackingDisabled;
+        };
+        match &self.target {
+            ControlTarget::Shared(state) => {
+                let _guard = state.inner.control_update.lock().expect("control lock");
+                registry.reclaim(std::slice::from_ref(state), selection_budget)
+            }
+            ControlTarget::Partitioned(control) => {
+                let _guard = control.update.lock().expect("control lock");
+                registry.reclaim(&control.states, selection_budget)
+            }
+        }
+    }
+
+    fn registry(&self) -> Option<(&Registry, Option<usize>)> {
+        match &self.target {
+            ControlTarget::Shared(state) => state
+                .tracking()
+                .map(|part| (part.registry.as_ref(), Some(part.partition))),
+            ControlTarget::Partitioned(control) => control.states[0]
+                .tracking()
+                .map(|part| (part.registry.as_ref(), None)),
+        }
+    }
+
     /// Identify whether values address one state or aggregate partition totals.
     pub fn scope(&self) -> NacelleControlScope {
         match &self.target {
@@ -410,6 +493,15 @@ impl NacelleRuntimeState {
     ///
     /// Configure live thresholds through [`Self::control`] before serving.
     pub fn new(limits: NacelleLimits) -> Self {
+        let tracking = limits.connection_tracking.map(|config| RegistryPartition {
+            registry: Registry::new(1),
+            partition: 0,
+            capacity: config.capacity(),
+        });
+        Self::with_registry(limits, tracking)
+    }
+
+    fn with_registry(limits: NacelleLimits, tracking: Option<RegistryPartition>) -> Self {
         Self {
             inner: Arc::new(NacelleRuntimeStateInner {
                 limits,
@@ -425,6 +517,7 @@ impl NacelleRuntimeState {
                 active_streaming_tasks_metric: OnceLock::new(),
                 peer_connections: PeerConnectionMap::new(),
                 peer_connection_rates: OnceLock::new(),
+                tracking,
             }),
         }
     }
@@ -437,10 +530,46 @@ impl NacelleRuntimeState {
     pub fn partitioned(
         limits: impl IntoIterator<Item = NacelleLimits>,
     ) -> Result<(Vec<Self>, NacelleRuntimeControl), NacelleError> {
-        let states: Vec<_> = limits.into_iter().map(Self::new).collect();
-        if states.is_empty() {
+        let limits: Vec<_> = limits.into_iter().collect();
+        if limits.is_empty() {
             return Err(NacelleConfigurationError::PartitionCount.into());
         }
+        let tracked = limits[0].connection_tracking.is_some();
+        if limits
+            .iter()
+            .any(|limits| limits.connection_tracking.is_some() != tracked)
+        {
+            return Err(NacelleConfigurationError::MixedConnectionTracking.into());
+        }
+        let capacity = limits
+            .iter()
+            .try_fold(0_usize, |total, limits| {
+                total.checked_add(
+                    limits
+                        .connection_tracking
+                        .map_or(0, NacelleConnectionTracking::capacity),
+                )
+            })
+            .ok_or(NacelleConfigurationError::ConnectionTrackingCapacity)?;
+        if capacity != 0 {
+            NacelleConnectionTracking::new(capacity)?;
+        }
+        let registry = tracked.then(|| Registry::new(limits.len()));
+        let states: Vec<_> = limits
+            .into_iter()
+            .enumerate()
+            .map(|(partition, limits)| {
+                let tracking = registry.as_ref().map(|registry| RegistryPartition {
+                    registry: registry.clone(),
+                    partition,
+                    capacity: limits
+                        .connection_tracking
+                        .expect("tracked configuration")
+                        .capacity(),
+                });
+                Self::with_registry(limits, tracking)
+            })
+            .collect();
         let control = NacelleRuntimeControl {
             target: ControlTarget::Partitioned(Arc::new(PartitionedControl {
                 states: states.clone(),
@@ -475,7 +604,7 @@ impl NacelleRuntimeState {
         Ok(())
     }
 
-    fn connection_limits(&self) -> NacelleConnectionLimits {
+    pub(crate) fn connection_limits(&self) -> NacelleConnectionLimits {
         let connections = self.inner.max_connections.load(Ordering::Acquire);
         let rate = self.inner.connection_open_rate.load(Ordering::Acquire);
         NacelleConnectionLimits {
@@ -532,6 +661,27 @@ impl NacelleRuntimeState {
 
     pub fn acquire_connection(&self) -> Result<TrackedPermit, NacelleError> {
         self.acquire_connection_tracked()
+    }
+
+    pub(crate) fn tracking(&self) -> Option<&RegistryPartition> {
+        self.inner.tracking.as_ref()
+    }
+
+    /// Acquire connection capacity and, when enabled, register before setup.
+    #[doc(hidden)]
+    pub fn register_connection(
+        &self,
+        connection: &crate::request::NacelleConnectionMeta,
+    ) -> Result<NacelleConnectionRegistration, NacelleError> {
+        let permit = match connection.peer_ip {
+            Some(peer) => self.acquire_connection_for_peer(peer)?,
+            None => self.acquire_connection_tracked()?,
+        };
+        let registered = self
+            .tracking()
+            .map(|registry| registry.register(connection))
+            .transpose()?;
+        Ok(NacelleConnectionRegistration::new(permit, registered))
     }
 
     pub fn acquire_connection_tracked(&self) -> Result<TrackedPermit, NacelleError> {
