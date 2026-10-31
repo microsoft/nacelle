@@ -2,6 +2,61 @@ use super::*;
 use crate::admission::{HttpAdmissionContext, LocalHttpAdmissionContext};
 use nacelle_core::{Admission, LocalAdmission, NacelleLimits};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Event, Metadata, Subscriber};
+
+struct AccessLogSubscriber {
+    reasons: Arc<Mutex<Vec<String>>>,
+}
+
+impl Subscriber for AccessLogSubscriber {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.target() == "nacelle::access"
+    }
+
+    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        struct ReasonVisitor<'a> {
+            reasons: &'a Mutex<Vec<String>>,
+        }
+
+        impl Visit for ReasonVisitor<'_> {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "reason" {
+                    self.reasons
+                        .lock()
+                        .expect("access reason lock")
+                        .push(format!("{value:?}"));
+                }
+            }
+
+            fn record_str(&mut self, field: &Field, value: &str) {
+                if field.name() == "reason" {
+                    self.reasons
+                        .lock()
+                        .expect("access reason lock")
+                        .push(value.to_owned());
+                }
+            }
+        }
+
+        event.record(&mut ReasonVisitor {
+            reasons: self.reasons.as_ref(),
+        });
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
 
 #[test]
 fn admission_error_metrics_and_observers_have_independent_exact_ownership() {
@@ -449,6 +504,51 @@ async fn full_body_channel_cannot_block_producer_failure_or_permit_cleanup() {
             )
             .count(),
         1
+    );
+}
+
+#[test]
+fn streamed_body_limit_access_log_uses_resource_reason() {
+    let reasons = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(
+        AccessLogSubscriber {
+            reasons: reasons.clone(),
+        },
+        || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let runtime = NacelleRuntimeState::new(
+                        NacelleLimits::default().with_max_request_body_bytes(8),
+                    );
+                    let server = Arc::new(
+                        HyperServer::new(handler_fn(
+                            |context: HttpRequestContext<()>| async move {
+                                std::future::pending::<()>().await;
+                                context.respond(HttpResponse::empty(StatusCode::OK)).await
+                            },
+                        ))
+                        .with_access_log(true)
+                        .with_runtime_state(runtime)
+                        .unwrap(),
+                    );
+                    let (io, _) = ObservedIo::new(format!(
+                        "POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n{}0\r\n\r\n",
+                        "1\r\na\r\n".repeat(9),
+                    ));
+                    tokio::time::timeout(Duration::from_millis(100), run(server, io))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                });
+        },
+    );
+
+    assert_eq!(
+        *reasons.lock().expect("access reason lock"),
+        vec!["request_body_bytes"]
     );
 }
 

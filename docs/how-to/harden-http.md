@@ -85,7 +85,12 @@ policy.
 the compile-time `rustls` feature. TCP can instead select `openssl`, but the two
 backend features cannot be enabled together and cannot be swapped at runtime.
 
-Enable `HyperServer::with_access_log(true)` when direct edge deployments need structured request logs. Access events are emitted with target `nacelle::access` and include transport, method, URI, status, request bytes, elapsed microseconds, and rejection reason.
+Enable `HyperServer::with_access_log(true)` when direct edge deployments need
+structured request logs. Access events are emitted with target
+`nacelle::access` and include transport, method, URI, status, request bytes,
+elapsed microseconds, and rejection reason. Declared and streamed body-size
+failures both use `request_body_bytes`; body-read deadlines use
+`http_body_read`.
 
 Forwarded peer identity is disabled by default. List only known proxy IPs with
 `with_trusted_proxy_ips(...)` and choose the header your proxy controls:

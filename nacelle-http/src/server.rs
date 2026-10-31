@@ -1313,8 +1313,9 @@ where
                     &error,
                 );
                 let request_bytes = request_body_bytes.load(Ordering::Relaxed);
+                let reason = request_failure_reason(&error);
                 let (status, message) = if matches!(
-                    error,
+                    &error,
                     NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes)
                 ) {
                     (StatusCode::PAYLOAD_TOO_LARGE, "request body too large")
@@ -1331,7 +1332,7 @@ where
                         status: response.status(),
                         request_bytes,
                         elapsed: elapsed_since(request_started),
-                        reason: Some("handler"),
+                        reason: Some(reason),
                         peer_resolution_reason,
                     });
                 }
@@ -1451,6 +1452,14 @@ fn admission_rejection(error: &NacelleError) -> (StatusCode, &'static str) {
         _ => "admission_unavailable",
     };
     (status, reason)
+}
+
+fn request_failure_reason(error: &NacelleError) -> &'static str {
+    match error {
+        NacelleError::ResourceLimit(reason) => reason.as_str(),
+        NacelleError::Timeout(reason) => reason.as_str(),
+        _ => "handler",
+    }
 }
 
 struct HttpAccessLog<'a> {
@@ -1820,6 +1829,24 @@ mod tests {
     use nacelle_core::request::NacelleBody;
 
     use super::*;
+
+    #[test]
+    fn request_failure_reason_preserves_framework_categories() {
+        assert_eq!(
+            request_failure_reason(&NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::RequestBodyBytes,
+            )),
+            "request_body_bytes"
+        );
+        assert_eq!(
+            request_failure_reason(&NacelleError::Timeout(NacelleTimeoutReason::HttpBodyRead,)),
+            "http_body_read"
+        );
+        assert_eq!(
+            request_failure_reason(&NacelleError::handler("test handler failure")),
+            "handler"
+        );
+    }
 
     #[tokio::test]
     async fn live_control_pauses_and_resumes_the_installed_http_listener() {
