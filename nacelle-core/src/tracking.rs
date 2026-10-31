@@ -211,7 +211,7 @@ impl NacelleConnectionActivity {
         let _ = self
             .0
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state < FORCED).then_some(FINISHING)
             });
     }
@@ -243,7 +243,7 @@ impl NacelleConnectionActivity {
         } else {
             self.0
                 .state
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                     (state < FORCED || state == FINISHING).then_some(FORCED)
                 })
                 .is_ok()
@@ -828,7 +828,7 @@ mod tests {
 
     #[tokio::test]
     async fn setup_close_error_and_unpolled_abort_drop_work_before_capacity() {
-        for mode in 0..4 {
+        for mode in 0..3 {
             let state = state(1);
             let connection = NacelleConnectionMeta::tcp(None, None);
             let guard = state.register_connection(&connection).unwrap();
@@ -841,8 +841,6 @@ mod tests {
                 let _owned = owned;
                 if mode == 1 {
                     Err(NacelleError::InvalidFrame("setup"))
-                } else if mode == 3 {
-                    panic!("setup panic");
                 } else {
                     std::future::pending::<Result<(), NacelleError>>().await
                 }
@@ -860,8 +858,6 @@ mod tests {
                 ));
             } else if mode == 1 {
                 assert!(future.await.is_err());
-            } else if mode == 3 {
-                assert!(tokio::spawn(future).await.unwrap_err().is_panic());
             } else {
                 drop(future);
             }
@@ -869,5 +865,26 @@ mod tests {
             assert_eq!(state.active_connections(), 0);
             assert!(state.control().connections(1).unwrap().is_empty());
         }
+    }
+
+    #[cfg(panic = "unwind")]
+    #[tokio::test]
+    async fn setup_panic_drops_work_before_capacity() {
+        let state = state(1);
+        let connection = NacelleConnectionMeta::tcp(None, None);
+        let guard = state.register_connection(&connection).unwrap();
+        let observed = Arc::new(std::sync::atomic::AtomicUsize::new(99));
+        let owned = DropCheck {
+            state: state.clone(),
+            observed: observed.clone(),
+        };
+        let future = guard.run(async move {
+            let _owned = owned;
+            panic!("setup panic");
+        });
+        assert!(tokio::spawn(future).await.unwrap_err().is_panic());
+        assert_eq!(observed.load(Ordering::SeqCst), 1);
+        assert_eq!(state.active_connections(), 0);
+        assert!(state.control().connections(1).unwrap().is_empty());
     }
 }
