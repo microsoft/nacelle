@@ -203,6 +203,15 @@ fn runtime_limit_benches(c: &mut Criterion) {
             drop(permit);
         })
     });
+    group.bench_function("request_permit_borrowed_acquire_drop", |b| {
+        b.iter(|| {
+            let permit = black_box(&state)
+                .acquire_request_borrowed()
+                .expect("request permit");
+            black_box(&permit);
+            drop(permit);
+        })
+    });
     group.bench_function("connection_permit_acquire_drop", |b| {
         b.iter(|| {
             let permit = black_box(&state)
@@ -317,6 +326,75 @@ fn contended_connection_benches(c: &mut Criterion) {
     group.finish();
 }
 
+fn contended_request_benches(c: &mut Criterion) {
+    use std::sync::{
+        Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    const OPERATIONS: usize = 1024;
+    let mut group = c.benchmark_group("request_permit_contended");
+    for workers in [1, 4, 8] {
+        for borrowed in [false, true] {
+            let state = NacelleRuntimeState::default();
+            let start = Barrier::new(workers + 1);
+            let finish = Barrier::new(workers + 1);
+            let stop = AtomicBool::new(false);
+            group.throughput(Throughput::Elements((workers * OPERATIONS) as u64));
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    let (state, start, finish, stop) = (&state, &start, &finish, &stop);
+                    scope.spawn(move || {
+                        loop {
+                            start.wait();
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            for _ in 0..OPERATIONS {
+                                if borrowed {
+                                    drop(state.acquire_request_borrowed().expect("capacity"));
+                                } else {
+                                    drop(state.acquire_request_tracked().expect("capacity"));
+                                }
+                            }
+                            finish.wait();
+                        }
+                    });
+                }
+                let name = if borrowed { "borrowed" } else { "owned" };
+                group.bench_function(BenchmarkId::new(name, workers), |b| {
+                    b.iter(|| {
+                        start.wait();
+                        finish.wait();
+                    })
+                });
+                stop.store(true, Ordering::Relaxed);
+                start.wait();
+            });
+            assert_eq!(state.active_requests(), 0);
+        }
+    }
+    group.finish();
+}
+
+fn timeout_benches(c: &mut Criterion) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("timer benchmark runtime");
+    let mut group = c.benchmark_group("ready_timeout");
+    group.bench_function("tokio", |b| {
+        b.to_async(&runtime)
+            .iter(|| tokio::time::timeout(Duration::from_secs(30), async { black_box(7) }));
+    });
+    group.bench_function("deferred_timer", |b| {
+        b.to_async(&runtime).iter(|| {
+            nacelle::core::runtime::timeout(Duration::from_secs(30), async { black_box(7) })
+        });
+    });
+    group.finish();
+}
+
 fn telemetry_benches(c: &mut Criterion) {
     let facade = NacelleTelemetry::default();
     let concrete = NacelleTelemetry::new().with_observer(NacelleInMemoryObserver::new());
@@ -424,6 +502,54 @@ fn http_connection_benches(c: &mut Criterion) {
     }
     group.finish();
 
+    let mut group = c.benchmark_group("http_keep_alive");
+    const ROUNDS: usize = 64;
+    for connections in [1, 16] {
+        group.throughput(Throughput::Elements((connections * ROUNDS) as u64));
+        for body_len in [0, 256] {
+            let mut request =
+                format!("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {body_len}\r\n\r\n")
+                    .into_bytes();
+            request.extend(std::iter::repeat_n(0xAB, body_len));
+            let request = Bytes::from(request);
+            group.bench_function(
+                BenchmarkId::new(format!("{connections}_connections"), body_len),
+                |b| {
+                    b.to_async(&runtime).iter(|| {
+                        let request = request.clone();
+                        async move {
+                            let mut tasks = tokio::task::JoinSet::new();
+                            for _ in 0..connections {
+                                let request = request.clone();
+                                tasks.spawn(async move {
+                                    let mut stream = TcpStream::connect(addr).await.unwrap();
+                                    stream.set_nodelay(true).unwrap();
+                                    let mut response = BytesMut::with_capacity(1024);
+                                    for _ in 0..ROUNDS {
+                                        stream.write_all(&request).await.unwrap();
+                                        response.clear();
+                                        while !response.ends_with(b"\r\n0\r\n\r\n") {
+                                            assert_ne!(
+                                                stream.read_buf(&mut response).await.unwrap(),
+                                                0
+                                            );
+                                        }
+                                        assert!(response.starts_with(b"HTTP/1.1 200 "));
+                                        black_box(&response);
+                                    }
+                                });
+                            }
+                            while let Some(result) = tasks.join_next().await {
+                                result.unwrap();
+                            }
+                        }
+                    });
+                },
+            );
+        }
+    }
+    group.finish();
+
     shutdown.shutdown();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), task)
@@ -440,6 +566,8 @@ criterion_group!(
     protocol_pipeline_benches,
     runtime_limit_benches,
     contended_connection_benches,
+    contended_request_benches,
+    timeout_benches,
     peer_rate_limit_benches,
     telemetry_benches
 );

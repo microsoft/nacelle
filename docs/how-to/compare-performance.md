@@ -63,6 +63,32 @@ HTTPS measurements. The comparison scripts' `critical-paths` suite uses the
 TCP-only feature selection; run this HTTP selection separately with an
 identical harness at both revisions.
 
+For persistent HTTP/1 requests without pipelining:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp http" -- http_keep_alive --noplot
+```
+
+These cases use 1 or 16 concurrent connections, 64 sequential requests per
+connection, and empty or 256-byte echoed bodies. They use the same two-worker
+runtime, system allocator, and no-recorder telemetry as the connection benchmark.
+Connection setup is included once per 64 requests. Client work is included;
+these cases do not measure server-only CPU, p99 latency, or HTTPS.
+
+Compare shared permit contention separately:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- request_permit_contended --noplot
+```
+
+The owned and borrowed cases enforce the same runtime request limit. Borrowed
+permits are used internally by scoped transport operations; they do not disable
+accounting or replace public owned permits.
+
+The `ready_timeout` group in the same target isolates timeout-wrapper cost for
+an immediately-ready future, comparing Tokio's wrapper with Nacelle's deferred
+timer construction. It does not measure pending timers or network latency.
+
 The telemetry group can be run independently:
 
 ```bash
@@ -259,7 +285,8 @@ Use the Linux profiling helper for repeatable plain-TCP diagnostics:
 
 The helper builds the `profiling` Cargo profile with optimization, debug
 information, and frame pointers. Its default `--feature-set minimal` uses
-`--no-default-features`, which disables TLS and mimalloc. The stress server's
+`--no-default-features`, which disables TLS and the server's mimalloc feature.
+The stress client still uses mimalloc. The stress server's
 downstream console metrics recorder remains active, but request and response
 body-size histograms default off so profiling isolates the runtime from the
 debug recorder's raw sample retention. Pass `--byte-metrics` when measuring
@@ -319,6 +346,31 @@ Each run writes metadata, raw logs, and text reports under
 records `cycles:u` at 999 Hz with frame-pointer call graphs. Heaptrack launches
 the server directly so allocator interception survives process startup, then
 applies any requested CPU affinity to all server threads.
+
+Client logs also include server user/kernel CPU seconds and
+`server_cpu_us_per_request`, computed from process-wide `/proc/PID/stat` counters
+around each client invocation. CPU totals include connection setup, teardown,
+and the server's metrics-console work during that interval; they exclude client
+CPU. The counters have clock-tick granularity, so use several-second samples.
+`server_average_cores` divides that CPU total by the client's reported load
+duration and is approximate because client startup lies outside that duration.
+
+Start a non-pipelined comparison with the same explicit profile at both
+revisions:
+
+```bash
+./scripts/profile-linux.sh \
+	--tool baseline \
+	--config examples/nacelle-stress-server/configs/tcp.toml \
+	--server-threads 4 --connections 64 --pipeline 1 \
+	--payload-bytes 256 --warmup-secs 5 --duration-secs 15 --runs 3
+```
+
+Add disjoint physical CPU lists for the host, keep the client binary fixed, and
+alternate baseline/candidate order. Compare CPU per request, user/kernel split,
+throughput, and tail latency together. Repeat with pipeline depth 8 as a separate
+control. Do not treat a small throughput difference inside baseline variance as
+an improvement, or extrapolate a user-space microbenchmark to total socket CPU.
 
 The helper can compare handler ownership and response delivery without
 changing their safe defaults:

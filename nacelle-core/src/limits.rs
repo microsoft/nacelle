@@ -744,6 +744,21 @@ impl NacelleRuntimeState {
     }
 
     pub fn acquire_request_tracked(&self) -> Result<TrackedPermit, NacelleError> {
+        self.acquire_request_capacity()?;
+        Ok(TrackedPermit::new(self.clone(), PermitKind::Request))
+    }
+
+    /// Borrow request capacity for work that cannot outlive this runtime state.
+    #[doc(hidden)]
+    pub fn acquire_request_borrowed(&self) -> Result<BorrowedPermit<'_>, NacelleError> {
+        self.acquire_request_capacity()?;
+        Ok(BorrowedPermit {
+            state: self,
+            kind: PermitKind::Request,
+        })
+    }
+
+    fn acquire_request_capacity(&self) -> Result<(), NacelleError> {
         if !try_acquire_counter(
             &self.inner.active_requests,
             self.inner.limits.max_in_flight_requests,
@@ -755,7 +770,7 @@ impl NacelleRuntimeState {
         if self.metrics_enabled() {
             self.active_requests_metric().increment(1.0);
         }
-        Ok(TrackedPermit::new(self.clone(), PermitKind::Request))
+        Ok(())
     }
 
     pub fn acquire_streaming_task(&self) -> Result<TrackedPermit, NacelleError> {
@@ -763,6 +778,21 @@ impl NacelleRuntimeState {
     }
 
     pub fn acquire_streaming_task_tracked(&self) -> Result<TrackedPermit, NacelleError> {
+        self.acquire_streaming_capacity()?;
+        Ok(TrackedPermit::new(self.clone(), PermitKind::StreamingTask))
+    }
+
+    /// Borrow streaming capacity for work scoped to this runtime state.
+    #[doc(hidden)]
+    pub fn acquire_streaming_task_borrowed(&self) -> Result<BorrowedPermit<'_>, NacelleError> {
+        self.acquire_streaming_capacity()?;
+        Ok(BorrowedPermit {
+            state: self,
+            kind: PermitKind::StreamingTask,
+        })
+    }
+
+    fn acquire_streaming_capacity(&self) -> Result<(), NacelleError> {
         if !try_acquire_counter(
             &self.inner.active_streaming_tasks,
             self.inner.limits.max_streaming_tasks,
@@ -774,7 +804,7 @@ impl NacelleRuntimeState {
         if self.metrics_enabled() {
             self.active_streaming_tasks_metric().increment(1.0);
         }
-        Ok(TrackedPermit::new(self.clone(), PermitKind::StreamingTask))
+        Ok(())
     }
 
     pub fn active_connections(&self) -> usize {
@@ -876,35 +906,50 @@ impl TrackedPermit {
 
 impl Drop for TrackedPermit {
     fn drop(&mut self) {
-        match self.kind {
+        self.state.release_permit(self.kind);
+    }
+}
+
+/// A transport-scoped permit with the same accounting as an owned permit.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct BorrowedPermit<'a> {
+    state: &'a NacelleRuntimeState,
+    kind: PermitKind,
+}
+
+impl Drop for BorrowedPermit<'_> {
+    fn drop(&mut self) {
+        self.state.release_permit(self.kind);
+    }
+}
+
+impl NacelleRuntimeState {
+    fn release_permit(&self, kind: PermitKind) {
+        match kind {
             PermitKind::Connection { peer } => {
-                self.state
-                    .inner
+                self.inner
                     .active_connections
                     .fetch_sub(1, Ordering::Relaxed);
-                if self.state.metrics_enabled() {
-                    self.state.active_connections_metric().decrement(1.0);
+                if self.metrics_enabled() {
+                    self.active_connections_metric().decrement(1.0);
                 }
                 if let Some(peer) = peer {
-                    self.state.release_peer_connection(peer);
+                    self.release_peer_connection(peer);
                 }
             }
             PermitKind::Request => {
-                self.state
-                    .inner
-                    .active_requests
-                    .fetch_sub(1, Ordering::Relaxed);
-                if self.state.metrics_enabled() {
-                    self.state.active_requests_metric().decrement(1.0);
+                self.inner.active_requests.fetch_sub(1, Ordering::Relaxed);
+                if self.metrics_enabled() {
+                    self.active_requests_metric().decrement(1.0);
                 }
             }
             PermitKind::StreamingTask => {
-                self.state
-                    .inner
+                self.inner
                     .active_streaming_tasks
                     .fetch_sub(1, Ordering::Relaxed);
-                if self.state.metrics_enabled() {
-                    self.state.active_streaming_tasks_metric().decrement(1.0);
+                if self.metrics_enabled() {
+                    self.active_streaming_tasks_metric().decrement(1.0);
                 }
             }
         }
@@ -914,6 +959,64 @@ impl Drop for TrackedPermit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_and_owned_permits_share_limits_and_release_gauges() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let state = NacelleRuntimeState::new(
+                NacelleLimits::default()
+                    .with_max_in_flight_requests(1)
+                    .with_max_streaming_tasks(1),
+            );
+            let request = state.acquire_request_borrowed().unwrap();
+            let stream = state.acquire_streaming_task_borrowed().unwrap();
+            assert!(state.acquire_request_tracked().is_err());
+            assert!(state.acquire_streaming_task_tracked().is_err());
+            assert_eq!(state.active_requests(), 1);
+            assert_eq!(state.active_streaming_tasks(), 1);
+            drop((request, stream));
+            let request = state.acquire_request_tracked().unwrap();
+            let stream = state.acquire_streaming_task_tracked().unwrap();
+            assert!(state.acquire_request_borrowed().is_err());
+            assert!(state.acquire_streaming_task_borrowed().is_err());
+            drop((request, stream));
+            assert_eq!(state.active_requests(), 0);
+            assert_eq!(state.active_streaming_tasks(), 0);
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_eq!(snapshot.len(), 2);
+            for (_, _, _, value) in snapshot {
+                assert_eq!(value, DebugValue::Gauge(0.0.into()));
+            }
+        });
+    }
+
+    #[test]
+    fn concurrent_borrowed_requests_do_not_exceed_shared_capacity() {
+        let state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_in_flight_requests(4));
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        state.acquire_request_borrowed().ok()
+                    })
+                })
+                .collect();
+            let permits: Vec<_> = tasks
+                .into_iter()
+                .filter_map(|task| task.join().unwrap())
+                .collect();
+            assert_eq!(permits.len(), 4);
+            assert_eq!(state.active_requests(), 4);
+        });
+        assert_eq!(state.active_requests(), 0);
+    }
 
     #[test]
     fn unbounded_limits_still_track_active_counts() {

@@ -62,14 +62,17 @@ impl<Observer: NacelleTelemetryObserver, Permit> Body for HttpBody<Observer, Per
     }
 }
 
-pub(crate) fn incoming_to_body<Observer>(
+pub(crate) fn incoming_to_body<'a, Observer>(
     incoming: Incoming,
     body_len_hint: Option<usize>,
-    request_body_bytes: &AtomicUsize,
-    runtime_state: NacelleRuntimeState,
+    request_body_bytes: &'a AtomicUsize,
+    runtime_state: &'a NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry<Observer>,
-) -> (NacelleBody, impl Future<Output = Result<(), NacelleError>>)
+    telemetry: &'a NacelleTelemetry<Observer>,
+) -> (
+    NacelleBody,
+    impl Future<Output = Result<(), NacelleError>> + 'a,
+)
 where
     Observer: NacelleTelemetryObserver,
 {
@@ -103,9 +106,9 @@ async fn pump_incoming_body<Observer>(
     mut incoming: Incoming,
     body_len_hint: Option<usize>,
     request_body_bytes: &AtomicUsize,
-    runtime_state: NacelleRuntimeState,
+    runtime_state: &NacelleRuntimeState,
     http_limits: NacelleHttpLimits,
-    telemetry: NacelleTelemetry<Observer>,
+    telemetry: &NacelleTelemetry<Observer>,
     tx: RequestBodySender,
 ) -> Result<(), NacelleError>
 where
@@ -118,13 +121,13 @@ where
             NacelleResourceLimitReason::RequestBodyBytes,
         ));
     }
-    let _streaming_permit = runtime_state.acquire_streaming_task_tracked()?;
+    let _streaming_permit = runtime_state.acquire_streaming_task_borrowed()?;
     let mut body_bytes = 0_usize;
     loop {
         let frame = {
             let next = incoming.frame();
             if let Some(timeout) = http_limits.request_body_read_timeout {
-                match tokio::time::timeout(timeout, next).await {
+                match nacelle_core::runtime::timeout(timeout, next).await {
                     Ok(frame) => frame,
                     Err(_) => {
                         telemetry.timeout(NacelleTransport::new("http"), "http_body_read");
@@ -140,7 +143,7 @@ where
         };
         match frame {
             Ok(frame) => {
-                if let Some(data) = frame.data_ref() {
+                if let Ok(data) = frame.into_data() {
                     let Some(next) = body_bytes.checked_add(data.len()) else {
                         return Err(NacelleError::ResourceLimit(
                             NacelleResourceLimitReason::RequestBodyBytes,
@@ -152,8 +155,7 @@ where
                         ));
                     }
                     body_bytes = next;
-                    request_body_bytes.fetch_add(data.len(), Ordering::Relaxed);
-                    let data = data.clone();
+                    request_body_bytes.store(body_bytes, Ordering::Relaxed);
                     if tx.send(Ok(data)).await.is_err() {
                         break;
                     }
@@ -173,7 +175,7 @@ const fn incoming_body_is_empty(body_len_hint: Option<usize>) -> bool {
 
 pub(crate) fn response_to_http<Observer>(
     response: HttpResponse,
-    runtime_state: NacelleRuntimeState,
+    max_response_body_bytes: usize,
     telemetry: NacelleTelemetry<Observer>,
     policy: &NacelleHttpPolicy,
 ) -> Result<Response<ResponseBody<Observer>>, NacelleError>
@@ -189,7 +191,7 @@ where
     builder
         .body(nacelle_body_to_http(
             response.body,
-            runtime_state,
+            max_response_body_bytes,
             telemetry,
         ))
         .map_err(NacelleError::protocol)
@@ -197,7 +199,7 @@ where
 
 fn nacelle_body_to_http<Observer>(
     body: NacelleBody,
-    runtime_state: NacelleRuntimeState,
+    max_response_body_bytes: usize,
     telemetry: NacelleTelemetry<Observer>,
 ) -> ResponseBody<Observer>
 where
@@ -205,7 +207,7 @@ where
 {
     StreamBody::new(HttpBodyStream {
         body,
-        runtime_state,
+        max_response_body_bytes,
         telemetry,
         response_body_bytes: 0,
         response_body_metric_pending: true,
@@ -214,7 +216,7 @@ where
 
 pub(crate) struct HttpBodyStream<Observer: NacelleTelemetryObserver> {
     body: NacelleBody,
-    runtime_state: NacelleRuntimeState,
+    max_response_body_bytes: usize,
     telemetry: NacelleTelemetry<Observer>,
     response_body_bytes: usize,
     response_body_metric_pending: bool,
@@ -236,7 +238,7 @@ where
                         NacelleResourceLimitReason::ResponseBodyBytes,
                     ))));
                 };
-                if next > this.runtime_state.startup_limits().max_response_body_bytes {
+                if next > this.max_response_body_bytes {
                     this.response_body_metric_pending = false;
                     return Poll::Ready(Some(Err(NacelleError::ResourceLimit(
                         NacelleResourceLimitReason::ResponseBodyBytes,
@@ -292,7 +294,7 @@ mod tests {
         let observer = NacelleInMemoryObserver::new();
         let response = response_to_http(
             HttpResponse::bytes(StatusCode::OK, "hello"),
-            runtime_state,
+            runtime_state.startup_limits().max_response_body_bytes,
             NacelleTelemetry::new().with_observer(observer.clone()),
             &NacelleHttpPolicy::default(),
         )
@@ -326,7 +328,7 @@ mod tests {
         let observer = NacelleInMemoryObserver::new();
         let response = response_to_http(
             HttpResponse::empty(StatusCode::NO_CONTENT),
-            NacelleRuntimeState::default(),
+            NacelleLimits::default().max_response_body_bytes,
             NacelleTelemetry::new().with_observer(observer.clone()),
             &NacelleHttpPolicy::default(),
         )
@@ -354,7 +356,7 @@ mod tests {
         let observer = NacelleInMemoryObserver::new();
         let response = response_to_http(
             HttpResponse::bytes(StatusCode::OK, "partial"),
-            NacelleRuntimeState::default(),
+            NacelleLimits::default().max_response_body_bytes,
             NacelleTelemetry::new().with_observer(observer.clone()),
             &NacelleHttpPolicy::default(),
         )

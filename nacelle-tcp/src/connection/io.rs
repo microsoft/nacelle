@@ -35,7 +35,7 @@ where
             }
         };
         let result = if let Some(timeout) = tcp_limits.idle_timeout {
-            tokio::time::timeout(timeout, first_read)
+            nacelle_core::runtime::timeout(timeout, first_read)
                 .await
                 .map_err(|_| {
                     MessageReadFailure::transport(NacelleError::Timeout(NacelleTimeoutReason::Idle))
@@ -57,7 +57,7 @@ where
         }
     };
     let result = if let Some(timeout) = tcp_limits.read_timeout {
-        tokio::time::timeout(timeout, future)
+        nacelle_core::runtime::timeout(timeout, future)
             .await
             .map_err(|_| MessageReadFailure::transport(NacelleError::Timeout(TCP_READ_TIMEOUT)))?
     } else {
@@ -77,7 +77,7 @@ where
 {
     let future = reader.read_buf(buf);
     if let Some(timeout) = tcp_limits.read_timeout {
-        tokio::time::timeout(timeout, future)
+        nacelle_core::runtime::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(REQUEST_BODY_READ_TIMEOUT))?
             .map_err(NacelleError::from)
@@ -115,7 +115,7 @@ where
 
     let mut written = 0_usize;
     if let Some(timeout) = tcp_limits.write_timeout {
-        match tokio::time::timeout(timeout, write_loop(writer, buf, &mut written)).await {
+        match nacelle_core::runtime::timeout(timeout, write_loop(writer, buf, &mut written)).await {
             Ok(Ok(())) => Ok(written),
             Ok(Err(error)) => Err((error, written)),
             Err(_) => Err((NacelleError::Timeout(TCP_WRITE_TIMEOUT), written)),
@@ -137,7 +137,7 @@ where
 {
     let future = writer.shutdown();
     if let Some(timeout) = tcp_limits.shutdown_timeout {
-        tokio::time::timeout(timeout, future)
+        nacelle_core::runtime::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(TCP_SHUTDOWN_TIMEOUT))?
             .map_err(NacelleError::from)
@@ -155,7 +155,7 @@ where
 {
     let future = writer.flush();
     if let Some(timeout) = tcp_limits.write_timeout {
-        tokio::time::timeout(timeout, future)
+        nacelle_core::runtime::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(TCP_WRITE_TIMEOUT))?
             .map_err(NacelleError::from)

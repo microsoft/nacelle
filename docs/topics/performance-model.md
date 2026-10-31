@@ -28,6 +28,25 @@ cargo bench -p nacelle-examples --features "bench tcp"
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop overhead. Watch it closely after changes to `NacelleRuntimeState`.
 
+## Concurrent requests without pipelining
+
+Use pipeline depth 1 when evaluating request/response services. A connection
+then waits for each response before sending another request; additional
+connections provide concurrency without batching requests on one socket.
+Keep a pipelined case as a separate control, not as a substitute for this workload.
+
+Measure server CPU per completed request alongside throughput and p50/p99
+latency. Separate user CPU from kernel CPU: small loopback messages can spend
+most server CPU in socket I/O, hiding improvements in the Rust request path.
+Use disjoint physical cores for server and client and record their NUMA placement.
+A client-bound run cannot establish server capacity.
+
+The `request_permit_contended` benchmark compares owned and transport-scoped
+borrowed permits on one shared runtime state with 1, 4, and 8 worker threads.
+Each worker acquires/releases 1,024 permits per iteration. Thread startup is
+excluded; barrier synchronization is included. No metrics recorder is installed.
+This isolates accounting contention, not socket throughput.
+
 ## Successful-path ownership and dispatch
 
 ### Connection tracking costs
@@ -80,9 +99,21 @@ Retained costs are scoped by ownership:
 	the small scoped future still completes immediately.
 - HTTP response bodies remain concrete `StreamBody` values rather than boxed
 	body trait objects.
-- Request/handler/read/write timeouts use concrete futures. The HTTP response
+- Nacelle's handler, TCP I/O, and HTTP body-read timeout wrappers use concrete
+  futures. Ready operations do not construct a Tokio timer. Pending operations
+  retain the deadline computed
+  before their first poll, including partial I/O; cooperative budget exhaustion
+  cannot suppress the timeout. The HTTP response
 	write deadline retains a boxed `Sleep` only after connection-level
 	backpressure because Hyper requires its I/O wrapper to remain `Unpin`.
+- Request and body-pump permits borrow the runtime state already owned by their
+  connection or request future. This avoids shared reference-count updates per
+  operation while retaining exact global limits, active counts, gauge updates,
+  and release on cancellation. Public owned permits remain available for work
+  that must outlive a borrow.
+- The scoped HTTP request-body pump borrows runtime state and telemetry and
+  moves received chunks into the body channel. HTTP response bodies retain the
+  immutable response-byte limit rather than another runtime-state handle.
 - Enabled per-peer request and connection-open rate limits use fixed-capacity,
   lock-free tables. Admission probes a bounded number of atomic slots and
   rejects a newly observed peer when the configured table is full; it does not

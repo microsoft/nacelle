@@ -7,6 +7,10 @@ use std::task::{Context, Poll};
 
 pub use tokio::task::JoinError;
 
+mod timeout;
+#[doc(hidden)]
+pub use timeout::timeout;
+
 /// A join handle whose output is always `Result<T, JoinError>`.
 pub struct JoinHandle<T>(tokio::task::JoinHandle<T>);
 
