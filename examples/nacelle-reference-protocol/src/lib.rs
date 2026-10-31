@@ -1,6 +1,6 @@
 //! Example length-delimited protocol used by Nacelle examples and tests.
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::pipeline::ConnectionInfo;
 use nacelle_core::{NacelleBody, NacelleError};
@@ -61,6 +61,7 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
     type Message = DecodedRequest<FrameRequest>;
     type Error = NacelleError;
 
+    #[inline]
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Message>, Self::Error> {
         if src.len() < 4 {
             return Ok(None);
@@ -86,7 +87,7 @@ impl MessageDecoder for LengthDelimitedRequestDecoder {
         let request_id = u64::from_le_bytes(src[4..12].try_into().expect("slice length checked"));
         let opcode = u64::from_le_bytes(src[12..20].try_into().expect("slice length checked"));
         let flags = u32::from_le_bytes(src[20..24].try_into().expect("slice length checked"));
-        drop(src.split_to(HEADER_LEN));
+        src.advance(HEADER_LEN);
         let body_len = frame_len - FIXED_FRAME_FIELDS_LEN;
 
         Ok(Some(DecodedRequest {
@@ -273,5 +274,51 @@ mod tests {
         let mut buf = BytesMut::from(&[4_u8, 0, 0, 0][..]);
         let error = decoder.decode(&mut buf).expect_err("frame must fail");
         assert!(matches!(error, NacelleError::InvalidFrame(_)));
+    }
+
+    #[test]
+    fn decoding_coalesced_heads_preserves_retained_shared_bodies() {
+        let protocol = LengthDelimitedProtocol;
+        let first = protocol
+            .encode_request_frame(1, 42, 0, b"first")
+            .expect("first frame encoded");
+        let second = protocol
+            .encode_request_frame(2, 42, 0, b"second")
+            .expect("second frame encoded");
+        let third = protocol
+            .encode_request_frame(3, 42, 0, b"third")
+            .expect("third frame encoded");
+        let mut buf = BytesMut::with_capacity(first.len() + second.len());
+        buf.extend_from_slice(&first);
+        buf.extend_from_slice(&second);
+        let pointer = buf.as_ptr();
+        let mut decoder = protocol.decoder(1024);
+
+        let decoded = decoder
+            .decode(&mut buf)
+            .expect("first decode")
+            .expect("first head");
+        assert_eq!(decoded.request.request_id, 1);
+        let retained_first = buf.split_to(decoded.body_len).freeze();
+        assert_eq!(retained_first.as_ptr(), pointer.wrapping_add(HEADER_LEN));
+
+        let decoded = decoder
+            .decode(&mut buf)
+            .expect("second decode")
+            .expect("second head");
+        assert_eq!(decoded.request.request_id, 2);
+        assert_eq!(&buf[..], b"second");
+        assert_eq!(buf.as_ptr(), pointer.wrapping_add(first.len() + HEADER_LEN));
+
+        buf.extend_from_slice(&third);
+        let retained_second = buf.split_to(decoded.body_len).freeze();
+        let decoded = decoder
+            .decode(&mut buf)
+            .expect("third decode")
+            .expect("third head");
+        assert_eq!(decoded.request.request_id, 3);
+        assert_eq!(&buf[..], b"third");
+        assert_eq!(&retained_first[..], b"first");
+        assert_eq!(&retained_second[..], b"second");
     }
 }

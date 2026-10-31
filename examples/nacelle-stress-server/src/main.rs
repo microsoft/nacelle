@@ -2,8 +2,10 @@
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod recorder;
 #[path = "shared.rs"]
 mod shared;
+use recorder::{ByteTotals, ConsoleRecorder};
 use shared::{StressServer, build_server, configure_allocator, parse_args, print_config};
 
 use std::collections::BTreeMap;
@@ -11,7 +13,7 @@ use std::net::SocketAddr;
 use std::thread;
 use std::time::Duration;
 
-use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+use metrics_util::debugging::{DebugValue, Snapshotter};
 #[cfg(feature = "tls-self-signed")]
 use nacelle::core::NacelleTimeoutReason;
 use nacelle::core::telemetry::NacelleTelemetryObserver;
@@ -93,7 +95,7 @@ where
 
 async fn serve_accepted_stream<H, Observer>(
     server: StressServer<H, Observer>,
-    stream: TcpStream,
+    mut stream: TcpStream,
     tls_config: Option<StressTlsConfig>,
 ) -> Result<(), NacelleError>
 where
@@ -113,7 +115,13 @@ where
     #[cfg(not(feature = "tls-self-signed"))]
     let _ = tls_config;
 
-    server.serve_io(stream).await
+    match server {
+        StressServer::Shared(server) => {
+            let (reader, writer) = stream.split();
+            server.serve_halves(reader, writer).await
+        }
+        StressServer::Serial(_) => server.serve_io(stream).await,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +211,7 @@ impl From<&shared::ServerConfig> for StressByteMetrics {
 #[derive(Debug)]
 struct StressMetricsConsole {
     snapshotter: Snapshotter,
+    byte_totals: ByteTotals,
     byte_metrics: StressByteMetrics,
     active_connections: i64,
     active_connection_delta: i64,
@@ -213,12 +222,14 @@ struct StressMetricsConsole {
 impl StressMetricsConsole {
     fn install(
         config: &shared::ServerConfig,
-    ) -> Result<Self, metrics::SetRecorderError<DebuggingRecorder>> {
-        let recorder = DebuggingRecorder::new();
+    ) -> Result<Self, metrics::SetRecorderError<ConsoleRecorder>> {
+        let recorder = ConsoleRecorder::new();
         let snapshotter = recorder.snapshotter();
-        recorder.install()?;
+        let byte_totals = recorder.byte_totals();
+        metrics::set_global_recorder(recorder)?;
         Ok(Self {
             snapshotter,
+            byte_totals,
             byte_metrics: StressByteMetrics::from(config),
             active_connections: 0,
             active_connection_delta: 0,
@@ -272,7 +283,12 @@ impl PhaseDurationSnapshot {
 
 impl StressMetricsConsole {
     fn snapshot(&mut self) -> StressMetricsSnapshot {
-        let mut snapshot = StressMetricsSnapshot::default();
+        let (request_bytes, response_bytes) = self.byte_totals.take();
+        let mut snapshot = StressMetricsSnapshot {
+            request_bytes,
+            response_bytes,
+            ..StressMetricsSnapshot::default()
+        };
         for (key, _, _, value) in self.snapshotter.snapshot().into_vec() {
             let metric_name = key.key().name();
             match value {
@@ -315,20 +331,6 @@ impl StressMetricsConsole {
                                 self.active_streaming_tasks.saturating_add(delta);
                         }
                         _ => {}
-                    }
-                }
-                DebugValue::Histogram(values) if metric_name == "server.request.body.size" => {
-                    for value in values {
-                        snapshot.request_bytes = snapshot
-                            .request_bytes
-                            .saturating_add(value.into_inner() as u64);
-                    }
-                }
-                DebugValue::Histogram(values) if metric_name == "server.response.body.size" => {
-                    for value in values {
-                        snapshot.response_bytes = snapshot
-                            .response_bytes
-                            .saturating_add(value.into_inner() as u64);
                     }
                 }
                 DebugValue::Histogram(values) if metric_name == "server.phase.duration_ms" => {
@@ -458,7 +460,7 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     }
 }
 
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = parse_args(std::env::args().skip(1), "tokio")?;
     configure_allocator(config.low_memory);

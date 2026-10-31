@@ -85,6 +85,19 @@ The owned and borrowed cases enforce the same runtime request limit. Borrowed
 permits are used internally by scoped transport operations; they do not disable
 accounting or replace public owned permits.
 
+To isolate fragmented buffered bodies:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- tcp_body_read_128x256 --noplot
+```
+
+Each case processes 128 requests with 256-byte bodies over in-memory I/O capped
+at 32 or 4,096 bytes per read. The former forces the incomplete-body fallback;
+the latter is a buffered control. The fixture checks each complete body, uses a
+current-thread runtime, and installs no recorder. These are body-path timings,
+not a measurement of fragmentation frequency or network throughput. Fewer body
+allocations alone do not establish lower CPU cost.
+
 The `ready_timeout` group in the same target isolates timeout-wrapper cost for
 an immediately-ready future, comparing Tokio's wrapper with Nacelle's deferred
 timer construction. It does not measure pending timers or network latency.
@@ -286,11 +299,14 @@ Use the Linux profiling helper for repeatable plain-TCP diagnostics:
 The helper builds the `profiling` Cargo profile with optimization, debug
 information, and frame pointers. Its default `--feature-set minimal` uses
 `--no-default-features`, which disables TLS and the server's mimalloc feature.
-The stress client still uses mimalloc. The stress server's
-downstream console metrics recorder remains active, but request and response
-body-size histograms default off so profiling isolates the runtime from the
-debug recorder's raw sample retention. Pass `--byte-metrics` when measuring
-that recorder overhead deliberately. The system allocator is required because
+The stress client still uses mimalloc. The stress server's console recorder
+remains active, but the helper keeps body-size recording off by default for
+comparability with earlier profiles. Pass `--byte-metrics` to include the
+server's default byte accounting. Its current console recorder stores bounded
+sharded byte totals, not raw byte-size samples; compare the same recorder revision,
+shard policy, and switches when attributing overhead. Shard selection occurs
+when cached handles register; aggregation occurs during console snapshots.
+The system allocator is required because
 Heaptrack cannot intercept calls made directly to mimalloc. Treat this as a
 diagnostic profile, not as a matched comparison with the default mimalloc
 build.
@@ -543,8 +559,8 @@ Suggested RPS comparison:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --server-threads 48 --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-The stress server installs a `metrics-util` recorder and prints a compact metrics
-snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
+The stress server installs a console recorder backed by `metrics-util` and prints
+a compact metrics snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
 `request_metrics` config; started/completed counters and byte counters are on by
 default, while in-flight and duration metrics remain opt-in. Request duration
 metrics are opt-in as well, which avoids request `Instant` work on core/HTTP

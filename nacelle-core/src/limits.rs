@@ -754,7 +754,7 @@ impl NacelleRuntimeState {
         self.acquire_request_capacity()?;
         Ok(BorrowedPermit {
             state: self,
-            kind: PermitKind::Request,
+            kind: BorrowedPermitKind::Request,
         })
     }
 
@@ -788,7 +788,7 @@ impl NacelleRuntimeState {
         self.acquire_streaming_capacity()?;
         Ok(BorrowedPermit {
             state: self,
-            kind: PermitKind::StreamingTask,
+            kind: BorrowedPermitKind::StreamingTask,
         })
     }
 
@@ -915,12 +915,22 @@ impl Drop for TrackedPermit {
 #[derive(Debug)]
 pub struct BorrowedPermit<'a> {
     state: &'a NacelleRuntimeState,
-    kind: PermitKind,
+    kind: BorrowedPermitKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BorrowedPermitKind {
+    Request,
+    StreamingTask,
 }
 
 impl Drop for BorrowedPermit<'_> {
     fn drop(&mut self) {
-        self.state.release_permit(self.kind);
+        let kind = match self.kind {
+            BorrowedPermitKind::Request => PermitKind::Request,
+            BorrowedPermitKind::StreamingTask => PermitKind::StreamingTask,
+        };
+        self.state.release_permit(kind);
     }
 }
 
@@ -978,7 +988,12 @@ mod tests {
             assert!(state.acquire_streaming_task_tracked().is_err());
             assert_eq!(state.active_requests(), 1);
             assert_eq!(state.active_streaming_tasks(), 1);
-            drop((request, stream));
+            drop(request);
+            assert_eq!(state.active_requests(), 0);
+            assert_eq!(state.active_streaming_tasks(), 1);
+            assert!(state.acquire_streaming_task_borrowed().is_err());
+            drop(stream);
+            assert_eq!(state.active_streaming_tasks(), 0);
             let request = state.acquire_request_tracked().unwrap();
             let stream = state.acquire_streaming_task_tracked().unwrap();
             assert!(state.acquire_request_borrowed().is_err());
@@ -986,6 +1001,48 @@ mod tests {
             drop((request, stream));
             assert_eq!(state.active_requests(), 0);
             assert_eq!(state.active_streaming_tasks(), 0);
+            let snapshot = snapshotter.snapshot().into_vec();
+            assert_eq!(snapshot.len(), 2);
+            for (_, _, _, value) in snapshot {
+                assert_eq!(value, DebugValue::Gauge(0.0.into()));
+            }
+        });
+    }
+
+    #[test]
+    fn cancelled_borrowed_work_releases_request_and_streaming_capacity() {
+        use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+        use std::future::{Future, pending};
+        use std::task::{Context, Poll, Waker};
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let state = NacelleRuntimeState::new(
+                NacelleLimits::default()
+                    .with_max_in_flight_requests(1)
+                    .with_max_streaming_tasks(1),
+            );
+            let mut work = Box::pin(async {
+                let request = state.acquire_request_borrowed().unwrap();
+                let stream = state.acquire_streaming_task_borrowed().unwrap();
+                pending::<()>().await;
+                drop((request, stream));
+            });
+            assert_eq!(
+                work.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Pending,
+            );
+            assert_eq!(state.active_requests(), 1);
+            assert_eq!(state.active_streaming_tasks(), 1);
+            assert!(state.acquire_request_tracked().is_err());
+            assert!(state.acquire_streaming_task_tracked().is_err());
+
+            drop(work);
+            assert_eq!(state.active_requests(), 0);
+            assert_eq!(state.active_streaming_tasks(), 0);
+            drop(state.acquire_request_tracked().unwrap());
+            drop(state.acquire_streaming_task_tracked().unwrap());
             let snapshot = snapshotter.snapshot().into_vec();
             assert_eq!(snapshot.len(), 2);
             for (_, _, _, value) in snapshot {

@@ -39,6 +39,9 @@ Measure server CPU per completed request alongside throughput and p50/p99
 latency. Separate user CPU from kernel CPU: small loopback messages can spend
 most server CPU in socket I/O, hiding improvements in the Rust request path.
 Use disjoint physical cores for server and client and record their NUMA placement.
+Compare same-node and cross-node single-connection placement separately, keeping
+worker counts and CPU masks identical between binaries. A node-local process mask
+still permits worker migration and SMT sharing; it is not individual-core pinning.
 A client-bound run cannot establish server capacity.
 
 The `request_permit_contended` benchmark compares owned and transport-scoped
@@ -147,8 +150,17 @@ Suggested RPS comparison:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --server-threads 48 --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-The stress server installs a `metrics-util` debugging recorder and prints a
-compact console snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
+The stress server installs a console recorder backed by `metrics-util` and prints
+a snapshot every 5 seconds. It aggregates request/response body-size samples
+into fixed, cache-line-isolated byte-total shards across labels rather than
+retaining raw byte samples. Cached histogram handles select one of 64 shards
+at registration, so recording adds no thread-local lookup, mutex, or allocation.
+Zero-byte contributions skip the atomic update. The console drains and sums
+the shards off the connection path. Snapshots have approximate window boundaries;
+successive drains conserve totals unless their `u64` sum saturates.
+Library histogram names and types are unchanged. Other histograms,
+including opt-in phase diagnostics, retain the debugging recorder's sample
+storage. Request metrics are grouped under the generic telemetry
 `request_metrics` config; started/completed counters and byte counters are on by
 default, while in-flight and duration metrics remain opt-in. Request duration
 metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
@@ -156,6 +168,15 @@ paths unless duration metrics or HTTP access logs are enabled. Use
 `--no-byte-metrics` when comparing the cost of byte accounting. Use the
 `telemetry_paths` benchmark for a no-recorder facade baseline; the stress server
 intentionally installs its console recorder in every feature set.
+
+With multiple stress-server workers, each listener owns a current-thread Tokio
+runtime. A separate one-worker Tokio runtime supervises listeners and exports
+metrics; increasing `--server-threads` does not create another equally sized
+supervisor pool. Process affinity alone does not pin each listener thread to a
+specific physical core.
+Its plaintext shared-handler path uses borrowed TCP socket halves rather than
+the generic split allocation and mutex. Serial handlers and TLS retain their
+generic I/O path; compare those modes separately.
 
 The checked-in root `config.toml` enables self-signed TCP TLS for local
 stress runs. For the plain TCP throughput baseline, use

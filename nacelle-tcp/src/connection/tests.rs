@@ -1887,6 +1887,204 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
 }
 
 #[tokio::test]
+async fn borrowed_tcp_halves_match_owned_io_roundtrip_and_metadata() {
+    for borrowed in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener address");
+        let mut client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let (mut stream, _) = listener.accept().await.expect("connection should accept");
+        let runtime_state = tracked_runtime(1);
+        runtime_state
+            .control()
+            .set_max_connections(Some(1))
+            .expect("connection cap");
+        let observer = NacelleInMemoryObserver::new();
+        let server = TcpServer::<PhaseProtocol>::builder()
+            .protocol(PhaseProtocol {
+                authenticated: true,
+                request_wire_bytes: None,
+                encoder_writes_then_errors: false,
+            })
+            .handler(handler_fn(
+                |mut context: TcpRequestContext<PhaseProtocol>| async move {
+                    let info = &context.connection().info;
+                    assert_ne!(info.connection_id, 0);
+                    assert_eq!(info.transport.as_str(), "tcp");
+                    assert_eq!(info.listener.as_ref(), "borrowed-halves");
+                    assert_eq!(info.peer_addr, None);
+                    assert_eq!(info.peer_ip, None);
+                    assert_eq!(info.local_addr, None);
+                    assert_eq!(info.local_path, None);
+                    assert_eq!(info.tls, None);
+                    let chunk = context
+                        .request_mut()
+                        .body
+                        .next_chunk()
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(&chunk[..], b"abc");
+                    assert!(context.request_mut().body.next_chunk().await.is_none());
+                    context.respond(TcpResponse::bytes("ok")).await
+                },
+            ))
+            .runtime_state(runtime_state.clone())
+            .expect("runtime configuration")
+            .telemetry(
+                NacelleTelemetry::default()
+                    .with_metrics(false)
+                    .with_observer(observer.clone()),
+            )
+            .build()
+            .expect("server should build")
+            .with_listener_label("borrowed-halves");
+        let serve = tokio::spawn(async move {
+            if borrowed {
+                let (reader, writer) = stream.split();
+                server.serve_halves(reader, writer).await
+            } else {
+                server.serve_io(stream).await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            client
+                .write_all(b"\x03abc")
+                .await
+                .expect("request should write");
+            let mut response = [0_u8; 2];
+            client
+                .read_exact(&mut response)
+                .await
+                .expect("response should read");
+            assert_eq!(&response, b"ok");
+            client.shutdown().await.expect("client should close");
+            serve
+                .await
+                .expect("server task should join")
+                .expect("server should finish");
+        })
+        .await
+        .expect("roundtrip should complete");
+        assert_eq!(runtime_state.active_connections(), 0);
+        assert_eq!(runtime_state.active_requests(), 0);
+        assert_eq!(runtime_state.active_streaming_tasks(), 0);
+        assert!(runtime_state.control().connections(1).unwrap().is_empty());
+        assert_eq!(
+            observer
+                .events()
+                .iter()
+                .filter(|event| { event.kind == NacelleTelemetryEventKind::ConnectionClosed })
+                .count(),
+            1,
+        );
+    }
+}
+
+#[tokio::test]
+async fn borrowed_tcp_halves_cancellation_recovers_capacity_and_caller_io() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let addr = listener.local_addr().expect("listener address");
+    let mut client = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("client should connect");
+    let (mut stream, peer) = listener.accept().await.expect("connection should accept");
+    let runtime_state = tracked_runtime(1);
+    runtime_state
+        .control()
+        .set_max_connections(Some(1))
+        .expect("connection cap");
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let server = TcpServer::<PhaseProtocol>::builder()
+        .protocol(PhaseProtocol {
+            authenticated: true,
+            request_wire_bytes: None,
+            encoder_writes_then_errors: false,
+        })
+        .handler(handler_fn({
+            let entered = entered.clone();
+            move |context: TcpRequestContext<PhaseProtocol>| {
+                let entered = entered.clone();
+                async move {
+                    let info = &context.connection().info;
+                    assert_eq!(info.connection_id, 42);
+                    assert_eq!(info.listener.as_ref(), "borrowed-halves");
+                    assert_eq!(info.peer_addr, Some(peer));
+                    assert_eq!(info.local_addr, Some(addr));
+                    entered.notify_one();
+                    std::future::pending::<
+                        Result<crate::TcpHandlerCompletion<PhaseProtocol>, NacelleError>,
+                    >()
+                    .await
+                }
+            }
+        }))
+        .runtime_state(runtime_state.clone())
+        .expect("runtime configuration")
+        .build()
+        .expect("server should build")
+        .with_listener_label("borrowed-halves");
+    client.write_all(&[0]).await.expect("request should write");
+    let (reader, writer) = stream.split();
+    let mut serve = Box::pin(
+        server.serve_halves_with_connection_meta(
+            reader,
+            writer,
+            NacelleConnectionMeta::tcp(Some(peer), Some(addr))
+                .with_connection_id(42)
+                .with_listener("replaced"),
+        ),
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::select! {
+            _ = entered.notified() => {}
+            _ = &mut serve => panic!("handler should remain pending"),
+        }
+    })
+    .await
+    .expect("handler should start");
+    assert_eq!(runtime_state.active_connections(), 1);
+    assert_eq!(runtime_state.active_requests(), 1);
+    assert_eq!(runtime_state.control().connections(1).unwrap().len(), 1);
+    drop(serve);
+    assert_eq!(runtime_state.active_connections(), 0);
+    assert_eq!(runtime_state.active_requests(), 0);
+    assert_eq!(runtime_state.active_streaming_tasks(), 0);
+    assert!(runtime_state.control().connections(1).unwrap().is_empty());
+    drop(
+        runtime_state
+            .acquire_connection()
+            .expect("connection capacity should recover"),
+    );
+    drop(
+        runtime_state
+            .acquire_request()
+            .expect("request capacity should recover"),
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        stream
+            .shutdown()
+            .await
+            .expect("caller should recover borrowed I/O");
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            client
+                .read(&mut byte)
+                .await
+                .expect("client should observe shutdown"),
+            0
+        );
+    })
+    .await
+    .expect("caller shutdown should complete");
+}
+
+#[tokio::test]
 async fn borrowed_serial_connection_releases_io_on_cancellation() {
     let (_client, mut server_io) = tokio::io::duplex(64);
     let serve = serve_serial_stream(

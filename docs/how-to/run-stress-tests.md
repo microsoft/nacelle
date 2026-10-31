@@ -16,6 +16,11 @@ The `examples/run-stress-test.sh` and `examples/run-stress-test.ps1` helpers
 accept `--config`/`-Config` and pass `--tls-insecure` to the stress client only
 when the effective `tls_self_signed` value is true.
 
+The Bash helper builds both binaries before starting its listener-readiness
+wait. It rejects an occupied listen port, waits up to 10 seconds for its own
+server to listen, and stops only the server/client processes it launched.
+It does not terminate other stress servers by name.
+
 The stress client enables its Rustls support by default so `--tls-insecure`
 works with the local self-signed server. For a Rustls-free plain TCP build, run
 both stress binaries with `--no-default-features` and use
@@ -75,16 +80,29 @@ PowerShell example:
 .\examples\run-stress-test.ps1 -Config examples/nacelle-stress-server/configs/tcp.toml -ServerThreads 48 -Connections 256 -Pipeline 8 -DurationSecs 30 -PayloadBytes 256
 ```
 
-The stress server installs a `metrics-util` recorder and prints a compact
-metrics snapshot every 5 seconds. It enables request
+The stress server installs a console recorder backed by `metrics-util` and prints
+a compact metrics snapshot every 5 seconds. It enables request
 started/completed counters plus request/response byte counters by default. The
 generic telemetry API groups those switches under `request_metrics`; the stress
 server exposes byte accounting as `byte_metrics = true`.
+Request/response body-size histogram samples are aggregated into constant-space
+byte totals across labels for this console; raw byte distributions are not
+retained. Cached handles collect into 64 cache-line-isolated shards, and the
+console drains them off the connection path. Window boundaries are approximate;
+totals are conserved across successive snapshots unless they saturate.
+This does not change the library's emitted metric names or types.
 Use `--no-byte-metrics` for a lower-overhead recorder run. Use
 `--no-default-features` with the plain TCP config for a system-allocator,
 Rustls-free diagnostic; metrics collection remains active. Add
 `--features mimalloc-allocator` when the baseline must keep mimalloc while
 disabling TLS.
+
+On Linux, multiple server workers each own a current-thread Tokio runtime.
+The metrics and supervision runtime has one worker regardless of
+`--server-threads`; process affinity does not assign individual listener
+threads to fixed cores.
+The plaintext shared handler uses borrowed TCP socket halves; serial and TLS
+handlers keep generic I/O. Keep handler and transport modes fixed in comparisons.
 
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:

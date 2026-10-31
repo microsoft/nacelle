@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use super::*;
 use crate::{LengthDelimitedDecoder, LengthDelimitedEncoder, MessageDecoder, MessageEncoder};
@@ -423,6 +424,157 @@ async fn writer_feeds_and_sends_messages() {
             0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o', 0, 0, 0, 5, b'w', b'o', b'r', b'l', b'd'
         ]
     );
+}
+
+enum WriteStep {
+    Accept(usize),
+    Pending,
+    Error(std::io::Error),
+}
+
+struct ScriptedWrite {
+    steps: VecDeque<WriteStep>,
+    output: Vec<u8>,
+    flushes: usize,
+}
+
+fn scripted_write(steps: impl IntoIterator<Item = WriteStep>) -> ScriptedWrite {
+    ScriptedWrite {
+        steps: steps.into_iter().collect(),
+        output: Vec::new(),
+        flushes: 0,
+    }
+}
+
+impl AsyncWrite for ScriptedWrite {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        match this
+            .steps
+            .pop_front()
+            .unwrap_or(WriteStep::Accept(buffer.len()))
+        {
+            WriteStep::Accept(limit) => {
+                let count = buffer.len().min(limit);
+                let (accepted, _) = buffer.split_at(count);
+                this.output.extend_from_slice(accepted);
+                Poll::Ready(Ok(count))
+            }
+            WriteStep::Pending => {
+                context.waker().wake_by_ref();
+                Poll::Pending
+            }
+            WriteStep::Error(error) => Poll::Ready(Err(error)),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        self.get_mut().flushes += 1;
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn writer_resumes_cancelled_partial_flush_without_repeating_bytes() {
+    let transport = scripted_write([
+        WriteStep::Accept(3),
+        WriteStep::Pending,
+        WriteStep::Accept(2),
+    ]);
+    let mut writer = MessageWriter::with_capacity(transport, LengthDelimitedEncoder::new(16), 32);
+    writer.feed(&b"abcdef"[..]).expect("feed");
+    let pointer = writer.buffer().as_ptr();
+    let wire = b"\0\0\0\x06abcdef";
+    {
+        let pending = writer.flush();
+        tokio::pin!(pending);
+        std::future::poll_fn(|context| {
+            assert!(pending.as_mut().poll(context).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    assert_eq!(writer.transport().output.as_slice(), &wire[..3]);
+    assert_eq!(&writer.buffer()[..], &wire[3..]);
+    assert_eq!(writer.buffer().as_ptr(), pointer.wrapping_add(3));
+    assert_eq!(writer.transport().flushes, 0);
+
+    writer.flush().await.expect("resume flush");
+    writer.feed(&b"next"[..]).expect("feed next");
+    writer.flush().await.expect("next flush");
+
+    assert_eq!(
+        writer.transport().output.as_slice(),
+        b"\0\0\0\x06abcdef\0\0\0\x04next"
+    );
+    assert!(writer.buffer().is_empty());
+    assert_eq!(writer.transport().flushes, 2);
+}
+
+#[tokio::test]
+async fn writer_resumes_after_partial_write_error_with_shared_buffer() {
+    let transport = scripted_write([
+        WriteStep::Accept(5),
+        WriteStep::Error(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "scripted write failure",
+        )),
+        WriteStep::Accept(1),
+    ]);
+    let mut buffer = BytesMut::with_capacity(32);
+    buffer.extend_from_slice(b"kept");
+    let retained = buffer.split_to(4).freeze();
+    let mut writer = MessageWriter::with_buffer(transport, LengthDelimitedEncoder::new(16), buffer);
+    writer.feed(&b"abcdef"[..]).expect("feed");
+    let pointer = writer.buffer().as_ptr();
+    let wire = b"\0\0\0\x06abcdef";
+
+    let error = writer.flush().await.expect_err("scripted write error");
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert_eq!(writer.transport().output.as_slice(), &wire[..5]);
+    assert_eq!(&writer.buffer()[..], &wire[5..]);
+    assert_eq!(writer.buffer().as_ptr(), pointer.wrapping_add(5));
+    assert_eq!(writer.transport().flushes, 0);
+
+    writer.feed(&b"next"[..]).expect("feed next");
+    writer.flush().await.expect("resume flush");
+
+    assert_eq!(
+        writer.transport().output.as_slice(),
+        b"\0\0\0\x06abcdef\0\0\0\x04next"
+    );
+    assert_eq!(&retained[..], b"kept");
+    assert!(writer.buffer().is_empty());
+    assert_eq!(writer.transport().flushes, 1);
+}
+
+#[tokio::test]
+async fn writer_retains_unwritten_suffix_after_write_zero() {
+    let transport = scripted_write([WriteStep::Accept(2), WriteStep::Accept(0)]);
+    let mut writer = MessageWriter::new(transport, LengthDelimitedEncoder::new(16));
+    writer.feed(&b"abcdef"[..]).expect("feed");
+    let wire = b"\0\0\0\x06abcdef";
+
+    let error = writer.flush().await.expect_err("write zero");
+    assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+    assert_eq!(writer.transport().output.as_slice(), &wire[..2]);
+    assert_eq!(&writer.buffer()[..], &wire[2..]);
+    assert_eq!(writer.transport().flushes, 0);
+
+    writer.flush().await.expect("resume flush");
+
+    assert_eq!(writer.transport().output.as_slice(), wire);
+    assert!(writer.buffer().is_empty());
+    assert_eq!(writer.transport().flushes, 1);
 }
 
 #[derive(Debug, Default)]

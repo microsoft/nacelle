@@ -145,8 +145,8 @@ where
     P: SharedProtocol,
     H: crate::admission::TcpService<P>,
     Observer: NacelleTelemetryObserver,
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
 {
     telemetry.register_runtime_state(runtime_state.clone());
     let registration = runtime_state.register_connection(&connection)?;

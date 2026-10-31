@@ -172,6 +172,99 @@ fn protocol_pipeline_benches(c: &mut Criterion) {
     group.finish();
 }
 
+fn fragmented_body_benches(c: &mut Criterion) {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use bytes::Buf;
+    use nacelle::core::pipeline::handler_fn;
+    use nacelle::tcp::{NacelleTcpConfig, TcpRequestContext, TcpResponse, TcpServer};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    struct FragmentedIo {
+        input: Bytes,
+        max_read: usize,
+    }
+
+    impl AsyncRead for FragmentedIo {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let take = self.input.len().min(self.max_read).min(buffer.remaining());
+            buffer.put_slice(&self.input[..take]);
+            self.input.advance(take);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for FragmentedIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buffer.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    const REQUESTS: usize = 128;
+    const BODY_BYTES: usize = 256;
+    let mut input = BytesMut::new();
+    for id in 0..REQUESTS {
+        input.extend_from_slice(
+            &LengthDelimitedProtocol
+                .encode_request_frame(id as u64, 1, 0, &[0xAB; BODY_BYTES])
+                .expect("request frame"),
+        );
+    }
+    let input = input.freeze();
+    let server = TcpServer::<LengthDelimitedProtocol>::builder()
+        .protocol(LengthDelimitedProtocol)
+        .tcp_config(NacelleTcpConfig::default().with_read_buffer_capacity(4096))
+        .handler(handler_fn(
+            |mut context: TcpRequestContext<LengthDelimitedProtocol>| async move {
+                let mut received = 0;
+                while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                    received += black_box(chunk?).len();
+                }
+                assert_eq!(received, BODY_BYTES);
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .build()
+        .expect("server");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("runtime");
+    let mut group = c.benchmark_group("tcp_body_read_128x256");
+    group.throughput(Throughput::Elements(REQUESTS as u64));
+    for max_read in [32, 4096] {
+        group.bench_function(BenchmarkId::new("max_read_bytes", max_read), |b| {
+            b.to_async(&runtime).iter(|| async {
+                server
+                    .serve_io(FragmentedIo {
+                        input: input.clone(),
+                        max_read,
+                    })
+                    .await
+                    .expect("fragmented requests");
+            });
+        });
+    }
+    group.finish();
+}
+
 fn runtime_limit_benches(c: &mut Criterion) {
     let state = NacelleRuntimeState::new(
         NacelleLimits::default()
@@ -564,6 +657,7 @@ criterion_group!(
     critical_paths,
     protocol_frame_benches,
     protocol_pipeline_benches,
+    fragmented_body_benches,
     runtime_limit_benches,
     contended_connection_benches,
     contended_request_benches,
