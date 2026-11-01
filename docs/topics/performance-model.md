@@ -178,6 +178,23 @@ Its plaintext shared-handler path uses borrowed TCP socket halves rather than
 the generic split allocation and mutex. Serial handlers and TLS retain their
 generic I/O path; compare those modes separately.
 
+The fixture's shared 64-byte success template is read-only static storage, so
+its `Bytes` clones/drops do not update a shared reference count. Custom sizes
+and explicit worker-local templates retain owned `Bytes`. This optimization
+preserves the fixed payload and does not apply to dynamically generated
+application responses.
+
+The stress fixture's optional `--worker-local-response` allocates one immutable
+response template per listener. This separates the template's reference-count
+traffic between workers; it does not remove per-response ownership updates or
+make transport buffers worker-local. Runtime admission counters, limits, live
+controls, and rate tables remain process-wide. Optional Linux `--worker-cpus`
+pins each listener before its template initialization. Both options preserve
+the default shared-template behavior when omitted. Compare affinity alone and
+worker-local ownership independently, and budget template replication and
+per-worker allocator retention; first-touch placement is not a NUMA guarantee.
+See [stress-test options](../how-to/run-stress-tests.md) for validation rules.
+
 The checked-in root `config.toml` enables self-signed TCP TLS for local
 stress runs. For the plain TCP throughput baseline, use
 `examples/nacelle-stress-server/configs/tcp.toml`. Compare TLS and non-TLS runs

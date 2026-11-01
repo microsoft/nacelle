@@ -104,6 +104,37 @@ threads to fixed cores.
 The plaintext shared handler uses borrowed TCP socket halves; serial and TLS
 handlers keep generic I/O. Keep handler and transport modes fixed in comparisons.
 
+The fixture's default 64-byte success payload uses read-only static `Bytes`.
+This avoids template reference-count updates and payload allocation without
+replicating templates. Other response sizes keep owned storage. This is specific
+to the fixture's fixed `0x5A` payload, not an optimization of application-generated
+responses. Explicit worker-local mode keeps owned templates at every size.
+
+For an explicit Linux listener-placement experiment, choose allowed logical CPU
+IDs, preferably one per physical core:
+
+```bash
+cargo run --release -p nacelle-stress-server -- \
+  --config examples/nacelle-stress-server/configs/tcp.toml \
+  --server-threads 2 --worker-cpus 0,2 --worker-local-response
+```
+
+Replace `0,2` with CPUs in the process's affinity mask. `--worker-cpus` requires
+one unique CPU per effective listener worker. Invalid lists, unavailable CPUs,
+and affinity failures reject startup; explicit affinity requires Linux.
+The supervisor and metrics threads retain the process mask.
+
+`--worker-local-response` is off by default. It builds one response template and
+handler per listener instead of sharing them across workers; all listeners still
+share one runtime state, admission limits, live controls, and rate history.
+Template initialization happens after optional worker pinning. Allocator page
+reuse means this is not a guarantee of NUMA-local memory. Template storage scales
+with `effective_workers * response_bytes`, with overflow rejected at startup;
+worker-local allocator retention can also increase RSS. Measure CPU, throughput,
+and memory together. Use `--worker-cpus` without `--worker-local-response` to
+isolate affinity from template ownership. Neither option changes the protocol
+or response-write policy.
+
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:
 

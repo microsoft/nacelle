@@ -32,3 +32,6 @@ serde = { workspace = true, features = ["derive"] }
 toml = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+core_affinity = { workspace = true }

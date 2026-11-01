@@ -34,6 +34,17 @@ its parent and the pinned starting revision. Keep allocation-instrumented runs
 separate from throughput/latency samples. Shared-host measurements establish
 local variance, not a dedicated-host performance guarantee.
 
+For Linux stress-worker experiments, record the process CPU mask and any
+`--worker-cpus` list separately. Compare an unchanged default, affinity alone,
+and `--worker-local-response` under the same worker count and effective CPU
+placement. Worker-local templates can reduce shared reference-count traffic
+while increasing RSS; record peak memory and single-connection controls rather
+than assuming a multi-worker gain applies to them. Keep the
+[response-write policy](run-stress-tests.md) identical unless batching is the
+explicit variable under test.
+The default shared 64-byte fixture template is static; use a custom response
+size when isolating owned-template contention, and record `--response-bytes`.
+
 Suggested local benchmark:
 
 ```bash
