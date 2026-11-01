@@ -6,8 +6,8 @@ mod recorder;
 use nacelle_stress_server::shared;
 use recorder::{ByteTotals, ConsoleRecorder};
 use shared::{
-    StressServer, build_runtime_state, build_server_with_runtime_state, configure_allocator,
-    parse_args, print_config,
+    ResponseWriteMode, ServerConfig, StressServer, build_runtime_state,
+    build_server_with_runtime_state, configure_allocator, parse_args, print_config,
 };
 
 use std::collections::BTreeMap;
@@ -123,7 +123,10 @@ where
             let (reader, writer) = stream.split();
             server.serve_halves(reader, writer).await
         }
-        StressServer::Serial(_) => server.serve_io(stream).await,
+        StressServer::Serial(server) => {
+            let (reader, writer) = stream.split();
+            server.serve_halves(reader, writer).await
+        }
     }
 }
 
@@ -535,10 +538,24 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = Arc::new(parse_args(std::env::args().skip(1), "tokio")?);
     validate_worker_affinity(config.worker_cpus.as_deref())?;
+    let single_loop = (!cfg!(target_os = "linux") || config.server_threads <= 1)
+        && !config.worker_local_response
+        && config.worker_cpus.is_none()
+        && config.response_write_mode == ResponseWriteMode::Immediate;
+    let mut runtime = if single_loop {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        let mut runtime = tokio::runtime::Builder::new_multi_thread();
+        runtime.worker_threads(1);
+        runtime
+    };
+    runtime.enable_all().build()?.block_on(run(config))
+}
+
+async fn run(config: Arc<ServerConfig>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     configure_allocator(config.low_memory);
 
     let metrics_console = StressMetricsConsole::install(&config)?;

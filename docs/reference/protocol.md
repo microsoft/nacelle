@@ -73,6 +73,14 @@ awaits completion before decoding the next message, so one connection cannot
 overlap serial handler calls. The same serial context permits either a response
 or explicit silent completion.
 
+`TcpServer` and `SerialTcpServer` accept owned or borrowed read/write halves
+through `serve_halves` and `serve_halves_with_connection_meta`. For plaintext
+TCP, `TcpStream::split()` supplies specialized borrowed halves without the
+generic I/O split's allocation and mutex. Serial serving retains its exclusive,
+ordered connection-state access. Capacity and tracking end when serving completes
+or is cancelled. After cancelling borrowed serving, discard or finalize the
+owner's stream rather than resuming its partially consumed protocol.
+
 ## Admission before body work
 
 Implement `nacelle::core::Admission<TcpAdmissionContext<'_, P, AppState>>`

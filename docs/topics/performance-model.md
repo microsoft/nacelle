@@ -44,6 +44,16 @@ worker counts and CPU masks identical between binaries. A node-local process mas
 still permits worker migration and SMT sharing; it is not individual-core pinning.
 A client-bound run cannot establish server capacity.
 
+For the one-connection case, use one persistent socket, pipeline depth 1, one
+listener, and one client worker. Immediate delivery prevents batching from
+confounding this measurement. The stress fixture's serial handler lends
+connection state rather than cloning a shared context per request, and plaintext
+serial I/O uses specialized borrowed TCP halves. An explicit one-worker
+`--worker-cpus` list selects a dedicated current-thread listener; omitting it
+uses the supervision runtime: current-thread for one unpinned immediate listener,
+and one-worker multi-thread for coalescing or dedicated listeners. These are
+distinct configurations, not interchangeable baselines.
+
 The `request_permit_contended` benchmark compares owned and transport-scoped
 borrowed permits on one shared runtime state with 1, 4, and 8 worker threads.
 Each worker acquires/releases 1,024 permits per iteration. Thread startup is

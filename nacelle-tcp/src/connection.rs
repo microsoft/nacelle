@@ -617,6 +617,42 @@ where
     IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let (reader, writer) = tokio::io::split(io);
+    serve_serial_halves_admitted(
+        reader,
+        writer,
+        protocol,
+        handler,
+        config,
+        telemetry,
+        runtime_state,
+        tcp_limits,
+        connection,
+        activity,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn serve_serial_halves_admitted<P, H, R, W, Observer>(
+    reader: R,
+    writer: W,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    connection: NacelleConnectionMeta,
+    activity: Option<NacelleConnectionActivity>,
+) -> Result<(), NacelleError>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: crate::admission::SerialTcpService<P>,
+    Observer: NacelleTelemetryObserver,
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     drive_connection_with_dispatch(
         reader,
         writer,

@@ -98,11 +98,12 @@ Rustls-free diagnostic; metrics collection remains active. Add
 disabling TLS.
 
 On Linux, multiple server workers each own a current-thread Tokio runtime.
-The metrics and supervision runtime has one worker regardless of
-`--server-threads`; process affinity does not assign individual listener
-threads to fixed cores.
-The plaintext shared handler uses borrowed TCP socket halves; serial and TLS
-handlers keep generic I/O. Keep handler and transport modes fixed in comparisons.
+One unpinned listener with immediate responses uses the main thread's
+current-thread runtime for I/O, metrics, and supervision. Coalescing and dedicated
+listener configurations retain a one-worker multi-thread supervision runtime.
+Process affinity does not assign individual listener threads to fixed cores.
+Plaintext shared and serial handlers use specialized borrowed TCP socket halves.
+TLS keeps generic I/O. Keep handler and transport modes fixed in comparisons.
 
 The fixture's default 64-byte success payload uses read-only static `Bytes`.
 This avoids template reference-count updates and payload allocation without

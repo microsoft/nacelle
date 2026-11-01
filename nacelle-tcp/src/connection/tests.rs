@@ -2236,6 +2236,71 @@ impl SerialTcpHandler<SerialCounterProtocol> for DrainSerialHandler {
 }
 
 #[tokio::test]
+async fn serial_borrowed_tcp_halves_preserve_ordered_state() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let (client, accepted) = tokio::join!(
+        tokio::net::TcpStream::connect(listener.local_addr().expect("address")),
+        listener.accept(),
+    );
+    let mut client = client.expect("client");
+    let (mut stream, _) = accepted.expect("accepted stream");
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);
+    let serving = async {
+        let (reader, writer) = stream.split();
+        server.serve_halves(reader, writer).await
+    };
+    let exchange = async {
+        client.write_all(&[0, 0]).await.expect("requests");
+        let mut response = [0; 2];
+        client.read_exact(&mut response).await.expect("responses");
+        assert_eq!(&response, b"01");
+        client.shutdown().await.expect("shutdown");
+    };
+    let (result, ()) = tokio::join!(serving, exchange);
+    result.expect("serial serving");
+}
+
+#[tokio::test]
+async fn serial_borrowed_halves_cancellation_releases_tracking_and_capacity() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let (client, accepted) = tokio::join!(
+        tokio::net::TcpStream::connect(listener.local_addr().expect("address")),
+        listener.accept(),
+    );
+    let _client = client.expect("client");
+    let (mut stream, _) = accepted.expect("accepted stream");
+    let runtime = tracked_runtime(1);
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+        .with_runtime_state(runtime.clone())
+        .expect("runtime");
+    let (reader, writer) = stream.split();
+    let mut serving = Box::pin(server.serve_halves_with_connection_meta(
+        reader,
+        writer,
+        NacelleConnectionMeta::tcp(None, None),
+    ));
+    tokio::select! {
+        result = &mut serving => panic!("serving ended before cancellation: {result:?}"),
+        _ = registered(&runtime) => {}
+    }
+    assert_eq!(runtime.active_connections(), 1);
+    drop(serving);
+    assert_eq!(runtime.active_connections(), 0);
+    assert!(
+        runtime
+            .control()
+            .connections(1)
+            .expect("tracking")
+            .is_empty()
+    );
+    assert!(stream.local_addr().is_ok());
+}
+
+#[tokio::test]
 async fn serial_state_mutation_is_ordered_and_not_reentrant() {
     let (mut client, server_io) = tokio::io::duplex(64);
     let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler);

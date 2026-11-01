@@ -45,6 +45,47 @@ explicit variable under test.
 The default shared 64-byte fixture template is static; use a custom response
 size when isolating owned-template contention, and record `--response-bytes`.
 
+## Two distinct TCP workloads
+
+Build both stress tools before measuring. For one persistent connection with
+one request outstanding, use immediate responses, one listener, and one client
+worker. On Linux, pin the process to an allowed physical-core CPU; one unpinned
+listener shares the main thread's current-thread runtime:
+
+```bash
+taskset -c 0 target/release/nacelle-stress-server \
+  --config examples/nacelle-stress-server/configs/tcp.toml \
+  --bind 127.0.0.1:7879 --server-threads 1 \
+  --handler-mode serial --response-write-mode immediate
+```
+
+In another terminal:
+
+```bash
+TOKIO_WORKER_THREADS=1 taskset -c 12 target/release/nacelle-stress-test \
+  --addr 127.0.0.1:7879 --connections 1 --pipeline 1 \
+  --duration-secs 30 --payload-bytes 256
+```
+
+Replace `0` and `12` with allowed CPUs on separate physical cores. Serial
+dispatch avoids per-request shared connection-context cloning; the fixture's
+plaintext path also avoids generic split locking. Compare serial and shared
+dispatch separately, then hold the selected mode and runtime topology fixed
+between revisions. This is not connection churn: do not set
+`--requests-per-connection 1`.
+An explicit `--worker-cpus 0` instead adds a dedicated listener runtime and
+thread, leaving supervision on the main thread. Measure that topology separately
+rather than assuming it improves a one-request workload.
+
+For the serial fixture's native I/O path, select `--handler-mode serial` with
+`--response-write-mode coalesce-buffered` and use multiple requests in flight.
+Measure a one-connection, pipeline-64 case separately from a many-connection,
+pipeline-8 case. Keep listener count, affinity, handler mode,
+and the same coalesced policy fixed at both revisions. A gain from switching
+immediate delivery to coalescing is a configuration gain, not evidence that the
+one-request path improved. Report server CPU per completed request and latency;
+coalescing cannot combine responses that the client has not requested yet.
+
 Suggested local benchmark:
 
 ```bash
