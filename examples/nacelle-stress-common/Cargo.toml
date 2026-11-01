@@ -9,6 +9,9 @@ repository.workspace = true
 homepage.workspace = true
 publish = false
 
+[features]
+allocation-counting = []
+
 [dependencies]
 bytes = { workspace = true }
 nacelle = { workspace = true }

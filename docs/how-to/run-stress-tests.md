@@ -112,6 +112,51 @@ pool. It does not change connection count, pipeline depth, duration, or TLS
 verification. Compare it separately for a one-connection workload; keep the
 multi-thread default when generating load across multiple cores.
 
+The explicit `--blocking-io` client mode requires `--pipeline 1` and persistent
+connections; it rejects connection churn. Each connection gets one blocking I/O
+worker while the selected Tokio runtime coordinates the run. TCP/TLS setup is
+unchanged, and each worker writes one request, flushes, then receives the complete
+response before sending another. TLS uses the existing negotiated Rustls
+connection and cipher; it does not reconnect or change verification.
+
+This mode trades additional threads and allocator/runtime memory for different
+socket wakeup costs. It does not busy-wait. The blocking pool is sized to the
+explicit connection count so all workers can reach the phase barriers.
+Cancellation shuts down the shared socket and wakes phase waits. Keep the ordinary
+asynchronous mode as the default and compare CPU, RTT, RSS, and thread count
+before selecting blocking I/O for a workload.
+
+Use `--warmup-secs 5` to warm up the same established connections before
+measuring. All warmup responses drain before the measured phase. The client
+flushes `measurement_start` and `measurement_end` markers outside the request
+loop; connect/handshake work, warmup, and final shutdown are excluded from its
+request statistics. Server console windows include all served requests,
+including warmup.
+
+Mean RTT includes request frame preparation, write/flush, and receipt and
+validation of the complete response. p50, p95, and p99 use every completion in
+a bounded histogram with less than 0.4% upper-bound quantization error. The
+histogram uses approximately 114 KiB per connection, independent of run duration.
+Earlier client revisions timed from after the request write and sampled
+percentiles; keep the same client revision in comparisons.
+
+For allocation diagnostics, build either stress tool with
+`--features allocation-counting`. It wraps that tool's unchanged global
+allocator and counts successful allocation, zeroed-allocation, and reallocation
+calls, requested bytes, and frees. Client deltas exclude warmup and shutdown;
+server deltas use its periodic/final console windows. Counts are process-wide,
+include console work, and have non-atomic snapshot boundaries. Native C
+allocations are not counted. Keep these instrumented results separate from
+CPU/latency baselines; the feature adds atomic writes to allocation operations
+and is disabled by default.
+
+The client's separate `phase-timing` feature reports request preparation/
+write/flush and response read/validation wall times. Read time includes peer
+wait; these are diagnostic timings, not isolated TLS or socket CPU costs.
+Rustls's synchronous stream can drive TLS I/O while servicing a caller operation,
+so blocking-mode phase labels follow those operations rather than TLS internals.
+Both extra timing and allocation collection compile out of ordinary builds.
+
 The fixture's default 64-byte success payload uses read-only static `Bytes`.
 This avoids template reference-count updates and payload allocation without
 replicating templates. Other response sizes keep owned storage. This is specific

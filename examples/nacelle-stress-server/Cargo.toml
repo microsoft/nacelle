@@ -18,6 +18,7 @@ rustls = ["nacelle/rustls", "dep:tokio-rustls"]
 tls-self-signed = ["rustls", "nacelle/tls-self-signed"]
 phase-timing = ["nacelle/phase-timing"]
 mimalloc-allocator = ["dep:mimalloc", "dep:libmimalloc-sys"]
+allocation-counting = ["nacelle-stress-common/allocation-counting"]
 
 [dependencies]
 nacelle = { workspace = true }

@@ -62,6 +62,30 @@ does not establish higher server capacity. Keep the multi-thread client
 default for multi-core coalescing load and hold its runtime fixed in
 server-only comparisons.
 
+The stress client's opt-in `--blocking-io` profile assigns a blocking I/O worker
+to each persistent pipeline-1 connection. This changes socket wait/scheduling
+costs without adding requests in flight or changing the negotiated TLS
+connection. It also adds threads and per-worker allocator/runtime memory.
+Treat any improvement as an end-to-end driver profile result, not server-code
+capacity evidence; keep this option off unless the measured trade-off fits
+the workload.
+
+For the sequential TLS target, keep exactly one request outstanding on each
+persistent connection. Compare TLS and plaintext using identical 256-byte
+requests, responses, and immediate delivery. Warm up those same connections,
+then report measured mean RTT and p50/p95/p99 with client/server CPU separately.
+Current stress-client RTT includes request preparation and TLS write; older
+after-write measurements omit that portion of the round trip.
+
+Profile the complete lifecycle before changing buffering or synchronization.
+Socket-read wall time includes peer and scheduler waits; overlapping client and
+server phase durations cannot be added to reconstruct RTT. Allocation-counting
+and phase-timing stress-tool features are diagnostic-only and default off.
+Allocation counters observe Rust global-allocator calls, not native C internals.
+Do not infer TLS mutex contention from a generic split symbol alone, or propose
+a logging queue when formatting already runs outside request processing.
+See [sequential TCP/TLS comparisons](../how-to/compare-performance.md#sequential-tcp-and-tls-round-trips).
+
 The `request_permit_contended` benchmark compares owned and transport-scoped
 borrowed permits on one shared runtime state with 1, 4, and 8 worker threads.
 Each worker acquires/releases 1,024 permits per iteration. Thread startup is

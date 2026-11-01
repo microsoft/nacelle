@@ -91,6 +91,56 @@ immediate delivery to coalescing is a configuration gain, not evidence that the
 one-request path improved. Report server CPU per completed request and latency;
 coalescing cannot combine responses that the client has not requested yet.
 
+## Sequential TCP and TLS round trips
+
+Use one persistent connection, pipeline depth 1, and immediate responses when
+measuring a sequential driver. Receive and validate the complete response before
+sending the next request. Do not substitute a pipelined or batched workload.
+Keep the request payload at 256 bytes and the response behavior identical in
+plaintext and TLS comparisons.
+
+For local self-signed TLS, use the same one-listener server command above with
+`examples/nacelle-stress-server/configs/tcp-tls.toml`. Run the client with:
+
+```bash
+taskset -c 12 target/release/nacelle-stress-test \
+  --addr 127.0.0.1:7879 --connections 1 --pipeline 1 \
+  --payload-bytes 256 --current-thread --tls-insecure \
+  --warmup-secs 5 --duration-secs 30
+```
+
+The insecure trust option is only for this local self-signed fixture. Record the
+printed negotiated TLS version and cipher. Omit `--tls-insecure` and select the
+plaintext server config for the transport control; do not silently change
+response size, timeouts, metrics, or allocator.
+
+Warmup uses the same established connections and drains their responses before
+the measured phase. `measurement_start` and `measurement_end` are flushed
+outside the request loop. Initial connections, TLS handshakes, warmup, and final
+shutdown are excluded from the client request statistics. Server console windows
+still include warmup: use matching steady-state CPU snapshots or whole diagnostic
+windows after warmup rather than dividing startup totals by measured requests.
+
+Report RPS, mean RTT, p50/p95/p99, client and server user/kernel CPU per request,
+memory, thread count, and allocation/syscall evidence separately. Current RTT
+starts before request frame preparation and includes write/flush through complete
+response validation. Earlier client revisions started timing after the write;
+their latency values are not comparable. Current percentiles include every
+completion in a bounded histogram, whose bucket upper bounds overestimate by
+less than 0.4%. Repeat unchanged controls and interleave baseline/candidate runs
+before claiming a gain.
+
+For a separate blocking-client experiment, add `--blocking-io` while keeping
+the same binary, server, TLS cipher, payload, and pipeline depth 1. It creates
+one additional blocking worker per connection; compare memory and thread count
+as well as latency and CPU. It changes client I/O scheduling, not the server
+implementation, and does not allow requests to overlap within a connection.
+
+After the one-connection comparison, measure 2, 4, 8, 16, and 32 independent
+connections with `--pipeline 1`. Record worker counts and CPU placement for each
+case. Report aggregate throughput separately from single-connection throughput;
+`connections / RPS` is not an independently measured latency distribution.
+
 Suggested local benchmark:
 
 ```bash

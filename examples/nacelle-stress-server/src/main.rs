@@ -1,6 +1,14 @@
-#[cfg(feature = "mimalloc-allocator")]
+#[cfg(all(feature = "mimalloc-allocator", not(feature = "allocation-counting")))]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[cfg(all(feature = "mimalloc-allocator", feature = "allocation-counting"))]
+#[global_allocator]
+static ALLOC: nacelle_stress_common::CountingAllocator<mimalloc::MiMalloc> =
+    nacelle_stress_common::CountingAllocator::new(mimalloc::MiMalloc);
+#[cfg(all(not(feature = "mimalloc-allocator"), feature = "allocation-counting"))]
+#[global_allocator]
+static ALLOC: nacelle_stress_common::CountingAllocator<std::alloc::System> =
+    nacelle_stress_common::CountingAllocator::new(std::alloc::System);
 
 mod recorder;
 use nacelle_stress_server::shared;
@@ -295,6 +303,8 @@ struct StressMetricsConsole {
     active_connection_delta: i64,
     active_requests: i64,
     active_streaming_tasks: i64,
+    #[cfg(feature = "allocation-counting")]
+    previous_allocations: nacelle_stress_common::AllocationSnapshot,
 }
 
 impl StressMetricsConsole {
@@ -313,6 +323,8 @@ impl StressMetricsConsole {
             active_connection_delta: 0,
             active_requests: 0,
             active_streaming_tasks: 0,
+            #[cfg(feature = "allocation-counting")]
+            previous_allocations: nacelle_stress_common::allocation_snapshot(),
         })
     }
 }
@@ -334,6 +346,8 @@ struct StressMetricsSnapshot {
     request_bytes: u64,
     response_bytes: u64,
     phase_durations: BTreeMap<String, PhaseDurationSnapshot>,
+    #[cfg(feature = "allocation-counting")]
+    allocations: nacelle_stress_common::AllocationSnapshot,
 }
 
 #[derive(Debug, Default)]
@@ -361,10 +375,19 @@ impl PhaseDurationSnapshot {
 
 impl StressMetricsConsole {
     fn snapshot(&mut self) -> StressMetricsSnapshot {
+        #[cfg(feature = "allocation-counting")]
+        let allocations = {
+            let current = nacelle_stress_common::allocation_snapshot();
+            let delta = current.delta_since(self.previous_allocations);
+            self.previous_allocations = current;
+            delta
+        };
         let (request_bytes, response_bytes) = self.byte_totals.take();
         let mut snapshot = StressMetricsSnapshot {
             request_bytes,
             response_bytes,
+            #[cfg(feature = "allocation-counting")]
+            allocations,
             ..StressMetricsSnapshot::default()
         };
         for (key, _, _, value) in self.snapshotter.snapshot().into_vec() {
@@ -506,6 +529,24 @@ fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressB
         "  runtime      streaming_tasks_active={}",
         snapshot.active_streaming_tasks,
     );
+    #[cfg(feature = "allocation-counting")]
+    {
+        let allocations = snapshot.allocations;
+        println!(
+            "  allocations  instrumented=rust-global-allocator successful={} realloc={} requested_bytes={} frees={}",
+            allocations.successful_allocations(),
+            allocations.realloc_calls,
+            allocations.requested_bytes,
+            allocations.free_calls,
+        );
+        if snapshot.completed_requests > 0 {
+            println!(
+                "  allocation_cost calls_per_request={:.6} requested_bytes_per_request={:.6}",
+                allocations.successful_allocations() as f64 / snapshot.completed_requests as f64,
+                allocations.requested_bytes as f64 / snapshot.completed_requests as f64,
+            );
+        }
+    }
     for (phase, duration) in snapshot.phase_durations {
         let mean_ms = if duration.count == 0 {
             0.0
