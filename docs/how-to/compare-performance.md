@@ -73,6 +73,11 @@ plaintext path also avoids generic split locking. Compare serial and shared
 dispatch separately, then hold the selected mode and runtime topology fixed
 between revisions. This is not connection churn: do not set
 `--requests-per-connection 1`.
+For a separate client-runtime comparison, add `--current-thread` to the client
+command above while keeping the server binary and configuration fixed. This
+removes the extra client worker thread; it is an end-to-end profile comparison,
+not evidence of a server implementation improvement. Hold the client runtime
+fixed when comparing server revisions.
 An explicit `--worker-cpus 0` instead adds a dedicated listener runtime and
 thread, leaving supervision on the main thread. Measure that topology separately
 rather than assuming it improves a one-request workload.

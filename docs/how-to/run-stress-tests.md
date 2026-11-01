@@ -105,6 +105,13 @@ Process affinity does not assign individual listener threads to fixed cores.
 Plaintext shared and serial handlers use specialized borrowed TCP socket halves.
 TLS keeps generic I/O. Keep handler and transport modes fixed in comparisons.
 
+The client defaults to a multi-thread Tokio runtime, sized by
+`TOKIO_WORKER_THREADS` when set. Its explicit `--current-thread` option runs
+the same connection tasks and I/O on the main thread without another worker
+pool. It does not change connection count, pipeline depth, duration, or TLS
+verification. Compare it separately for a one-connection workload; keep the
+multi-thread default when generating load across multiple cores.
+
 The fixture's default 64-byte success payload uses read-only static `Bytes`.
 This avoids template reference-count updates and payload allocation without
 replicating templates. Other response sizes keep owned storage. This is specific

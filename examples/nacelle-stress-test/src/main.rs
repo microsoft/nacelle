@@ -31,6 +31,7 @@ struct StressConfig {
     duration: Duration,
     payload_bytes: usize,
     tls_insecure: bool,
+    current_thread: bool,
 }
 
 impl Default for StressConfig {
@@ -43,6 +44,7 @@ impl Default for StressConfig {
             duration: Duration::from_secs(10),
             payload_bytes: 256,
             tls_insecure: false,
+            current_thread: false,
         }
     }
 }
@@ -58,9 +60,20 @@ struct WorkerResult {
     latency_samples_ns: Vec<u64>,
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = parse_args(std::env::args().skip(1))?;
+    let mut runtime = if config.current_thread {
+        tokio::runtime::Builder::new_current_thread()
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+    };
+    runtime.enable_all().build()?.block_on(run(config))
+}
+
+async fn run(config: StressConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if config.current_thread {
+        println!("stress runtime=current-thread");
+    }
 
     println!(
         "stress target={} connections={} pipeline={} requests_per_connection={} request_payload={}B duration={}s",
@@ -335,6 +348,9 @@ fn parse_args(
             "--payload-bytes" => {
                 config.payload_bytes = parse_value(&arg, args.next())?;
             }
+            "--current-thread" => {
+                config.current_thread = true;
+            }
             "--tls-insecure" => {
                 #[cfg(feature = "rustls")]
                 {
@@ -394,6 +410,8 @@ fn print_help() {
                                   Reconnect after this many requests (plain TCP only)\n\
            --duration-secs <s>    Active load duration (default 10)\n\
            --payload-bytes <n>    Request payload bytes (default 256)\n\
+           --current-thread      Run client tasks and I/O on the main thread\n\
+                                  (default: multi-thread Tokio runtime)\n\
            --tls-insecure         Connect with TLS and accept the server certificate\n\
                                   without verification. Use only for the local\n\
                                   self-signed stress server.\n\
@@ -539,5 +557,20 @@ mod tests {
             error.to_string(),
             "requests per connection must be greater than zero"
         );
+    }
+    #[test]
+    fn current_thread_runtime_is_explicit_and_preserves_workload() {
+        assert!(
+            !parse_args(Vec::<String>::new())
+                .expect("defaults")
+                .current_thread
+        );
+        let config = parse_args(
+            ["--current-thread", "--connections", "2", "--pipeline", "4"].map(str::to_owned),
+        )
+        .expect("current-thread flag");
+        assert!(config.current_thread);
+        assert_eq!(config.connections, 2);
+        assert_eq!(config.pipeline, 4);
     }
 }

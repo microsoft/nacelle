@@ -54,6 +54,14 @@ uses the supervision runtime: current-thread for one unpinned immediate listener
 and one-worker multi-thread for coalescing or dedicated listeners. These are
 distinct configurations, not interchangeable baselines.
 
+The client normally uses a separate Tokio worker pool. Its opt-in
+`--current-thread` mode places the same connection tasks and I/O on the main
+thread. Measure client CPU/request, RSS, and thread count as well as server
+CPU and end-to-end throughput. A client-runtime gain on an unchanged server
+does not establish higher server capacity. Keep the multi-thread client
+default for multi-core coalescing load and hold its runtime fixed in
+server-only comparisons.
+
 The `request_permit_contended` benchmark compares owned and transport-scoped
 borrowed permits on one shared runtime state with 1, 4, and 8 worker threads.
 Each worker acquires/releases 1,024 permits per iteration. Thread startup is
