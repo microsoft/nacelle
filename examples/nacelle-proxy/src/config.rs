@@ -49,7 +49,9 @@ impl ProxyConfiguration {
 pub(crate) struct ProxyStartupConfiguration {
     pub(crate) listen_addr: SocketAddr,
     pub(crate) max_connections: usize,
+    pub(crate) max_connections_per_second: usize,
     pub(crate) max_in_flight_requests: usize,
+    #[cfg(feature = "peer-limits")]
     pub(crate) max_connections_per_peer: usize,
     #[cfg(feature = "experimental-memory")]
     pub(crate) max_memory_bytes: usize,
@@ -77,8 +79,11 @@ pub(crate) struct ProxyFileConfiguration {
     max_upstream_response_bytes: usize,
     #[serde(default = "default_max_connections")]
     max_connections: usize,
+    #[serde(default = "default_max_connections_per_second")]
+    max_connections_per_second: usize,
     #[serde(default = "default_max_in_flight_requests")]
     max_in_flight_requests: usize,
+    #[cfg(feature = "peer-limits")]
     #[serde(default = "default_max_connections_per_peer")]
     max_connections_per_peer: usize,
     #[cfg(feature = "experimental-memory")]
@@ -121,7 +126,9 @@ impl ConfigurationSnapshot {
                 max_response_body_bytes: 1024,
                 max_upstream_response_bytes: 1024,
                 max_connections: 64,
+                max_connections_per_second: usize::MAX,
                 max_in_flight_requests: 32,
+                #[cfg(feature = "peer-limits")]
                 max_connections_per_peer: 16,
                 #[cfg(feature = "experimental-memory")]
                 max_memory_bytes: 128 * 1024 * 1024,
@@ -147,7 +154,9 @@ impl ProxyFileConfiguration {
         ProxyStartupConfiguration {
             listen_addr: self.listen_addr,
             max_connections: self.max_connections,
+            max_connections_per_second: self.max_connections_per_second,
             max_in_flight_requests: self.max_in_flight_requests,
+            #[cfg(feature = "peer-limits")]
             max_connections_per_peer: self.max_connections_per_peer,
             #[cfg(feature = "experimental-memory")]
             max_memory_bytes: self.max_memory_bytes,
@@ -180,8 +189,8 @@ impl ProxyFileConfiguration {
             ));
         }
         if self.max_connections == 0
+            || self.max_connections_per_second == 0
             || self.max_in_flight_requests == 0
-            || self.max_connections_per_peer == 0
             || self.handler_timeout_ms == 0
         {
             return Err(io::Error::new(
@@ -196,12 +205,19 @@ impl ProxyFileConfiguration {
                 "max_memory_bytes must be greater than zero",
             ));
         }
-        if self.max_in_flight_requests > self.max_connections
+        if self.max_in_flight_requests > self.max_connections {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request and per-peer connection limits cannot exceed max_connections",
+            ));
+        }
+        #[cfg(feature = "peer-limits")]
+        if self.max_connections_per_peer == 0
             || self.max_connections_per_peer > self.max_connections
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "request and per-peer connection limits cannot exceed max_connections",
+                "max_connections_per_peer must be greater than zero and cannot exceed max_connections",
             ));
         }
         #[cfg(feature = "experimental-memory")]
@@ -306,10 +322,15 @@ const fn default_max_connections() -> usize {
     64
 }
 
+const fn default_max_connections_per_second() -> usize {
+    usize::MAX
+}
+
 const fn default_max_in_flight_requests() -> usize {
     32
 }
 
+#[cfg(feature = "peer-limits")]
 const fn default_max_connections_per_peer() -> usize {
     16
 }
@@ -364,11 +385,22 @@ backend_addr = "127.0.0.1:8080"
         let startup = file.startup_configuration();
 
         assert_eq!(startup.max_connections, 64);
+        assert_eq!(startup.max_connections_per_second, usize::MAX);
         assert_eq!(startup.max_in_flight_requests, 32);
+        #[cfg(feature = "peer-limits")]
         assert_eq!(startup.max_connections_per_peer, 16);
         #[cfg(feature = "experimental-memory")]
         assert_eq!(startup.max_memory_bytes, 128 * 1024 * 1024);
         assert_eq!(startup.max_request_body_bytes, 1024 * 1024);
+    }
+
+    #[cfg(not(feature = "peer-limits"))]
+    #[test]
+    fn rejects_peer_limit_without_feature() {
+        let source = format!("{MINIMAL_CONFIGURATION}max_connections_per_peer = 16\n");
+        let error = toml::from_str::<ProxyFileConfiguration>(&source)
+            .expect_err("peer limit must require peer-limits");
+        assert!(error.to_string().contains("max_connections_per_peer"));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use http::header::{HeaderName, HeaderValue};
 use hyper::body::Incoming;
 use hyper::{Method, Request, StatusCode};
+#[cfg(feature = "peer-limits")]
 use nacelle_core::DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY;
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -18,13 +19,16 @@ pub enum NacelleForwardedHeader {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "peer-limits"), derive(Default))]
 pub struct NacelleHttpPolicy {
     pub(crate) allowed_hosts: Option<Vec<String>>,
     pub(crate) allowed_methods: Option<Vec<Method>>,
     pub(crate) max_uri_len: Option<usize>,
     pub(crate) max_header_count: Option<usize>,
     pub(crate) max_header_bytes: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     pub(crate) max_requests_per_peer_per_second: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     pub(crate) peer_rate_limit_table_capacity: usize,
     pub(crate) trusted_proxy_ips: Option<Vec<IpAddr>>,
     pub(crate) forwarded_header: NacelleForwardedHeader,
@@ -69,6 +73,7 @@ impl NacelleHttpPolicy {
         self
     }
 
+    #[cfg(feature = "peer-limits")]
     pub fn with_max_requests_per_peer_per_second(mut self, max: usize) -> Self {
         self.max_requests_per_peer_per_second = Some(max.max(1));
         self
@@ -80,6 +85,7 @@ impl NacelleHttpPolicy {
     /// its fixed probe budget, newly observed peers receive a rate-limit
     /// rejection. This bound applies only when
     /// [`Self::with_max_requests_per_peer_per_second`] is enabled.
+    #[cfg(feature = "peer-limits")]
     pub fn with_peer_rate_limit_table_capacity(mut self, capacity: usize) -> Self {
         self.peer_rate_limit_table_capacity = capacity.max(1);
         self
@@ -136,6 +142,7 @@ impl NacelleHttpPolicy {
     }
 }
 
+#[cfg(feature = "peer-limits")]
 impl Default for NacelleHttpPolicy {
     fn default() -> Self {
         Self {
@@ -144,7 +151,9 @@ impl Default for NacelleHttpPolicy {
             max_uri_len: None,
             max_header_count: None,
             max_header_bytes: None,
+            #[cfg(feature = "peer-limits")]
             max_requests_per_peer_per_second: None,
+            #[cfg(feature = "peer-limits")]
             peer_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
             trusted_proxy_ips: None,
             forwarded_header: NacelleForwardedHeader::default(),

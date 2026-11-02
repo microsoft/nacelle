@@ -18,6 +18,7 @@ experimental-memory = []
 openssl = []
 phase-timing = []
 rustls = []
+peer-limits = []
 
 [dependencies]
 bytes = { workspace = true }
@@ -35,4 +36,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rust_analyzer)"] }
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["error-hints", "experimental-memory", "phase-timing", "rustls"]
+features = ["error-hints", "experimental-memory", "peer-limits", "phase-timing", "rustls"]

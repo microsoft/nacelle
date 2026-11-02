@@ -74,8 +74,11 @@ cycle before the complete pair becomes active.
 
 ## Resource And Timeout Model
 
-The checked-in profile sets explicit total connections, per-peer connections,
-in-flight requests, body sizes, and handler timeout. Build with
+The checked-in profile sets explicit total connections, in-flight requests,
+body sizes, and handler timeout. Global connection-open rate is unlimited unless
+`max_connections_per_second` is set. Build with `--features peer-limits` and
+uncomment `max_connections_per_peer` to enable the optional per-peer cap; that
+key is rejected without the feature. Build with
 `--features experimental-memory` and uncomment `max_memory_bytes` to add
 Nacelle transport allocation accounting. It is not a total RSS limit and does
 not include every allocation made by this example.

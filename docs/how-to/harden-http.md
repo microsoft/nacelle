@@ -11,6 +11,15 @@ Defaults:
 - `NacelleHttpLimits::max_connection_age`: disabled by default.
 - request and response body size limits: 16 MiB each.
 
+Global concurrent connections and connection admission rate are unlimited by
+default. Set `NacelleLimits::with_max_connections(...)` and
+`with_max_connections_per_second(...)` for public listeners. Exhausted global
+budgets reject sockets before HTTP parsing and TLS handshakes.
+
+All per-peer caps and rate-table configuration below require the default-off
+`peer-limits` feature, including HTTP request rates. Without it, their APIs and
+tracking state are absent. Trusted-proxy identity handling remains available.
+
 `NacelleHttpPolicy` can reject requests before the handler runs:
 
 - allowed Host headers

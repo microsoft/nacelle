@@ -17,6 +17,7 @@ tcp = ["dep:nacelle-tcp"]
 buffer-rotation = ["nacelle-tcp?/buffer-rotation"]
 error-hints = ["nacelle-core/error-hints"]
 experimental-memory = ["nacelle-core/experimental-memory", "nacelle-http?/experimental-memory", "nacelle-tcp?/experimental-memory"]
+peer-limits = ["nacelle-core/peer-limits", "nacelle-http?/peer-limits", "nacelle-tcp?/peer-limits"]
 experimental-openssl-detection = ["tcp", "openssl", "nacelle-tcp/experimental-openssl-detection"]
 experimental-thread-per-core = ["dep:core_affinity", "dep:socket2"]
 http = ["dep:nacelle-http"]
@@ -43,4 +44,4 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 [package.metadata.docs.rs]
 all-features = false
 no-default-features = true
-features = ["buffer-rotation", "error-hints", "experimental-memory", "experimental-thread-per-core", "http", "phase-timing", "rustls", "tcp", "tls-self-signed"]
+features = ["buffer-rotation", "error-hints", "experimental-memory", "experimental-thread-per-core", "http", "peer-limits", "phase-timing", "rustls", "tcp", "tls-self-signed"]

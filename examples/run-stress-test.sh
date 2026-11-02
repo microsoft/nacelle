@@ -110,6 +110,12 @@ if config_has_key "config.toml" "max_memory_bytes" \
     || config_has_key "$CONFIG_PATH" "max_memory_bytes"; then
     SERVER_CARGO_ARGS+=(--features experimental-memory)
 fi
+for key in max_connections_per_peer max_connection_opens_per_peer_per_second; do
+    if config_has_key "config.toml" "$key" || config_has_key "$CONFIG_PATH" "$key"; then
+        SERVER_CARGO_ARGS+=(--features peer-limits)
+        break
+    fi
+done
 cargo "${SERVER_CARGO_ARGS[@]}" -- "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null' EXIT

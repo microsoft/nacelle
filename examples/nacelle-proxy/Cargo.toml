@@ -12,6 +12,7 @@ publish = false
 [features]
 default = ["tls-self-signed"]
 experimental-memory = ["nacelle/experimental-memory"]
+peer-limits = ["nacelle/peer-limits"]
 rustls = ["nacelle/tcp", "nacelle/rustls"]
 tls-self-signed = [
 	"rustls",

@@ -107,8 +107,9 @@ automatic or explicit selection and before any worker thread is created. It
 does not configure the caller-owned shared Tokio runtime.
 
 Thread-per-core resource accounting is selected statically at startup. Global
-mode shares all existing counters. Worker mode partitions finite connection,
-request, streaming, and per-peer capacities in configured worker order while
+mode shares all existing counters and the global connection-rate window. Worker
+mode partitions finite connection, connection-rate, request, streaming, and
+enabled `peer-limits` capacities in configured worker order while
 retaining a single shared FIFO hard memory ceiling when `experimental-memory`
 is enabled.
 Worker factories execute once per worker. Process-wide client pools, backend

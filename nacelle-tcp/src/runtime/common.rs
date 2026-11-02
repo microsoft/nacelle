@@ -6,7 +6,7 @@ use crate::protocol::{SharedProtocol, TcpHandler, TcpOneWayHandler};
 use crate::server::TcpServer;
 use nacelle_core::error::NacelleError;
 use nacelle_core::lifecycle::{NacelleDrainDeadline, NacelleShutdownToken};
-use nacelle_core::limits::TrackedPermit;
+use nacelle_core::limits::{NacelleRuntimeState, TrackedPermit};
 use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{
     NacelleMetricsContext, NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver,
@@ -15,6 +15,20 @@ use nacelle_core::telemetry::{
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+
+pub(super) fn acquire_connection(
+    state: &NacelleRuntimeState,
+    _peer_addr: SocketAddr,
+) -> Result<TrackedPermit, NacelleError> {
+    #[cfg(feature = "peer-limits")]
+    {
+        state.acquire_connection_for_peer(_peer_addr.ip())
+    }
+    #[cfg(not(feature = "peer-limits"))]
+    {
+        state.acquire_connection()
+    }
+}
 
 pub(super) fn bind_tcp_listener(
     addr: SocketAddr,
@@ -187,7 +201,7 @@ where
                 let (stream, peer_addr) = accepted?;
                 prepare_stream(&stream)?;
                 let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                let connection_permit = match acquire_connection(server.runtime_state(), peer_addr) {
                     Ok(permit) => permit,
                     Err(error) => {
                         record_connection_rejection(server.as_ref(), transport, tls_label, &error);
@@ -217,4 +231,24 @@ where
     )
     .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_rate_applies_across_tcp_peers_without_leaking_permits() {
+        let state = NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default().with_max_connections_per_second(1),
+        );
+        drop(acquire_connection(&state, "127.0.0.1:1".parse().expect("peer")).expect("first"));
+        let error = acquire_connection(&state, "127.0.0.2:2".parse().expect("peer"))
+            .expect_err("global rate must not depend on peer identity");
+        assert!(matches!(
+            error,
+            NacelleError::ResourceLimit(nacelle_core::NacelleResourceLimitReason::ConnectionRate)
+        ));
+        assert_eq!(state.active_connections(), 0);
+    }
 }

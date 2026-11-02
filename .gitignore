@@ -29,3 +29,5 @@ artifacts
 *.secret
 docs/internal
 .github/plans/
+.temp/
+.data/

@@ -20,6 +20,8 @@ nacelle-core = { workspace = true, features = ["rustls"] }
 pem = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
+# Keep downstream lockfiles from retaining the vulnerable certificate verifier.
+rustls-webpki = { workspace = true }
 
 [lints]
 workspace = true

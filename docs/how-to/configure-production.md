@@ -2,9 +2,11 @@
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
-`NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
-connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Runtime memory accounting is
+`NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Global
+concurrent connections and connection admission rate are unlimited by default.
+Set finite `max_connections` and `max_connections_per_second` explicitly.
+In-flight requests, streaming tasks, body sizes, handler timeouts, and transport
+timeouts are bounded by default. Runtime memory accounting is
 experimental and not compiled by default. Enable `experimental-memory` and set
 `max_memory_bytes` only after measuring the limiter for your service. This
 feature is use at your own risk and may change or be removed in a future minor
@@ -12,16 +14,20 @@ release.
 
 `NacelleLimits::without_max_connections()` disables the process-wide connection
 admission ceiling. Active connections are still counted for telemetry, and any
-configured per-peer connection or connection-open rate limits still apply. Use
+configured global connection rate and `peer-limits` controls still apply. Use
 this only when another layer enforces an appropriate connection and memory
 boundary.
 
+All per-peer limits require the default-off `peer-limits` feature, including
+HTTP request rates. See [runtime limits](../topics/runtime-limits.md#global-and-peer-connection-controls)
+for global fixed-window semantics, worker quotas, and compiled-out behavior.
+
 Recommended presets:
 
-- Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
+- Internal service: configure explicit global connection budgets, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
 - Proxy-aware HTTP: trust only known proxy addresses and select the authoritative forwarding header; see [HTTP hardening](harden-http.md). `X-Forwarded-For` is the default; `Forwarded` requires explicit selection.
-- Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
+- Direct HTTPS listener: enable `http,peer-limits,rustls`, configure finite global connection budgets, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
 - Optional TCP OpenSSL listener: enable `experimental-openssl-detection` (which implies `tcp,openssl`) and use `serve_tcp_optional_openssl(...)` or the matching host/app builder method when one listener must accept both plain and TLS clients; keep `NacelleTlsDetectionOptions::timeout` short enough to avoid tying up idle accepted connections.
@@ -33,8 +39,8 @@ Recommended presets:
 Experimental memory budget:
 
 This sizing formula requires a finite effective connection ceiling. Use the
-configured `max_connections` when it is nonzero. When `max_connections` is the
-zero sentinel for unlimited connections, substitute the finite connection
+configured `max_connections` when it is finite. When `max_connections` is
+`usize::MAX` (unlimited), substitute the finite connection
 boundary enforced by the proxy, process supervisor, container, or other
 external layer.
 

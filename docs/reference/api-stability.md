@@ -16,6 +16,7 @@ Stable enough for prototype integrations:
 - `nacelle::core::NacelleTelemetryObserver` for statically dispatched application telemetry
 - the `phase-timing` feature and its documented low-cardinality phase schema
 - the `error-hints` feature and `NacelleError::hint()` method
+- the opt-in `peer-limits` feature for per-peer connection and HTTP request limits
 
 Experimental:
 
@@ -67,6 +68,32 @@ were removed. Transport pipelines now remain strongly typed through completion;
 there is no compatibility adapter.
 
 Before `1.0`, minor releases may change defaults or builder methods when production safety requires it. After `1.0`, public API changes should follow semver, with migration notes for config/default changes.
+
+## Global and peer limit migration
+
+This is a breaking configuration and API change:
+
+- `NacelleLimits::default().max_connections` is now `usize::MAX` (unlimited),
+  rather than 16,384. Call `with_max_connections(16_384)` to retain that ceiling.
+- The new `max_connections_per_second` also defaults to `usize::MAX`. Configure
+  it independently of concurrent connections; it counts admission attempts in
+  fixed one-second windows, not requests on established connections.
+- Enable `peer-limits` on the facade or directly used transport crates to use
+  per-peer connection fields/builders, peer-rate types, peer resource-limit
+  reasons, and HTTP per-peer request-rate builders. They are compiled out
+  without the feature; no compatibility shim silently ignores configuration.
+- Stress-server and proxy TOML reject peer-limit keys when built without
+  `peer-limits`. Enable the feature before restoring those keys.
+
+For example:
+
+```toml
+nacelle = { version = "0.3", features = ["http", "peer-limits"] }
+```
+
+Applications that relied on bounded defaults must set explicit global budgets
+before exposing listeners. See [runtime limits](../topics/runtime-limits.md)
+for window boundaries, rejection accounting, and worker-local partitioning.
 
 ## Reference protocol migration
 

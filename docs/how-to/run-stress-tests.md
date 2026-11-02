@@ -56,6 +56,13 @@ The launch helpers enable `experimental-memory` automatically when an effective
 config contains `max_memory_bytes`. For a direct low-memory server run, pass
 `--features experimental-memory` explicitly.
 
+The `[limits]` table accepts `max_connections_per_second` independently of
+`max_connections`; omitted values use unlimited library defaults. Peer
+connection keys require `--features peer-limits`, and are rejected without it.
+The launch helpers enable `peer-limits` when either effective configuration
+contains a peer-limit key. Keep these features and budgets fixed across
+performance comparisons.
+
 TCP phase timing is excluded from the default build. Compile and activate it
 only for a diagnostic run:
 

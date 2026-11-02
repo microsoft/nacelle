@@ -3,7 +3,7 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-memory,experimental-thread-per-core,http,peer-limits,phase-timing,rustls,tcp,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
@@ -56,12 +56,15 @@ they do not change request semantics.
   documented `LocalSet`/thread-per-core context. Panics from application
   handlers are task failures and may trigger host/app supervision; panic-abort
   builds terminate instead of unwinding.
-- **Limits:** `NacelleRuntimeState` supplies process-wide connection, per-peer,
+- **Limits:** `NacelleRuntimeState` supplies process-wide connection count/rate,
+  optional `peer-limits` connection and HTTP request controls,
   request, streaming-task, body-size, and optional memory limits. TCP and HTTP
   server configurations add transport timeouts, frame/header policy, and edge
   limits. Listener overloads do not bypass these limits. Functions whose names
   contain `without_connection_limit` are advanced direct-I/O building blocks
   and require the caller to hold the connection permit.
+  Global connection count and rate are unlimited by default; configure finite
+  budgets explicitly.
 - **Features:** plain TCP and Unix serving require `tcp`; HTTP/1 requires
   `http`; Rustls listeners require `rustls`; required OpenSSL listeners require
   `openssl`. `experimental-openssl-detection`, `experimental-memory`, and

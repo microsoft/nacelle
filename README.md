@@ -175,6 +175,7 @@ nacelle = { version = "0.3.0", default-features = false, features = ["tcp", "ope
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
 | `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
+| `peer-limits` | Compile per-peer connection counts, connection-open rates, and HTTP request-rate limits. Disabled by default. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
@@ -237,7 +238,12 @@ OpenSSL builds need native OpenSSL development files unless you enable
 ## Production Notes
 
 Use explicit `NacelleLimits` plus transport-specific `NacelleTcpLimits` or
-`NacelleHttpLimits` for production services. For internet-facing deployments,
+`NacelleHttpLimits` for production services. Global concurrent connections and
+connection-open rate are unlimited by default; configure `with_max_connections`
+and `with_max_connections_per_second` to bound them. Enable `peer-limits` to
+configure any per-peer caps; those APIs and their tracking state are absent
+without the feature. See the [migration guidance](docs/reference/api-stability.md#global-and-peer-limit-migration).
+For internet-facing deployments,
 the recommended shape is:
 
 ```text
@@ -249,7 +255,7 @@ external idle timeouts. Nacelle should own application limits, protocol handling
 body limits, telemetry, and graceful shutdown.
 
 For direct HTTP exposure, configure `NacelleHttpPolicy` deliberately: trusted
-proxy IPs, Host/method/URI/header limits, access logging, and per-peer caps. For
+proxy IPs, Host/method/URI/header limits, access logging, and `peer-limits` caps. For
 high connection counts, tune TCP read and response buffer capacities before
 raising `max_connections`.
 

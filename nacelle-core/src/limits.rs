@@ -1,16 +1,19 @@
+#[cfg(feature = "peer-limits")]
 use std::collections::HashMap;
 #[cfg(feature = "experimental-memory")]
 use std::collections::VecDeque;
+#[cfg(feature = "peer-limits")]
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "experimental-memory")]
 use crate::error::NacelleTimeoutReason;
 use crate::error::{NacelleError, NacelleResourceLimitReason};
 #[cfg(feature = "experimental-memory")]
 use crate::lifecycle::NacelleShutdownToken;
+#[cfg(feature = "peer-limits")]
 use crate::peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
@@ -18,10 +21,15 @@ use crate::peer_rate::{
 #[derive(Debug, Clone)]
 pub struct NacelleLimits {
     pub max_connections: usize,
+    /// Connection admission attempts per one-second window; `usize::MAX` disables it.
+    pub max_connections_per_second: usize,
     pub max_in_flight_requests: usize,
     pub max_streaming_tasks: usize,
+    #[cfg(feature = "peer-limits")]
     pub max_connections_per_peer: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     pub max_connection_opens_per_peer_per_second: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     pub connection_rate_limit_table_capacity: usize,
     #[cfg(feature = "experimental-memory")]
     pub max_memory_bytes: usize,
@@ -35,11 +43,15 @@ pub struct NacelleLimits {
 impl Default for NacelleLimits {
     fn default() -> Self {
         Self {
-            max_connections: 16_384,
+            max_connections: usize::MAX,
+            max_connections_per_second: usize::MAX,
             max_in_flight_requests: 65_536,
             max_streaming_tasks: 8_192,
+            #[cfg(feature = "peer-limits")]
             max_connections_per_peer: None,
+            #[cfg(feature = "peer-limits")]
             max_connection_opens_per_peer_per_second: None,
+            #[cfg(feature = "peer-limits")]
             connection_rate_limit_table_capacity: DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY,
             #[cfg(feature = "experimental-memory")]
             max_memory_bytes: usize::MAX,
@@ -64,6 +76,21 @@ impl NacelleLimits {
         self
     }
 
+    /// Set the connection admission budget for fixed one-second windows.
+    ///
+    /// Zero is clamped to one; `usize::MAX` disables rate admission. Attempts
+    /// rejected by later limits and dropped connections do not refund the budget.
+    pub fn with_max_connections_per_second(mut self, max: usize) -> Self {
+        self.max_connections_per_second = max.max(1);
+        self
+    }
+
+    /// Disable the process-wide connection admission rate limit.
+    pub fn without_max_connections_per_second(mut self) -> Self {
+        self.max_connections_per_second = usize::MAX;
+        self
+    }
+
     pub fn with_max_in_flight_requests(mut self, max: usize) -> Self {
         self.max_in_flight_requests = max.max(1);
         self
@@ -74,11 +101,13 @@ impl NacelleLimits {
         self
     }
 
+    #[cfg(feature = "peer-limits")]
     pub fn with_max_connections_per_peer(mut self, max: usize) -> Self {
         self.max_connections_per_peer = Some(max.max(1));
         self
     }
 
+    #[cfg(feature = "peer-limits")]
     pub fn with_max_connection_opens_per_peer_per_second(mut self, max: usize) -> Self {
         self.max_connection_opens_per_peer_per_second = Some(max.max(1));
         self
@@ -89,6 +118,7 @@ impl NacelleLimits {
     /// When the bounded table is full or cannot find an inactive entry within
     /// its fixed probe budget, new peers are rejected. This bound applies only when
     /// [`Self::with_max_connection_opens_per_peer_per_second`] is enabled.
+    #[cfg(feature = "peer-limits")]
     pub fn with_connection_rate_limit_table_capacity(mut self, capacity: usize) -> Self {
         self.connection_rate_limit_table_capacity = capacity.max(1);
         self
@@ -201,11 +231,13 @@ impl std::ops::Deref for PaddedCounter {
 /// precisely the internet-facing deployments that need the limit most. Sharding
 /// by peer address keeps the per-peer count exact while letting unrelated peers
 /// be admitted concurrently.
+#[cfg(feature = "peer-limits")]
 #[derive(Debug)]
 struct PeerConnectionMap {
     shards: Box<[Mutex<HashMap<IpAddr, usize>>]>,
 }
 
+#[cfg(feature = "peer-limits")]
 impl PeerConnectionMap {
     /// Shard count. A power of two so the index is a mask, and small enough
     /// that the idle footprint stays negligible.
@@ -261,6 +293,7 @@ impl PeerConnectionMap {
 #[derive(Debug)]
 struct NacelleRuntimeStateInner {
     limits: NacelleLimits,
+    connection_rate: Option<ConnectionRateLimiter>,
     metrics_enabled: AtomicBool,
     active_connections: PaddedCounter,
     active_requests: PaddedCounter,
@@ -268,10 +301,52 @@ struct NacelleRuntimeStateInner {
     active_connections_metric: OnceLock<metrics::Gauge>,
     active_requests_metric: OnceLock<metrics::Gauge>,
     active_streaming_tasks_metric: OnceLock<metrics::Gauge>,
+    #[cfg(feature = "peer-limits")]
     peer_connections: PeerConnectionMap,
+    #[cfg(feature = "peer-limits")]
     peer_connection_rates: Option<NacellePeerRateLimiter>,
     #[cfg(feature = "experimental-memory")]
     memory: Arc<SharedMemoryBudget>,
+}
+
+#[derive(Debug)]
+struct ConnectionRateLimiter {
+    started_at: Instant,
+    window: Mutex<ConnectionRateWindow>,
+}
+
+#[derive(Debug, Default)]
+struct ConnectionRateWindow {
+    second: u64,
+    count: usize,
+}
+
+impl ConnectionRateLimiter {
+    fn new() -> Self {
+        Self {
+            started_at: Instant::now(),
+            window: Mutex::new(ConnectionRateWindow::default()),
+        }
+    }
+
+    fn try_acquire(&self, limit: usize) -> bool {
+        let mut window = self.window.lock().expect("connection rate window poisoned");
+        window.try_acquire(limit, self.started_at.elapsed().as_secs())
+    }
+}
+
+impl ConnectionRateWindow {
+    fn try_acquire(&mut self, limit: usize, second: u64) -> bool {
+        if second > self.second {
+            self.second = second;
+            self.count = 0;
+        }
+        if self.count >= limit {
+            return false;
+        }
+        self.count += 1;
+        true
+    }
 }
 
 #[cfg(feature = "experimental-memory")]
@@ -391,12 +466,16 @@ impl NacelleRuntimeState {
         limits: NacelleLimits,
         #[cfg(feature = "experimental-memory")] memory: Arc<SharedMemoryBudget>,
     ) -> Self {
+        let connection_rate =
+            (limits.max_connections_per_second != usize::MAX).then(ConnectionRateLimiter::new);
+        #[cfg(feature = "peer-limits")]
         let peer_connection_rates = limits
             .max_connection_opens_per_peer_per_second
             .map(|_| NacellePeerRateLimiter::new(limits.connection_rate_limit_table_capacity));
         Self {
             inner: Arc::new(NacelleRuntimeStateInner {
                 limits,
+                connection_rate,
                 metrics_enabled: AtomicBool::new(true),
                 active_connections: PaddedCounter::new(),
                 active_requests: PaddedCounter::new(),
@@ -404,7 +483,9 @@ impl NacelleRuntimeState {
                 active_connections_metric: OnceLock::new(),
                 active_requests_metric: OnceLock::new(),
                 active_streaming_tasks_metric: OnceLock::new(),
+                #[cfg(feature = "peer-limits")]
                 peer_connections: PeerConnectionMap::new(),
+                #[cfg(feature = "peer-limits")]
                 peer_connection_rates,
                 #[cfg(feature = "experimental-memory")]
                 memory,
@@ -497,6 +578,13 @@ impl NacelleRuntimeState {
     }
 
     pub fn acquire_connection_tracked(&self) -> Result<TrackedPermit, NacelleError> {
+        if let Some(rate) = &self.inner.connection_rate
+            && !rate.try_acquire(self.inner.limits.max_connections_per_second)
+        {
+            return Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate,
+            ));
+        }
         if !try_acquire_counter(
             &self.inner.active_connections,
             self.inner.limits.max_connections,
@@ -510,45 +598,20 @@ impl NacelleRuntimeState {
         }
         Ok(TrackedPermit::new(
             self.clone(),
-            PermitKind::Connection { peer: None },
+            PermitKind::Connection {
+                #[cfg(feature = "peer-limits")]
+                peer: None,
+            },
         ))
     }
 
+    #[cfg(feature = "peer-limits")]
     pub fn acquire_connection_for_peer(&self, peer: IpAddr) -> Result<TrackedPermit, NacelleError> {
-        if !try_acquire_counter(
-            &self.inner.active_connections,
-            self.inner.limits.max_connections,
-        ) {
-            return Err(NacelleError::ResourceLimit(
-                NacelleResourceLimitReason::Connections,
-            ));
-        }
-        if self.metrics_enabled() {
-            self.active_connections_metric().increment(1.0);
-        }
-        if let Err(error) = self.acquire_peer_connection(peer) {
-            self.inner
-                .active_connections
-                .fetch_sub(1, Ordering::Relaxed);
-            if self.metrics_enabled() {
-                self.active_connections_metric().decrement(1.0);
-            }
-            return Err(error);
-        }
-        if let Err(error) = self.acquire_peer_connection_rate(peer) {
-            self.release_peer_connection(peer);
-            self.inner
-                .active_connections
-                .fetch_sub(1, Ordering::Relaxed);
-            if self.metrics_enabled() {
-                self.active_connections_metric().decrement(1.0);
-            }
-            return Err(error);
-        }
-        Ok(TrackedPermit::new(
-            self.clone(),
-            PermitKind::Connection { peer: Some(peer) },
-        ))
+        let mut permit = self.acquire_connection_tracked()?;
+        self.acquire_peer_connection(peer)?;
+        permit.kind = PermitKind::Connection { peer: Some(peer) };
+        self.acquire_peer_connection_rate(peer)?;
+        Ok(permit)
     }
 
     pub fn acquire_request(&self) -> Result<TrackedPermit, NacelleError> {
@@ -917,6 +980,7 @@ impl NacelleRuntimeState {
         }
     }
 
+    #[cfg(feature = "peer-limits")]
     fn acquire_peer_connection(&self, peer: IpAddr) -> Result<(), NacelleError> {
         let Some(limit) = self.inner.limits.max_connections_per_peer else {
             return Ok(());
@@ -929,6 +993,7 @@ impl NacelleRuntimeState {
         Ok(())
     }
 
+    #[cfg(feature = "peer-limits")]
     fn release_peer_connection(&self, peer: IpAddr) {
         if self.inner.limits.max_connections_per_peer.is_none() {
             return;
@@ -936,6 +1001,7 @@ impl NacelleRuntimeState {
         self.inner.peer_connections.release(peer);
     }
 
+    #[cfg(feature = "peer-limits")]
     fn acquire_peer_connection_rate(&self, peer: IpAddr) -> Result<(), NacelleError> {
         let Some(limit) = self.inner.limits.max_connection_opens_per_peer_per_second else {
             return Ok(());
@@ -1028,7 +1094,10 @@ fn try_acquire_counter(counter: &AtomicUsize, limit: usize) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 enum PermitKind {
-    Connection { peer: Option<IpAddr> },
+    Connection {
+        #[cfg(feature = "peer-limits")]
+        peer: Option<IpAddr>,
+    },
     Request,
     StreamingTask,
 }
@@ -1048,7 +1117,10 @@ impl TrackedPermit {
 impl Drop for TrackedPermit {
     fn drop(&mut self) {
         match self.kind {
-            PermitKind::Connection { peer } => {
+            PermitKind::Connection {
+                #[cfg(feature = "peer-limits")]
+                peer,
+            } => {
                 self.state
                     .inner
                     .active_connections
@@ -1056,6 +1128,7 @@ impl Drop for TrackedPermit {
                 if self.state.metrics_enabled() {
                     self.state.active_connections_metric().decrement(1.0);
                 }
+                #[cfg(feature = "peer-limits")]
                 if let Some(peer) = peer {
                     self.state.release_peer_connection(peer);
                 }
@@ -1189,6 +1262,79 @@ mod tests {
     }
 
     #[test]
+    fn connection_rate_windows_reset_without_refunding_dropped_connections() {
+        let state =
+            NacelleRuntimeState::new(NacelleLimits::default().with_max_connections_per_second(1));
+        drop(state.acquire_connection().expect("first connection"));
+        assert!(matches!(
+            state.clone().acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
+        assert_eq!(state.active_connections(), 0);
+
+        let mut window = ConnectionRateWindow::default();
+        assert!(window.try_acquire(2, 0));
+        assert!(window.try_acquire(2, 0));
+        assert!(!window.try_acquire(2, 0));
+        assert!(window.try_acquire(2, 1));
+        assert!(window.try_acquire(2, 1));
+        assert!(!window.try_acquire(2, 1));
+    }
+
+    #[test]
+    fn connection_rate_supports_full_usize_range_and_zero_worker_capacity() {
+        let mut window = ConnectionRateWindow {
+            second: 0,
+            count: usize::MAX - 2,
+        };
+        assert!(window.try_acquire(usize::MAX - 1, 0));
+        assert!(!window.try_acquire(usize::MAX - 1, 0));
+        assert!(!window.try_acquire(0, 1));
+        assert_eq!(window.count, 0);
+    }
+
+    #[test]
+    fn connection_rate_configuration_clamps_zero_and_can_be_disabled() {
+        let limits = NacelleLimits::default().with_max_connections_per_second(0);
+        assert_eq!(limits.max_connections_per_second, 1);
+        let limits = limits.without_max_connections_per_second();
+        assert_eq!(limits.max_connections_per_second, usize::MAX);
+        let state = NacelleRuntimeState::new(limits);
+        assert!(state.inner.connection_rate.is_none());
+    }
+
+    #[test]
+    fn concurrent_connection_rate_admission_does_not_exceed_limit() {
+        const LIMIT: usize = 4;
+        const THREADS: usize = 16;
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default().with_max_connections_per_second(LIMIT),
+        );
+        let barrier = std::sync::Barrier::new(THREADS);
+        let admitted = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let state = &state;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        state.acquire_connection().is_ok()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("thread"))
+                .filter(|admitted| *admitted)
+                .count()
+        });
+        assert_eq!(admitted, LIMIT);
+        assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
     fn hot_counters_do_not_share_a_cache_line() {
         let state = NacelleRuntimeState::default();
         let connections = std::ptr::from_ref(&state.inner.active_connections).addr();
@@ -1200,6 +1346,7 @@ mod tests {
         assert!(requests.abs_diff(streaming) >= unit);
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn sharded_peer_limits_stay_exact_under_concurrency() {
         use std::sync::Barrier;
@@ -1369,16 +1516,20 @@ mod tests {
     fn default_limits_keep_memory_limiting_opt_in() {
         let limits = NacelleLimits::default();
 
-        assert_ne!(limits.max_connections, usize::MAX);
+        assert_eq!(limits.max_connections, usize::MAX);
+        assert_eq!(limits.max_connections_per_second, usize::MAX);
         assert_ne!(limits.max_in_flight_requests, usize::MAX);
         assert_ne!(limits.max_streaming_tasks, usize::MAX);
         #[cfg(feature = "experimental-memory")]
         assert_eq!(limits.max_memory_bytes, usize::MAX);
-        assert!(limits.max_connection_opens_per_peer_per_second.is_none());
-        assert_eq!(
-            limits.connection_rate_limit_table_capacity,
-            DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY
-        );
+        #[cfg(feature = "peer-limits")]
+        {
+            assert!(limits.max_connection_opens_per_peer_per_second.is_none());
+            assert_eq!(
+                limits.connection_rate_limit_table_capacity,
+                DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY
+            );
+        }
         #[cfg(feature = "experimental-memory")]
         assert_eq!(
             limits.memory_allocation_timeout,
@@ -1790,6 +1941,34 @@ mod tests {
         assert_eq!(state.memory_budget().used_bytes(), 0);
     }
 
+    #[cfg(feature = "peer-limits")]
+    #[test]
+    fn peer_rejections_consume_global_rate_but_release_concurrent_capacity() {
+        let state = NacelleRuntimeState::new(
+            NacelleLimits::default()
+                .with_max_connections_per_second(2)
+                .with_max_connections_per_peer(1),
+        );
+        let peer = "127.0.0.1".parse().expect("peer");
+        let held = state.acquire_connection_for_peer(peer).expect("first");
+        assert!(matches!(
+            state.acquire_connection_for_peer(peer),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnections
+            ))
+        ));
+        assert_eq!(state.active_connections(), 1);
+        drop(held);
+        assert_eq!(state.active_connections(), 0);
+        assert!(matches!(
+            state.acquire_connection_for_peer(peer),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
+    }
+
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn per_peer_connection_limit_rejects_and_recovers_after_drop() {
         let peer = "127.0.0.1".parse().expect("valid ip");
@@ -1813,6 +1992,7 @@ mod tests {
         assert_eq!(state.active_connections(), 1);
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn concurrent_per_peer_connection_admission_does_not_exceed_limit() {
         const CONTENDERS: usize = 16;
@@ -1869,6 +2049,7 @@ mod tests {
             .expect("peer capacity should recover after permits drop");
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn per_peer_connection_open_rate_rejects_churn_after_drop() {
         let peer = "127.0.0.1".parse().expect("valid ip");
@@ -1892,6 +2073,7 @@ mod tests {
         assert_eq!(state.active_connections(), 0);
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn peer_connection_rate_table_rejects_new_peers_when_full() {
         let first_peer = "127.0.0.1".parse().expect("valid first peer");
