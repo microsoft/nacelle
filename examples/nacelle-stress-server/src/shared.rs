@@ -156,7 +156,10 @@ struct ServerConfigFile {
 #[serde(deny_unknown_fields)]
 struct LimitsConfigFile {
     max_connections: Option<usize>,
+    max_connections_per_second: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     max_connections_per_peer: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     max_connection_opens_per_peer_per_second: Option<usize>,
     max_in_flight_requests: Option<usize>,
     max_streaming_tasks: Option<usize>,
@@ -241,9 +244,14 @@ impl ServerConfig {
         if let Some(max_connections) = file.max_connections {
             self.limits.max_connections = max_connections.max(1);
         }
+        if let Some(max) = file.max_connections_per_second {
+            self.limits.max_connections_per_second = max.max(1);
+        }
+        #[cfg(feature = "peer-limits")]
         if let Some(max_connections_per_peer) = file.max_connections_per_peer {
             self.limits.max_connections_per_peer = Some(max_connections_per_peer.max(1));
         }
+        #[cfg(feature = "peer-limits")]
         if let Some(max) = file.max_connection_opens_per_peer_per_second {
             self.limits.max_connection_opens_per_peer_per_second = Some(max.max(1));
         }
@@ -630,6 +638,11 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
     println!("  limits:");
     println!("    max_connections: {}", config.limits.max_connections);
     println!(
+        "    max_connections_per_second: {}",
+        config.limits.max_connections_per_second
+    );
+    #[cfg(feature = "peer-limits")]
+    println!(
         "    max_connections_per_peer: {}",
         config
             .limits
@@ -637,6 +650,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
             .map(|max| max.to_string())
             .unwrap_or_else(|| "null".to_string())
     );
+    #[cfg(feature = "peer-limits")]
     println!(
         "    max_connection_opens_per_peer_per_second: {}",
         config
@@ -816,6 +830,11 @@ mod tests {
         } else {
             ""
         };
+        let peer_limits = if cfg!(feature = "peer-limits") {
+            "max_connections_per_peer = 4096\nmax_connection_opens_per_peer_per_second = 2048"
+        } else {
+            ""
+        };
         let toml = format!(
             r#"
 bind = "127.0.0.1:9000"
@@ -834,8 +853,8 @@ tls_self_signed = true
 
 [limits]
 max_connections = 128000
-max_connections_per_peer = 4096
-max_connection_opens_per_peer_per_second = 2048
+max_connections_per_second = 8192
+{peer_limits}
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
 {memory_limit}
@@ -871,7 +890,10 @@ idle_timeout_ms = 120000
         assert!(!config.phase_duration_metrics);
         assert!(config.tls_self_signed);
         assert_eq!(config.limits.max_connections, 128_000);
+        assert_eq!(config.limits.max_connections_per_second, 8_192);
+        #[cfg(feature = "peer-limits")]
         assert_eq!(config.limits.max_connections_per_peer, Some(4_096));
+        #[cfg(feature = "peer-limits")]
         assert_eq!(
             config.limits.max_connection_opens_per_peer_per_second,
             Some(2_048)
@@ -899,6 +921,19 @@ idle_timeout_ms = 120000
             config.tcp_limits.idle_timeout,
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[cfg(not(feature = "peer-limits"))]
+    #[test]
+    fn rejects_peer_configuration_without_feature() {
+        for field in [
+            "max_connections_per_peer",
+            "max_connection_opens_per_peer_per_second",
+        ] {
+            let error = toml::from_str::<ServerConfigFile>(&format!("[limits]\n{field} = 1"))
+                .expect_err("peer setting must require peer-limits");
+            assert!(error.to_string().contains(field));
+        }
     }
 
     #[cfg(not(feature = "experimental-memory"))]

@@ -45,6 +45,11 @@ cargo test -p nacelle-stress-test --all-targets
 cargo test -p nacelle-stress-test --no-default-features --all-targets
 cargo test -p nacelle-stress-server --all-targets
 cargo test -p nacelle-stress-server --no-default-features --all-targets
+cargo test -p nacelle-core --features peer-limits --all-targets
+cargo test -p nacelle-tcp --features peer-limits,tls-self-signed --all-targets
+cargo test -p nacelle-http --features peer-limits,tls-self-signed --all-targets
+cargo test -p nacelle --no-default-features --features http,peer-limits,tcp --all-targets
+cargo test -p nacelle-stress-server -p nacelle-proxy --features peer-limits --all-targets
 cargo tree -i serde_yaml >/dev/null 2>&1 && {
   echo "serde_yaml is still present" >&2
   exit 1

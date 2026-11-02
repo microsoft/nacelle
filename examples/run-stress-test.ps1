@@ -151,6 +151,13 @@ if ((Test-TomlKey -Path "config.toml" -Key "max_memory_bytes") -or
     (Test-TomlKey -Path $Config -Key "max_memory_bytes")) {
     $serverBuildArgs += @("--features", "experimental-memory")
 }
+foreach ($key in @("max_connections_per_peer", "max_connection_opens_per_peer_per_second")) {
+    if ((Test-TomlKey -Path "config.toml" -Key $key) -or
+        (Test-TomlKey -Path $Config -Key $key)) {
+        $serverBuildArgs += @("--features", "peer-limits")
+        break
+    }
+}
 Invoke-Cargo -Args $serverBuildArgs
 
 $serverExe = Join-Path $RepoRoot "target\$profile\nacelle-stress-server.exe"

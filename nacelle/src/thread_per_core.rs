@@ -157,8 +157,8 @@ impl ThreadPerCoreLimits {
 
     /// Partition capacity deterministically across worker-local runtime states.
     ///
-    /// Finite connection, request, streaming, and per-peer capacities are split
-    /// by quotient and remainder in configured worker order. Body limits and
+    /// Finite connection count/rate, request, streaming, and enabled per-peer
+    /// capacities are split by quotient and remainder in configured worker order. Body limits and
     /// timeout policy remain identical on every worker. With the
     /// `experimental-memory` feature, memory is not partitioned: all states
     /// share one hard process-wide ceiling.
@@ -168,6 +168,7 @@ impl ThreadPerCoreLimits {
                 NacelleResourceLimitReason::WorkerCount,
             ));
         }
+        #[cfg(feature = "peer-limits")]
         if limits.max_connection_opens_per_peer_per_second.is_some()
             && limits.connection_rate_limit_table_capacity < worker_count
         {
@@ -200,23 +201,31 @@ impl ThreadPerCoreLimits {
 fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> NacelleLimits {
     let mut partition = limits.clone();
     partition.max_connections = partition_capacity(limits.max_connections, workers, worker);
+    partition.max_connections_per_second =
+        partition_capacity(limits.max_connections_per_second, workers, worker);
     partition.max_in_flight_requests =
         partition_capacity(limits.max_in_flight_requests, workers, worker);
     partition.max_streaming_tasks = partition_capacity(limits.max_streaming_tasks, workers, worker);
-    partition.max_connections_per_peer = limits
-        .max_connections_per_peer
-        .map(|limit| partition_capacity(limit, workers, worker));
-    partition.max_connection_opens_per_peer_per_second = limits
-        .max_connection_opens_per_peer_per_second
-        .map(|limit| partition_capacity(limit, workers, worker));
-    if limits.max_connection_opens_per_peer_per_second.is_some() {
-        partition.connection_rate_limit_table_capacity =
-            partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+    #[cfg(feature = "peer-limits")]
+    {
+        partition.max_connections_per_peer = limits
+            .max_connections_per_peer
+            .map(|limit| partition_capacity(limit, workers, worker));
+        partition.max_connection_opens_per_peer_per_second = limits
+            .max_connection_opens_per_peer_per_second
+            .map(|limit| partition_capacity(limit, workers, worker));
+        if limits.max_connection_opens_per_peer_per_second.is_some() {
+            partition.connection_rate_limit_table_capacity =
+                partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+        }
     }
     partition
 }
 
 fn partition_capacity(total: usize, workers: usize, worker: usize) -> usize {
+    if total == usize::MAX {
+        return usize::MAX;
+    }
     let base = total / workers;
     base + usize::from(worker < total % workers)
 }
@@ -1309,6 +1318,7 @@ mod tests {
     fn worker_limits_partition_capacity() {
         let limits = NacelleLimits::default()
             .with_max_connections(5)
+            .with_max_connections_per_second(1)
             .with_max_in_flight_requests(7)
             .with_max_streaming_tasks(4);
         #[cfg(feature = "experimental-memory")]
@@ -1329,6 +1339,19 @@ mod tests {
 
         assert_eq!(first.limits().max_connections, 3);
         assert_eq!(second.limits().max_connections, 2);
+        assert_eq!(first.limits().max_connections_per_second, 1);
+        assert_eq!(second.limits().max_connections_per_second, 0);
+        drop(
+            first
+                .acquire_connection()
+                .expect("first worker rate budget"),
+        );
+        assert!(matches!(
+            second.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
         assert_eq!(first.limits().max_in_flight_requests, 4);
         assert_eq!(second.limits().max_in_flight_requests, 3);
         assert_eq!(first.limits().max_streaming_tasks, 2);
@@ -1359,6 +1382,23 @@ mod tests {
         drop(second_request);
     }
 
+    #[test]
+    fn worker_limits_preserve_unlimited_global_connection_controls() {
+        let policy =
+            ThreadPerCoreLimits::worker(NacelleLimits::default(), 2).expect("worker limits");
+        for index in 0..2 {
+            let state = policy
+                .state_for(Worker {
+                    index,
+                    core_id: index,
+                })
+                .expect("worker");
+            assert_eq!(state.limits().max_connections, usize::MAX);
+            assert_eq!(state.limits().max_connections_per_second, usize::MAX);
+        }
+    }
+
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn worker_limits_require_one_rate_limit_slot_per_worker() {
         let limits = NacelleLimits::default()

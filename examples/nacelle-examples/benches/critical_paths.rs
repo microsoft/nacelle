@@ -1,13 +1,15 @@
 use bytes::{Bytes, BytesMut};
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nacelle::codec::{MessageDecoder, MessageReader};
+#[cfg(feature = "peer-limits")]
+use nacelle::core::NacellePeerRateLimiter;
 use nacelle::core::{
-    NacelleInMemoryObserver, NacelleLimits, NacellePeerRateLimiter, NacelleRuntimeState,
-    NacelleTelemetry, NacelleTransport,
+    NacelleInMemoryObserver, NacelleLimits, NacelleRuntimeState, NacelleTelemetry, NacelleTransport,
 };
 use nacelle::tcp::{DecodedMessage, FrameBuffer, Protocol};
 use nacelle_reference_protocol::{FrameRequest, LengthDelimitedProtocol};
 use std::hint::black_box;
+#[cfg(feature = "peer-limits")]
 use std::net::IpAddr;
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -199,11 +201,18 @@ fn runtime_limit_benches(c: &mut Criterion) {
             .with_max_streaming_tasks(128_000)
             .with_max_memory_bytes(8 * 1024 * 1024 * 1024),
     );
+    let global_rate_state = NacelleRuntimeState::new(
+        NacelleLimits::default()
+            .with_max_connections(128_000)
+            .with_max_connections_per_second(usize::MAX - 1),
+    );
+    #[cfg(feature = "peer-limits")]
     let peer_state = NacelleRuntimeState::new(
         NacelleLimits::default()
             .with_max_connections(128_000)
             .with_max_connections_per_peer(128_000),
     );
+    #[cfg(feature = "peer-limits")]
     let peer_rate_state = NacelleRuntimeState::new(
         NacelleLimits::default()
             .with_max_connections(128_000)
@@ -211,6 +220,7 @@ fn runtime_limit_benches(c: &mut Criterion) {
     );
     let unbounded_memory_state =
         NacelleRuntimeState::new(NacelleLimits::default().with_max_memory_bytes(usize::MAX));
+    #[cfg(feature = "peer-limits")]
     let peer: IpAddr = "127.0.0.1".parse().expect("valid ip");
 
     let mut group = c.benchmark_group("runtime_limits");
@@ -232,6 +242,16 @@ fn runtime_limit_benches(c: &mut Criterion) {
             drop(permit);
         })
     });
+    group.bench_function("connection_global_rate_acquire_drop", |b| {
+        b.iter(|| {
+            let permit = black_box(&global_rate_state)
+                .acquire_connection()
+                .expect("global rate connection permit");
+            black_box(&permit);
+            drop(permit);
+        })
+    });
+    #[cfg(feature = "peer-limits")]
     group.bench_function("connection_per_peer_acquire_drop", |b| {
         b.iter(|| {
             let permit = black_box(&peer_state)
@@ -241,6 +261,7 @@ fn runtime_limit_benches(c: &mut Criterion) {
             drop(permit);
         })
     });
+    #[cfg(feature = "peer-limits")]
     group.bench_function("connection_per_peer_rate_acquire_drop", |b| {
         b.iter(|| {
             let permit = black_box(&peer_rate_state)
@@ -270,35 +291,40 @@ fn runtime_limit_benches(c: &mut Criterion) {
 }
 
 fn peer_rate_limit_benches(c: &mut Criterion) {
-    let mut group = c.benchmark_group("peer_rate_limit_distinct_peers");
+    #[cfg(not(feature = "peer-limits"))]
+    let _ = c;
+    #[cfg(feature = "peer-limits")]
+    {
+        let mut group = c.benchmark_group("peer_rate_limit_distinct_peers");
 
-    for peer_count in [1_usize, 1_000, 100_000] {
-        let peers: Vec<IpAddr> = (0..peer_count)
-            .map(|index| {
-                let octets = (index as u32).to_be_bytes();
-                std::net::Ipv4Addr::new(10, octets[1], octets[2], octets[3]).into()
-            })
-            .collect();
-        group.throughput(Throughput::Elements(peer_count as u64));
-        group.bench_with_input(
-            BenchmarkId::new("initial_admission", peer_count),
-            &peers,
-            |b, peers| {
-                b.iter_batched(
-                    || NacellePeerRateLimiter::new(peers.len()),
-                    |limiter| {
-                        for peer in peers {
-                            assert!(limiter.try_acquire(*peer, usize::MAX).is_allowed());
-                        }
-                        black_box(limiter);
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        for peer_count in [1_usize, 1_000, 100_000] {
+            let peers: Vec<IpAddr> = (0..peer_count)
+                .map(|index| {
+                    let octets = (index as u32).to_be_bytes();
+                    std::net::Ipv4Addr::new(10, octets[1], octets[2], octets[3]).into()
+                })
+                .collect();
+            group.throughput(Throughput::Elements(peer_count as u64));
+            group.bench_with_input(
+                BenchmarkId::new("initial_admission", peer_count),
+                &peers,
+                |b, peers| {
+                    b.iter_batched(
+                        || NacellePeerRateLimiter::new(peers.len()),
+                        |limiter| {
+                            for peer in peers {
+                                assert!(limiter.try_acquire(*peer, usize::MAX).is_allowed());
+                            }
+                            black_box(limiter);
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+
+        group.finish();
     }
-
-    group.finish();
 }
 
 fn memory_contention_benches(c: &mut Criterion) {

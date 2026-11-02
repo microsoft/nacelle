@@ -193,6 +193,14 @@ The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop and memory allocation overhead. Watch it closely after changes to
 `NacelleRuntimeState`.
 
+Compare `runtime_limits/connection_permit_acquire_drop` with
+`runtime_limits/connection_global_rate_acquire_drop` in the same build to measure
+the cost of enabling a finite global rate window. The latter uses a very large
+finite quota so it measures admission rather than rejection. Add `peer-limits`
+to include per-peer permit/rate benchmarks, and keep that feature selection
+identical across before/after runs. These socket-free measurements are not
+multi-threaded connection-churn or deployment-capacity evidence.
+
 ## Profile Linux CPU and allocations
 
 Use the Linux profiling helper for repeatable plain-TCP diagnostics:

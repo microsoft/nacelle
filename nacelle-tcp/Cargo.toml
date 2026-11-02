@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-tcp"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version.workspace = true
 description = "TCP transport and protocol runtime for Nacelle streaming handlers."
@@ -15,6 +15,7 @@ categories = ["asynchronous", "network-programming"]
 default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
 experimental-memory = ["nacelle-core/experimental-memory"]
+peer-limits = ["nacelle-core/peer-limits"]
 experimental-openssl-detection = ["openssl"]
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 openssl = ["dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl"]
@@ -52,4 +53,4 @@ harness = false
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["buffer-rotation", "experimental-memory", "phase-timing", "rustls", "tls-self-signed"]
+features = ["buffer-rotation", "experimental-memory", "peer-limits", "phase-timing", "rustls", "tls-self-signed"]

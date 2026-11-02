@@ -13,8 +13,10 @@ tls_self_signed = false
 
 [limits]
 max_connections = 128000
-max_connections_per_peer = 4096
-# Optional churn protection for direct edge tests.
+# Optional global connection-open rate; omit for unlimited.
+# max_connections_per_second = 8192
+# Requires the non-default peer-limits feature:
+# max_connections_per_peer = 4096
 # max_connection_opens_per_peer_per_second = 2048
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192

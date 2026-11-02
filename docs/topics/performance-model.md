@@ -55,6 +55,14 @@ Retained costs are scoped by ownership:
   lock-free tables. Admission probes a bounded number of atomic slots and
   rejects a newly observed peer when the configured table is full; it does not
   take a per-request mutex or sweep every tracked peer.
+- Per-peer maps, rate tables, and admission checks are compiled only with
+  `peer-limits`. Keep that feature fixed when comparing workloads.
+- Global connection count and rate default to unlimited. A finite
+  `max_connections_per_second` uses a constant-size mutex-protected fixed
+  window at connection admission, not request dispatch. Unlimited rate mode
+  skips its clock and lock. Measure connection churn and contention separately
+  from keep-alive throughput; the finite global window is shared by listeners
+  using the same runtime state.
 - Type-erased protocol/handler errors are constructed only on error paths.
 - TCP response coalescing is opt-in. It queues only complete bounded frames,
 	retains overflow memory guards until flush, and restores socket backpressure

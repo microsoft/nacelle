@@ -10,7 +10,10 @@ pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 pub enum NacelleResourceLimitReason {
     /// Process-wide concurrent connection capacity.
     Connections,
+    /// Process-wide connection admission rate.
+    ConnectionRate,
     /// Peer-rate table capacity is too small for worker partitioning.
+    #[cfg(feature = "peer-limits")]
     ConnectionRateLimitTableCapacity,
     /// Concurrent in-flight request capacity.
     InFlightRequests,
@@ -19,12 +22,16 @@ pub enum NacelleResourceLimitReason {
     /// Partitioned runtime states disagree on the process memory limit.
     MemoryLimitMismatch,
     /// Per-peer connection-open rate.
+    #[cfg(feature = "peer-limits")]
     PeerConnectionRate,
     /// Peer-rate limiter state is unavailable.
+    #[cfg(feature = "peer-limits")]
     PeerConnectionRateTable,
     /// Peer-rate table has no capacity for another peer.
+    #[cfg(feature = "peer-limits")]
     PeerConnectionRateTableFull,
     /// Concurrent connections from one peer.
+    #[cfg(feature = "peer-limits")]
     PeerConnections,
     /// Request body size.
     RequestBodyBytes,
@@ -61,13 +68,19 @@ impl NacelleResourceLimitReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Connections => "connections",
+            Self::ConnectionRate => "connection_rate",
+            #[cfg(feature = "peer-limits")]
             Self::ConnectionRateLimitTableCapacity => "connection_rate_limit_table_capacity",
             Self::InFlightRequests => "in_flight_requests",
             Self::MemoryBytes => "memory_bytes",
             Self::MemoryLimitMismatch => "memory_limit_mismatch",
+            #[cfg(feature = "peer-limits")]
             Self::PeerConnectionRate => "peer_connection_rate",
+            #[cfg(feature = "peer-limits")]
             Self::PeerConnectionRateTable => "peer_connection_rate_table",
+            #[cfg(feature = "peer-limits")]
             Self::PeerConnectionRateTableFull => "peer_connection_rate_table_full",
+            #[cfg(feature = "peer-limits")]
             Self::PeerConnections => "peer_connections",
             Self::RequestBodyBytes => "request_body_bytes",
             Self::ResponseBodyBytes => "response_body_bytes",
@@ -210,13 +223,19 @@ impl NacelleError {
             Self::ResourceLimit(NacelleResourceLimitReason::Connections) => {
                 Some("raise NacelleLimits::max_connections or reduce concurrent clients")
             }
+            Self::ResourceLimit(NacelleResourceLimitReason::ConnectionRate) => {
+                Some("raise NacelleLimits::max_connections_per_second or slow connection attempts")
+            }
+            #[cfg(feature = "peer-limits")]
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRate) => Some(
                 "raise NacelleLimits::max_connection_opens_per_peer_per_second or slow reconnect churn",
             ),
+            #[cfg(feature = "peer-limits")]
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTable)
             | Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTableFull) => Some(
                 "raise NacelleLimits::connection_rate_limit_table_capacity or reduce active peer cardinality",
             ),
+            #[cfg(feature = "peer-limits")]
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnections) => Some(
                 "raise NacelleLimits::max_connections_per_peer or distribute clients across peers",
             ),

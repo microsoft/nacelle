@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-rustls"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version.workspace = true
 description = "Rustls configuration and metadata integration for Nacelle."
@@ -20,6 +20,8 @@ nacelle-core = { workspace = true, features = ["rustls"] }
 pem = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
+# Keep downstream lockfiles from retaining the vulnerable certificate verifier.
+rustls-webpki = { workspace = true }
 
 [lints]
 workspace = true

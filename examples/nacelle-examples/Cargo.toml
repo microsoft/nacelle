@@ -15,6 +15,7 @@ default = ["tcp"]
 tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
 experimental-memory = ["nacelle/experimental-memory"]
+peer-limits = ["nacelle/peer-limits"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 openssl = ["tcp", "nacelle/openssl"]
 bench = []
@@ -22,7 +23,7 @@ bench = []
 [dependencies]
 bytes = { workspace = true }
 http = { workspace = true, optional = true }
-nacelle = { path = "../../nacelle", version = "0.3.2", default-features = false }
+nacelle = { path = "../../nacelle", version = "0.3.3", default-features = false }
 nacelle-reference-protocol = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
 

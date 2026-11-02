@@ -5,10 +5,11 @@ make overload predictable rather than perfectly invisible.
 
 Key budgets include:
 
-- active connections
+- active connections (unlimited by default)
+- global connection admission attempts per second (unlimited by default)
 - in-flight requests
 - streaming body tasks
-- optional per-peer connections
+- optional per-peer connections and connection-open rates (`peer-limits`)
 - experimental runtime memory budget allocations
 - request and response body size
 - core handler timeout
@@ -20,17 +21,44 @@ The important production habit is to size limits together. A high connection
 count with large read and response buffers is a memory budget decision, not just
 a concurrency decision.
 
-Call `NacelleLimits::without_max_connections()` to disable only the process-wide
-connection ceiling. Connection accounting and configured per-peer limits remain
-active.
+## Global and peer connection controls
+
+`max_connections` and `max_connections_per_second` both default to `usize::MAX`
+(unlimited). Set finite bounds with `with_max_connections(...)` and
+`with_max_connections_per_second(...)`. Their `without_*` builders disable each
+control independently. Active connection accounting remains enabled.
+Builder inputs of zero are clamped to one; a directly assigned zero represents
+no capacity, as used by worker partitioning.
+
+The global rate counts connection admission attempts before concurrent and peer
+limits or TLS handshakes. Rejected attempts and dropped connections do not
+refund the window. All listeners sharing a `NacelleRuntimeState` share its
+one-second windows, anchored to state creation. Exhaustion closes the accepted
+socket and emits `connection_rate`; it is not an HTTP `429` response.
+Fixed windows may admit bursts across a window boundary and are not a sliding
+one-second guarantee. Unlimited rate mode does not read the clock or lock a
+rate window; a finite rate uses one constant-size synchronized window per state.
+
+The default-off `peer-limits` feature compiles per-peer connection counts,
+connection-open rate tables, HTTP request-rate limits, their APIs, and their
+tracking state. Without it, no peer map or peer rate table is allocated or
+consulted. Trusted-proxy address resolution and connection metadata are
+independent and remain available. Enable the feature on `nacelle`, or on each
+transport crate used directly.
+
+Thread-per-core global mode shares both global controls. Worker mode partitions
+finite concurrent and per-second quotas in worker order, while unlimited
+controls remain unlimited on every worker. Each worker has its own rate window;
+unused worker quota is not borrowed by other workers. With `peer-limits`, peer
+quotas and bounded connection-rate table capacity are also partitioned.
 
 For configuration details:
 
 Start from `NacelleLimits::default()` and tune shared resource budgets for the
 deployment. Use `NacelleTcpLimits` for TCP socket timeouts and
-`NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. Active
-connections, in-flight requests, streaming tasks, body sizes, handler timeouts,
-and transport timeouts are bounded by default. Runtime memory budgeting is
+`NacelleHttpLimits` for HTTP edge timeouts and keep-alive behavior. In-flight
+requests, streaming tasks, body sizes, handler timeouts, and transport timeouts
+are bounded by default. Runtime memory budgeting is
 compiled only with the non-default `experimental-memory` feature. Without that
 feature, memory fields, allocation APIs, transport accounting, ownership
 tracking, waiters, and the memory gauge are absent.
@@ -62,10 +90,10 @@ deadline no longer protects those reads.
 
 Recommended presets:
 
-- Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
+- Internal service: set explicit global connection budgets, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
 - Proxy-aware HTTP: trust only known proxy addresses and select the authoritative forwarding header; see [HTTP hardening](../reference/http-hardening.md). `X-Forwarded-For` is the default; `Forwarded` requires explicit selection.
-- Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
+- Direct HTTPS listener: enable `http,peer-limits,rustls`, configure finite global connection budgets, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
 - Local load-test/autodeploy HTTPS: enable `tls-self-signed` and call `NacelleTlsConfig::self_signed(...)`; do not treat generated certificates as a public trust or rotation strategy.
@@ -74,8 +102,8 @@ Recommended presets:
 Experimental memory budget:
 
 This sizing formula requires a finite effective connection ceiling. Use the
-configured `max_connections` when it is nonzero. When `max_connections` is the
-zero sentinel for unlimited connections, substitute the finite connection
+configured `max_connections` when it is finite. When `max_connections` is
+`usize::MAX` (unlimited), substitute the finite connection
 boundary enforced by the proxy, process supervisor, container, or other
 external layer.
 

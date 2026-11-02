@@ -269,7 +269,7 @@ where
                 let (stream, peer_addr) = accepted?;
                 tcp_options.apply_to_stream(&stream)?;
                 let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                let connection_permit = match super::common::acquire_connection(server.runtime_state(), peer_addr) {
                     Ok(permit) => permit,
                     Err(error) => {
                         record_connection_rejection(server.as_ref(), NacelleTransport::new("tcp"), "unknown", &error);
@@ -615,9 +615,7 @@ where
                 tcp_options.apply_to_stream(&stream)?;
                 let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                     .with_listener(server.listener_label());
-                let connection_permit = match server
-                    .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                let connection_permit = match super::common::acquire_connection(server.runtime_state(), peer_addr)
                 {
                     Ok(permit) => permit,
                     Err(error) => {

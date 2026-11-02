@@ -1,6 +1,6 @@
 [package]
 name = "nacelle-http"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version.workspace = true
 description = "Hyper HTTP/1 transport and HTTP edge policy runtime for Nacelle streaming handlers."
@@ -14,6 +14,7 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 experimental-memory = ["nacelle-core/experimental-memory"]
+peer-limits = ["nacelle-core/peer-limits"]
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 
