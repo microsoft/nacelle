@@ -112,8 +112,15 @@ pub(super) struct ResponseDelivery {
 
 impl ResponseDelivery {
     pub(super) fn new(config: &NacelleTcpConfig) -> Self {
+        let capacity = if cfg!(feature = "compact-connections")
+            && matches!(config.response_write_policy, ResponseWritePolicy::Immediate)
+        {
+            0
+        } else {
+            config.response_buffer_capacity
+        };
         Self {
-            pending: BytesMut::with_capacity(config.response_buffer_capacity),
+            pending: BytesMut::with_capacity(capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
             abandoned: false,
@@ -146,7 +153,14 @@ impl ResponseDelivery {
     fn reset(&mut self) {
         if self.pending.capacity() > self.base_capacity {
             drop(std::mem::take(&mut self.pending));
-            self.pending = BytesMut::with_capacity(self.base_capacity);
+            let capacity = if cfg!(feature = "compact-connections")
+                && matches!(self.policy, ResponseWritePolicy::Immediate)
+            {
+                0
+            } else {
+                self.base_capacity
+            };
+            self.pending = BytesMut::with_capacity(capacity);
         } else {
             self.pending.clear();
         }
@@ -856,6 +870,85 @@ mod tests {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
         }
+    }
+
+    #[cfg(feature = "compact-connections")]
+    #[tokio::test]
+    async fn compact_immediate_storage_reuses_small_frames_and_releases_large_frames() {
+        let config = NacelleTcpConfig {
+            response_buffer_capacity: 64,
+            response_write_policy: ResponseWritePolicy::Immediate,
+            ..NacelleTcpConfig::default()
+        };
+        let mut delivery = ResponseDelivery::new(&config);
+        let runtime_state = NacelleRuntimeState::default();
+        let telemetry = NacelleTelemetry::default();
+        let phase_duration_metrics = TcpTelemetryPlan::new(&telemetry).phase_duration;
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = RecordingWriter(bytes.clone());
+        let mut expected = Vec::new();
+        let mut small_pointer = None;
+        assert_eq!(delivery.pending.capacity(), 0);
+
+        let large = [b'x'; 1024];
+        for (index, payload) in [b"first".as_slice(), b"later", &large, b"after"]
+            .into_iter()
+            .enumerate()
+        {
+            delivery
+                .stage_frame(
+                    &mut writer,
+                    &NacelleTcpLimits::default(),
+                    payload.len(),
+                    &runtime_state,
+                    &telemetry,
+                    None,
+                    phase_duration_metrics,
+                    |frame| frame.extend_from_slice(payload),
+                )
+                .await
+                .expect("frame should be delivered");
+            expected.extend_from_slice(payload);
+            assert_eq!(
+                &*bytes.lock().expect("recording writer poisoned"),
+                &expected
+            );
+            assert!(delivery.pending.is_empty());
+            if index == 2 {
+                assert_eq!(delivery.pending.capacity(), 0);
+            } else {
+                assert_eq!(delivery.pending.capacity(), 5);
+                if index == 0 {
+                    small_pointer = Some(delivery.pending.as_ptr());
+                } else if index == 1 {
+                    assert_eq!(Some(delivery.pending.as_ptr()), small_pointer);
+                }
+            }
+        }
+
+        let error = delivery
+            .stage_frame(
+                &mut writer,
+                &NacelleTcpLimits::default(),
+                128,
+                &runtime_state,
+                &telemetry,
+                None,
+                phase_duration_metrics,
+                |frame| {
+                    frame.extend_from_slice(b"bad!")?;
+                    Err(NacelleError::InvalidFrame("injected encoder failure"))
+                },
+            )
+            .await
+            .expect_err("encoding should fail");
+        assert!(matches!(error.error, NacelleError::InvalidFrame(_)));
+        assert_eq!(
+            &*bytes.lock().expect("recording writer poisoned"),
+            &expected
+        );
+        assert!(delivery.pending.is_empty());
+        assert_eq!(delivery.pending.capacity(), 5);
     }
 
     #[tokio::test]

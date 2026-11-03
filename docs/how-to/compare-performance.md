@@ -141,6 +141,24 @@ connections with `--pipeline 1`. Record worker counts and CPU placement for each
 case. Report aggregate throughput separately from single-connection throughput;
 `connections / RPS` is not an independently measured latency distribution.
 
+To compare the opt-in compact response-buffer profile, keep the builds separate:
+
+```bash
+cargo build --release -p nacelle-stress-server --target-dir target/perf-baseline
+cargo build --release -p nacelle-stress-server --features nacelle/compact-connections --target-dir target/perf-compact
+```
+
+Run `target/perf-baseline/release/nacelle-stress-server` and
+`target/perf-compact/release/nacelle-stress-server` with otherwise identical
+commands and immediate responses.
+Keep coalescing as a separate control; it retains its configured buffer
+capacity in both builds. For idle-memory comparisons, complete and validate at
+least one response on every connection before sampling settled RSS. Report the
+verified socket count, startup RSS, incremental RSS per connection, allocator,
+and response-buffer capacity. Stay below the configured connection cap and
+within idle deadlines. Process RSS excludes kernel socket memory and does not
+establish a deployment's maximum connection capacity.
+
 Suggested local benchmark:
 
 ```bash

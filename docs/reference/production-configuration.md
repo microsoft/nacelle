@@ -110,6 +110,13 @@ bounded attempt. This delivers buffered TLS records and permits a TLS
 `close_notify`. Administrative cancellation instead drops owned work without
 restarting flush or shutdown; it provides no delivery or TLS-close guarantee.
 
+The default-off `compact-connections` feature starts immediate-response buffers
+empty, retains small allocations across requests, and releases drained buffers
+larger than `response_buffer_capacity` without eagerly replacing them.
+Coalescing retains its configured initial and replacement capacity. The feature
+does not change wire limits or timeouts, and lower retained storage is not a
+process memory cap.
+
 `NacelleTcpLimits` controls TCP socket read, socket write, final writer shutdown,
 and idle timeouts. `idle_timeout` defaults to 120 seconds and bounds waiting for
 the first byte of a message with an empty input buffer, including the first

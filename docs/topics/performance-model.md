@@ -186,6 +186,19 @@ is empty, Nacelle replaces it with a buffer sized to `read_buffer_capacity`.
 Leave the feature disabled when retaining peak buffer capacity is preferable to
 allocating again after traffic spikes.
 
+The default-off `compact-connections` feature reduces response-buffer storage
+for immediate TCP/Unix responses. Connections start without output storage,
+allocate for their first encoded frame, and retain small buffers across
+requests. After a buffer exceeds `response_buffer_capacity`, draining it
+releases the allocation without eagerly replacing it. Coalescing policies keep
+their configured initial and replacement capacity.
+
+This profile leaves input buffers, request-future placement, limits, deadlines,
+backpressure, and TLS unchanged. It introduces no buffer pool or per-request
+boxing. It targets memory use, not a guaranteed CPU or single-connection
+throughput improvement. Compare warmed idle populations and active traffic
+separately; unused connections have not yet exercised lazy output allocation.
+
 Suggested RPS comparison:
 
 ```bash

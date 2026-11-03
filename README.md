@@ -187,6 +187,7 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
 | `tls-self-signed` | Generate ephemeral Rustls self-signed certificates for local tests. |
 | `phase-timing` | Compile TCP read, decode, handler, encode, and write phase timers. Disabled by default. |
+| `compact-connections` | Allocate immediate TCP/Unix response buffers lazily and retain small buffers between requests. Disabled by default; limits and deadlines are unchanged. |
 | `experimental-thread-per-core` | Compile the explicit Linux thread-per-core runtime and worker-local listener APIs. Disabled by default. |
 | `experimental-openssl-detection` | Compile plaintext/OpenSSL detection and mixed-mode listener APIs. Implies `tcp` and `openssl`; disabled by default. |
 
