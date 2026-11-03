@@ -1106,7 +1106,7 @@ async fn local_and_serial_servers_dispatch_one_borrowed_policy() {
         AdmissionConfig::new(Duration::from_secs(1), 1).unwrap(),
     )
     .unwrap();
-    super::super::super::serve_local_stream_without_connection_limit(
+    super::super::super::serve_local_stream(
         io(b"S\0"),
         server.protocol(),
         server.handler(),
@@ -1219,7 +1219,7 @@ async fn state_only_local_handler_configures_admission_before_binding_app_state(
     .with_app_state(state.clone())
     .with_runtime_state(runtime.clone())
     .unwrap();
-    super::super::super::serve_local_stream_without_connection_limit(
+    super::super::super::serve_local_stream(
         io(b"S\0"),
         server.protocol(),
         server.handler(),

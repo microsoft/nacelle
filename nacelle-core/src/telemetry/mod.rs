@@ -936,6 +936,7 @@ fn error_reason(error: &crate::error::NacelleError) -> Option<&'static str> {
     match error {
         crate::error::NacelleError::Configuration(_) => Some("configuration"),
         crate::error::NacelleError::AdmissionRejected(reason) => Some(reason.as_str()),
+        crate::error::NacelleError::ConnectionTerminated(reason) => Some(reason.as_str()),
         crate::error::NacelleError::ResourceLimit(reason) => Some(reason.as_str()),
         crate::error::NacelleError::Timeout(reason) => Some(reason.as_str()),
         crate::error::NacelleError::InvalidFrame(reason) => Some(reason),
@@ -954,6 +955,7 @@ fn error_kind(error: &crate::error::NacelleError) -> &'static str {
     match error {
         crate::error::NacelleError::Configuration(_) => "configuration",
         crate::error::NacelleError::AdmissionRejected(_) => "admission",
+        crate::error::NacelleError::ConnectionTerminated(_) => "cancelled",
         crate::error::NacelleError::ResourceLimit(_) => "resource_limit",
         crate::error::NacelleError::Timeout(_) => "timeout",
         crate::error::NacelleError::InvalidFrame(_) => "invalid_frame",

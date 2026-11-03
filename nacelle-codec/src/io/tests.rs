@@ -310,7 +310,7 @@ async fn bounded_reads_reject_oversized_initial_buffers_before_decoding() {
     ));
     assert_eq!(reader.buffer().as_ptr(), pointer);
     assert_eq!(&reader.buffer()[..], b"\0\0\0\x04headextra");
-    assert!(reader.transport().offered.is_empty());
+    assert_eq!(reader.transport().offered, []);
 
     let mut empty = MessageReader::new(counting_read(b"", 8), LengthDelimitedDecoder::new(32));
     assert!(matches!(
@@ -320,7 +320,7 @@ async fn bounded_reads_reject_oversized_initial_buffers_before_decoding() {
             buffered: 0
         })
     ));
-    assert!(empty.transport().offered.is_empty());
+    assert_eq!(empty.transport().offered, []);
 }
 
 struct EofDecoder;

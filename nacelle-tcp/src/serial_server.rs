@@ -9,10 +9,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::admission::{LocalTcpAdmitted, SerialHandlerAdapter, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
-use crate::connection::{
-    serve_local_serial_stream_without_connection_limit,
-    serve_serial_stream_without_connection_limit,
-};
+use crate::connection::{serve_local_serial_stream, serve_serial_stream_admitted};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{LocalAppStateHandler, Protocol, SharedAppStateHandler};
 use nacelle_core::AdmissionConfig;
@@ -239,23 +236,25 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let _connection_permit = self.runtime_state.acquire_connection_tracked()?;
-        self.serve_io_without_connection_limit(
-            io,
-            NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone()),
-        )
-        .await
+        let connection =
+            NacelleConnectionMeta::tcp(None, None).with_listener(self.listener.clone());
+        let registration = self.runtime_state.register_connection(&connection)?;
+        let activity = registration.activity();
+        registration
+            .run(self.serve_io_admitted(io, connection, activity))
+            .await
     }
 
-    pub(crate) async fn serve_io_without_connection_limit<IO>(
+    pub(crate) async fn serve_io_admitted<IO>(
         &self,
         mut io: IO,
         connection: NacelleConnectionMeta,
+        activity: Option<nacelle_core::tracking::NacelleConnectionActivity>,
     ) -> Result<(), NacelleError>
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_serial_stream_without_connection_limit(
+        serve_serial_stream_admitted(
             &mut io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -264,6 +263,7 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            activity,
         )
         .await
     }
@@ -482,8 +482,7 @@ where
     where
         IO: AsyncRead + AsyncWrite + Unpin + 'static,
     {
-        let _connection_permit = self.runtime_state.acquire_connection_tracked()?;
-        serve_local_serial_stream_without_connection_limit(
+        serve_local_serial_stream(
             io,
             self.protocol.clone(),
             self.handler.clone(),

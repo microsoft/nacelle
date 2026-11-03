@@ -190,6 +190,15 @@ before first enable rather than allocated independently from the process
 budget on each worker. See [runtime control](runtime-limits.md#live-connection-control)
 for update and installation contracts.
 
+Optional TCP/Unix connection tracking adds a bounded core registry of metadata
+and cancellation signals. The transport owns setup, active/idle transitions, and
+I/O teardown; existing listener `JoinSet`s still own tasks. The registry never
+owns sockets or worker-local state. Partitioned states share duplicate-ID
+detection while enforcing worker-local capacities and reclaim targets.
+The driver selects tracked/untracked activity outside the request loop; registry
+locks occur at registration, removal, and administration, not request dispatch.
+See [tracked connections](runtime-limits.md#tracked-tcpunix-connections).
+
 ## Bodies
 
 `NacelleBody` has three internal shapes:

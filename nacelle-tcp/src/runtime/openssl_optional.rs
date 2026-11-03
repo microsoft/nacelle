@@ -249,9 +249,9 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
-                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr);
-                let connection_permit = match server.runtime_state().acquire_connection_for_peer(peer_addr.ip()) {
+                let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
+                    .with_listener(server.listener_label());
+                let registration = match server.runtime_state().register_connection(&connection) {
                     Ok(permit) => permit,
                     Err(error) => {
                         record_connection_rejection(server.as_ref(), NacelleTransport::new("tcp"), "unknown", &error);
@@ -261,11 +261,14 @@ where
                         continue;
                     }
                 };
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let server = server.clone();
                 let acceptor = tls_config.acceptor();
                 let detection_timeout = detection_options.timeout;
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn(registration.run(async move {
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {
@@ -279,7 +282,7 @@ where
                     };
 
                     if !is_tls {
-                        return server.serve_io_without_connection_limit(stream, connection).await;
+                        return server.serve_io_admitted(stream, connection, activity).await;
                     }
 
                     let ssl = Ssl::new(acceptor.context()).map_err(NacelleError::protocol)?;
@@ -302,8 +305,8 @@ where
                     }
                     let connection =
                         connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
+                    server.serve_io_admitted(stream, connection, activity).await
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, NacelleTransport::new("tcp"));
@@ -573,12 +576,11 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, peer_addr) = accepted?;
-                tcp_options.apply_to_stream(&stream)?;
                 let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                     .with_listener(server.listener_label());
-                let connection_permit = match server
+                let registration = match server
                     .runtime_state()
-                    .acquire_connection_for_peer(peer_addr.ip())
+                    .register_connection(&connection)
                 {
                     Ok(permit) => permit,
                     Err(error) => {
@@ -596,11 +598,14 @@ where
                         continue;
                     }
                 };
+                let owned = (stream, registration);
+                tcp_options.apply_to_stream(&owned.0)?;
+                let (stream, registration) = owned;
+                let activity = registration.activity();
                 let server = server.clone();
                 let acceptor = tls_config.acceptor();
                 let detection_timeout = detection_options.timeout;
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn(registration.run(async move {
                     let is_tls = match detect_tls_handshake(&stream, detection_timeout).await {
                         Ok(is_tls) => is_tls,
                         Err(error) => {
@@ -613,7 +618,7 @@ where
 
                     if !is_tls {
                         return server
-                            .serve_io_without_connection_limit(stream, connection)
+                            .serve_io_admitted(stream, connection, activity)
                             .await;
                     }
 
@@ -636,9 +641,9 @@ where
                     let connection =
                         connection.with_tls(nacelle_openssl::connection_tls_meta(stream.ssl()));
                     server
-                        .serve_io_without_connection_limit(stream, connection)
+                        .serve_io_admitted(stream, connection, activity)
                         .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, transport);

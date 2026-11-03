@@ -45,6 +45,11 @@ name = "admission"
 harness = false
 required-features = ["bench", "tcp", "http"]
 
+[[bench]]
+name = "connection_lifecycle"
+harness = false
+required-features = ["bench", "tcp"]
+
 [[bin]]
 name = "echo"
 path = "src/bin/echo.rs"
@@ -53,6 +58,11 @@ required-features = ["tcp"]
 [[bin]]
 name = "tcp_admission"
 path = "src/bin/tcp_admission.rs"
+required-features = ["tcp"]
+
+[[bin]]
+name = "tcp_connection_control"
+path = "src/bin/tcp_connection_control.rs"
 required-features = ["tcp"]
 
 [[bin]]

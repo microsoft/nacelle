@@ -225,6 +225,11 @@ fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> Na
         .map(|limit| partition_capacity(limit, workers, worker));
     partition.connection_rate_limit_table_capacity =
         partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+    partition.connection_tracking = limits.connection_tracking.map(|tracking| {
+        tracking
+            .partition(workers, worker)
+            .expect("validated worker partition")
+    });
     partition
 }
 
@@ -1310,7 +1315,8 @@ mod tests {
     fn worker_limits_partition_capacity() {
         let limits = NacelleLimits::default()
             .with_max_in_flight_requests(7)
-            .with_max_streaming_tasks(4);
+            .with_max_streaming_tasks(4)
+            .with_connection_tracking(nacelle_core::NacelleConnectionTracking::new(1).unwrap());
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("worker limits should build");
         policy
             .control()
@@ -1335,6 +1341,18 @@ mod tests {
         assert_eq!(second.startup_limits().max_in_flight_requests, 3);
         assert_eq!(first.startup_limits().max_streaming_tasks, 2);
         assert_eq!(second.startup_limits().max_streaming_tasks, 2);
+
+        let metadata = nacelle_core::NacelleConnectionMeta::tcp(None, None);
+        let connection = first.register_connection(&metadata).unwrap();
+        assert!(matches!(
+            second.register_connection(&nacelle_core::NacelleConnectionMeta::tcp(None, None)),
+            Err(NacelleError::ResourceLimit(
+                nacelle_core::NacelleResourceLimitReason::ConnectionRegistry
+            ))
+        ));
+        assert_eq!(policy.control().connections(2).unwrap().len(), 1);
+        drop(connection);
+        assert!(policy.control().connections(2).unwrap().is_empty());
 
         let first_request = first.acquire_request().expect("first worker request");
         let second_request = second.acquire_request().expect("second worker request");
@@ -1710,13 +1728,19 @@ mod tests {
         let config = LocalTcpRuntimeConfig::new(
             ThreadPerCoreConfig::new(workers),
             addr,
-            ThreadPerCoreLimits::worker(NacelleLimits::default(), 1)
-                .expect("worker limits should build"),
+            ThreadPerCoreLimits::worker(
+                NacelleLimits::default().with_connection_tracking(
+                    nacelle_core::NacelleConnectionTracking::new(1).unwrap(),
+                ),
+                1,
+            )
+            .expect("worker limits should build"),
         )
         .expect("runtime config")
         .with_shutdown(shutdown.clone())
         .with_drain_timeout(std::time::Duration::from_secs(1));
         let control = config.runtime_control();
+        let final_control = control.clone();
         control
             .set_max_connections(Some(0))
             .expect("pause before worker startup");
@@ -1749,6 +1773,17 @@ mod tests {
                 .read_exact(&mut response)
                 .expect("response should read");
             assert_eq!(&response, &[4, 0, 0, 0, b'p', b'i', b'n', b'g']);
+            let connection = control
+                .connections(1)
+                .unwrap()
+                .pop()
+                .expect("tracked worker connection");
+            assert_eq!(connection.partition, 0);
+            assert_eq!(
+                control.close_connection(connection.connection.connection_id),
+                nacelle_core::NacelleCloseOutcome::Selected
+            );
+            assert_eq!(stream.read(&mut [0]).expect("administrative close EOF"), 0);
             client_shutdown.shutdown();
         });
 
@@ -1762,6 +1797,7 @@ mod tests {
         });
         client.join().expect("client thread should join");
         result.expect("worker-local TCP runtime should shut down cleanly");
+        assert!(final_control.connections(1).unwrap().is_empty());
 
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("probe should bind");
         let serial_addr = probe.local_addr().expect("probe address");

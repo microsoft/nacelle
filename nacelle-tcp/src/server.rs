@@ -5,9 +5,8 @@ use std::sync::Arc;
 use crate::admission::{LocalTcpAdmitted, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
 use crate::connection::{
-    serve_connection_with_connection_meta_and_tcp_state,
+    serve_connection_with_connection_meta_and_tcp_state, serve_stream_admitted,
     serve_stream_with_connection_meta_and_tcp_state,
-    serve_stream_without_connection_limit_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::LocalAppStateHandler;
@@ -505,15 +504,16 @@ where
         .await
     }
 
-    pub(crate) async fn serve_io_without_connection_limit<IO>(
+    pub(crate) async fn serve_io_admitted<IO>(
         &self,
         io: IO,
         connection: NacelleConnectionMeta,
+        activity: Option<nacelle_core::tracking::NacelleConnectionActivity>,
     ) -> Result<(), NacelleError>
     where
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        serve_stream_without_connection_limit_with_connection_meta_and_tcp_state(
+        serve_stream_admitted(
             io,
             self.protocol.clone(),
             self.handler.clone(),
@@ -522,6 +522,7 @@ where
             self.runtime_state.clone(),
             self.tcp_limits,
             connection.with_listener(self.listener.clone()),
+            activity,
         )
         .await
     }

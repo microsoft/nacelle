@@ -28,14 +28,34 @@ use crate::protocol::{
 use crate::serial_server::{LocalSerialTcpServer, SerialTcpServer};
 use crate::server::TcpServer;
 
-use super::{
-    serve_local_stream_without_connection_limit, serve_serial_stream_without_connection_limit,
-    serve_stream_with_connection_meta,
-};
+use super::{serve_local_stream, serve_serial_stream, serve_stream_with_connection_meta};
 
 mod unified;
 
 const PRE_AUTH_BODY_LIMIT: usize = 2;
+
+pub(crate) fn tracked_runtime(capacity: usize) -> NacelleRuntimeState {
+    NacelleRuntimeState::new(
+        NacelleLimits::default().with_connection_tracking(
+            nacelle_core::NacelleConnectionTracking::new(capacity).unwrap(),
+        ),
+    )
+}
+
+pub(crate) async fn registered(
+    runtime: &NacelleRuntimeState,
+) -> nacelle_core::NacelleConnectionSnapshot {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(snapshot) = runtime.control().connections(1).unwrap().pop() {
+                return snapshot;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection registration")
+}
 
 struct RecordingIo {
     input: Vec<u8>,
@@ -1057,7 +1077,7 @@ async fn local_dispatch_uses_identical_state_aware_body_limits() {
             }
         }
     });
-    let server = serve_local_stream_without_connection_limit(
+    let server = serve_local_stream(
         server_io,
         std::rc::Rc::new(PhaseProtocol {
             authenticated: false,
@@ -1869,7 +1889,7 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
 #[tokio::test]
 async fn borrowed_serial_connection_releases_io_on_cancellation() {
     let (_client, mut server_io) = tokio::io::duplex(64);
-    let serve = serve_serial_stream_without_connection_limit(
+    let serve = serve_serial_stream(
         &mut server_io,
         Arc::new(SerialCounterProtocol),
         Arc::new(crate::admission::SerialHandlerAdapter(SerialCounterHandler)),
@@ -1958,7 +1978,7 @@ fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
     );
 
     let (_serial_client, mut serial_io) = tokio::io::duplex(64);
-    let serial = serve_serial_stream_without_connection_limit(
+    let serial = serve_serial_stream(
         &mut serial_io,
         Arc::new(SerialCounterProtocol),
         Arc::new(crate::admission::SerialHandlerAdapter(SerialCounterHandler)),
@@ -1970,7 +1990,7 @@ fn representative_connection_futures_stay_below_compiler_pressure_ceiling() {
     );
 
     let (_local_client, local_io) = tokio::io::duplex(64);
-    let local = serve_local_stream_without_connection_limit(
+    let local = serve_local_stream(
         local_io,
         Rc::new(PhaseProtocol {
             authenticated: true,
@@ -2510,7 +2530,7 @@ async fn graceful_drain_delivers_completed_coalesced_response() {
         .await
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener address");
-    let runtime_state = NacelleRuntimeState::default();
+    let runtime_state = tracked_runtime(1);
     let observer = NacelleInMemoryObserver::new();
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -2563,6 +2583,7 @@ async fn graceful_drain_delivers_completed_coalesced_response() {
         .expect("listener task should join")
         .expect("listener should drain cleanly");
     assert_eq!(runtime_state.active_connections(), 0);
+    assert!(runtime_state.control().connections(1).unwrap().is_empty());
     let events = observer.events();
     assert!(
         events
@@ -2582,7 +2603,7 @@ async fn forced_drain_deadline_aborts_idle_connection() {
         .await
         .expect("listener should bind");
     let addr = listener.local_addr().expect("listener address");
-    let runtime_state = NacelleRuntimeState::default();
+    let runtime_state = tracked_runtime(1);
     let observer = NacelleInMemoryObserver::new();
     let server = Arc::new(
         SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
@@ -2623,6 +2644,7 @@ async fn forced_drain_deadline_aborts_idle_connection() {
     drop(client);
 
     assert_eq!(runtime_state.active_connections(), 0);
+    assert!(runtime_state.control().connections(1).unwrap().is_empty());
     let events = observer.events();
     assert!(
         events
@@ -2728,7 +2750,7 @@ async fn local_serial_listener_serves_non_send_state_and_drains() {
                 .await
                 .expect("listener should bind");
             let addr = listener.local_addr().expect("listener address");
-            let runtime_state = NacelleRuntimeState::default();
+            let runtime_state = tracked_runtime(1);
             let server = std::rc::Rc::new(
                 LocalSerialTcpServer::new(LocalOnlyProtocol, LocalOnlyHandler)
                     .with_runtime_state(runtime_state.clone())
@@ -2755,6 +2777,7 @@ async fn local_serial_listener_serves_non_send_state_and_drains() {
                 .expect("response should read");
             assert_eq!(&response, b"0");
             assert_eq!(runtime_state.active_connections(), 1);
+            assert_eq!(runtime_state.control().connections(1).unwrap().len(), 1);
 
             shutdown.shutdown();
             drop(client);
@@ -2763,6 +2786,7 @@ async fn local_serial_listener_serves_non_send_state_and_drains() {
                 .expect("listener task should join")
                 .expect("listener should drain cleanly");
             assert_eq!(runtime_state.active_connections(), 0);
+            assert!(runtime_state.control().connections(1).unwrap().is_empty());
         })
         .await;
 }

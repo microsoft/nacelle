@@ -211,8 +211,9 @@ where
             _ = shutdown.changed() => break,
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                let connection = NacelleConnectionMeta::unix_socket(local_path.clone());
-                let connection_permit = match server.runtime_state().acquire_connection_tracked() {
+                let connection = NacelleConnectionMeta::unix_socket(local_path.clone())
+                    .with_listener(server.listener_label());
+                let registration = match server.runtime_state().register_connection(&connection) {
                     Ok(permit) => permit,
                     Err(error) => {
                         record_connection_rejection(
@@ -227,11 +228,11 @@ where
                         continue;
                     }
                 };
+                let activity = registration.activity();
                 let server = server.clone();
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
-                    server.serve_io_without_connection_limit(stream, connection).await
-                });
+                connections.spawn(registration.run(async move {
+                    server.serve_io_admitted(stream, connection, activity).await
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, NacelleTransport::new("unix_socket"));
@@ -463,7 +464,7 @@ where
                 let (stream, _) = accepted?;
                 let connection = NacelleConnectionMeta::unix_socket(local_path.clone())
                     .with_listener(server.listener_label());
-                let connection_permit = match server.runtime_state().acquire_connection_tracked() {
+                let registration = match server.runtime_state().register_connection(&connection) {
                     Ok(permit) => permit,
                     Err(error) => {
                         let context = nacelle_core::telemetry::NacelleMetricsContext::new(
@@ -480,13 +481,13 @@ where
                         continue;
                     }
                 };
+                let activity = registration.activity();
                 let server = server.clone();
-                connections.spawn(async move {
-                    let _connection_permit = connection_permit;
+                connections.spawn(registration.run(async move {
                     server
-                        .serve_io_without_connection_limit(stream, connection)
+                        .serve_io_admitted(stream, connection, activity)
                         .await
-                });
+                }));
             }
             joined = connections.join_next(), if !connections.is_empty() => {
                 log_connection_result(joined, transport);

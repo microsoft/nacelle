@@ -11,6 +11,7 @@ use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
 use nacelle_openssl::NacelleOpenSslConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::connection::tests::{registered, tracked_runtime};
 use crate::protocol::{
     DecodedRequest, FrameBuffer, LocalSerialTcpHandler, Protocol, SerialTcpHandler,
     SerialTcpRequestContext, TcpHandlerCompletion, TcpRequestContext, TcpResponse,
@@ -145,6 +146,7 @@ fn tls_detection_rejects_plain_protocol_prefix() {
 
 #[tokio::test]
 async fn required_openssl_rejects_plaintext_before_handler() {
+    let runtime = tracked_runtime(1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -153,6 +155,8 @@ async fn required_openssl_rejects_plaintext_before_handler() {
     let handler_called = Arc::new(AtomicBool::new(false));
     let server = TcpServer::<PlainProtocol>::builder()
         .protocol(PlainProtocol)
+        .runtime_state(runtime.clone())
+        .unwrap()
         .tcp_config(admission_tcp_config())
         .handler(handler_fn({
             let handler_called = handler_called.clone();
@@ -191,6 +195,8 @@ async fn required_openssl_rejects_plaintext_before_handler() {
         .expect("server should stop")
         .expect("server task should join")
         .expect("server should exit");
+    assert_eq!(runtime.active_connections(), 0);
+    assert!(runtime.control().connections(1).unwrap().is_empty());
 }
 
 struct SerialHandler;
@@ -206,6 +212,7 @@ impl SerialTcpHandler<PlainProtocol> for SerialHandler {
 
 #[tokio::test]
 async fn serial_required_openssl_accepts_tls_request() {
+    let runtime = tracked_runtime(1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -218,6 +225,8 @@ async fn serial_required_openssl_accepts_tls_request() {
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     let server = Arc::new(
         SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_runtime_state(runtime.clone())
+            .unwrap()
             .with_tcp_config(admission_tcp_config())
             .with_admission(nacelle_core::AllowAll, admission_config())
             .unwrap(),
@@ -254,6 +263,7 @@ async fn serial_required_openssl_accepts_tls_request() {
         .await
         .expect("response should read");
     assert_eq!(&response, b"ok");
+    assert!(registered(&runtime).await.connection.tls.is_some());
 
     client.shutdown().await.expect("client shutdown");
     shutdown.shutdown();
@@ -261,11 +271,13 @@ async fn serial_required_openssl_accepts_tls_request() {
         .await
         .expect("server task should join")
         .expect("server should stop");
+    assert!(runtime.control().connections(1).unwrap().is_empty());
 }
 
 #[tokio::test]
 #[cfg(feature = "experimental-openssl-detection")]
 async fn serial_optional_openssl_preserves_plaintext_request() {
+    let runtime = tracked_runtime(1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -273,6 +285,8 @@ async fn serial_optional_openssl_preserves_plaintext_request() {
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     let server = Arc::new(
         SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_runtime_state(runtime.clone())
+            .unwrap()
             .with_tcp_config(admission_tcp_config())
             .with_admission(nacelle_core::AllowAll, admission_config())
             .unwrap(),
@@ -299,6 +313,7 @@ async fn serial_optional_openssl_preserves_plaintext_request() {
         .await
         .expect("response should read");
     assert_eq!(&response, b"ok");
+    assert!(registered(&runtime).await.connection.tls.is_none());
 
     client.shutdown().await.expect("client shutdown");
     shutdown.shutdown();
@@ -306,11 +321,13 @@ async fn serial_optional_openssl_preserves_plaintext_request() {
         .await
         .expect("server task should join")
         .expect("server should stop");
+    assert!(runtime.control().connections(1).unwrap().is_empty());
 }
 
 #[tokio::test]
 #[cfg(feature = "experimental-openssl-detection")]
 async fn serial_optional_openssl_accepts_tls_request() {
+    let runtime = tracked_runtime(1);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
@@ -323,6 +340,8 @@ async fn serial_optional_openssl_accepts_tls_request() {
     let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
     let server = Arc::new(
         SerialTcpServer::new(PlainProtocol, SerialHandler)
+            .with_runtime_state(runtime.clone())
+            .unwrap()
             .with_tcp_config(admission_tcp_config())
             .with_admission(nacelle_core::AllowAll, admission_config())
             .unwrap(),
@@ -338,6 +357,36 @@ async fn serial_optional_openssl_accepts_tls_request() {
             NacelleDrainDeadline::new(Duration::from_secs(1)),
         ),
     );
+
+    let mut pending_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let snapshot = registered(&runtime).await;
+    assert_eq!(
+        snapshot.activity,
+        nacelle_core::NacelleConnectionActivityState::Setup
+    );
+    runtime.control().set_max_connections(Some(0)).unwrap();
+    assert!(matches!(
+        runtime.control().reclaim_idle(1),
+        nacelle_core::NacelleReclaimOutcome::Observed {
+            selected: 0,
+            unfilled: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        runtime
+            .control()
+            .close_connection(snapshot.connection.connection_id),
+        nacelle_core::NacelleCloseOutcome::Selected
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), pending_client.read(&mut [0]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    runtime.control().set_max_connections(Some(1)).unwrap();
 
     let stream = tokio::net::TcpStream::connect(addr)
         .await
@@ -360,6 +409,7 @@ async fn serial_optional_openssl_accepts_tls_request() {
         .await
         .expect("response should read");
     assert_eq!(&response, b"ok");
+    assert!(registered(&runtime).await.connection.tls.is_some());
 
     client.shutdown().await.expect("client shutdown");
     shutdown.shutdown();
@@ -367,10 +417,12 @@ async fn serial_optional_openssl_accepts_tls_request() {
         .await
         .expect("server task should join")
         .expect("server should stop");
+    assert!(runtime.control().connections(1).unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_required_openssl_accepts_tls_request() {
+    let runtime = tracked_runtime(1);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -391,6 +443,8 @@ async fn local_required_openssl_accepts_tls_request() {
                         context.respond(TcpResponse::bytes("ok")).await
                     }),
                 )
+                .with_runtime_state(runtime.clone())
+                .unwrap()
                 .with_tcp_config(admission_tcp_config())
                 .with_admission(nacelle_core::AllowAll, admission_config())
                 .unwrap(),
@@ -425,12 +479,14 @@ async fn local_required_openssl_accepts_tls_request() {
                 .await
                 .expect("response should read");
             assert_eq!(&response, b"ok");
+            assert!(registered(&runtime).await.connection.tls.is_some());
             client.shutdown().await.expect("client shutdown");
             shutdown.shutdown();
             server_task
                 .await
                 .expect("server task should join")
                 .expect("server should stop");
+            assert!(runtime.control().connections(1).unwrap().is_empty());
         })
         .await;
 }
@@ -448,6 +504,7 @@ impl LocalSerialTcpHandler<PlainProtocol> for LocalSerialHandler {
 
 #[tokio::test(flavor = "current_thread")]
 async fn local_serial_required_openssl_accepts_tls_request() {
+    let runtime = tracked_runtime(1);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -463,6 +520,8 @@ async fn local_serial_required_openssl_accepts_tls_request() {
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
             let server = std::rc::Rc::new(
                 LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_runtime_state(runtime.clone())
+                    .unwrap()
                     .with_tcp_config(admission_tcp_config())
                     .with_admission(nacelle_core::AllowAll, admission_config())
                     .unwrap(),
@@ -497,6 +556,7 @@ async fn local_serial_required_openssl_accepts_tls_request() {
                 .await
                 .expect("response should read");
             assert_eq!(&response, b"ok");
+            assert!(registered(&runtime).await.connection.tls.is_some());
 
             client.shutdown().await.expect("client shutdown");
             shutdown.shutdown();
@@ -504,6 +564,7 @@ async fn local_serial_required_openssl_accepts_tls_request() {
                 .await
                 .expect("server task should join")
                 .expect("server should stop");
+            assert!(runtime.control().connections(1).unwrap().is_empty());
         })
         .await;
 }
@@ -511,6 +572,7 @@ async fn local_serial_required_openssl_accepts_tls_request() {
 #[tokio::test(flavor = "current_thread")]
 #[cfg(feature = "experimental-openssl-detection")]
 async fn local_serial_optional_openssl_preserves_plaintext_request() {
+    let runtime = tracked_runtime(1);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -521,6 +583,8 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
             let server = std::rc::Rc::new(
                 LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_runtime_state(runtime.clone())
+                    .unwrap()
                     .with_tcp_config(admission_tcp_config())
                     .with_admission(nacelle_core::AllowAll, admission_config())
                     .unwrap(),
@@ -546,6 +610,7 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
                 .await
                 .expect("response should read");
             assert_eq!(&response, b"ok");
+            assert!(registered(&runtime).await.connection.tls.is_none());
 
             client.shutdown().await.expect("client shutdown");
             shutdown.shutdown();
@@ -553,6 +618,7 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
                 .await
                 .expect("server task should join")
                 .expect("server should stop");
+            assert!(runtime.control().connections(1).unwrap().is_empty());
         })
         .await;
 }
@@ -560,6 +626,7 @@ async fn local_serial_optional_openssl_preserves_plaintext_request() {
 #[tokio::test(flavor = "current_thread")]
 #[cfg(feature = "experimental-openssl-detection")]
 async fn local_serial_optional_openssl_accepts_tls_request() {
+    let runtime = tracked_runtime(1);
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -574,6 +641,8 @@ async fn local_serial_optional_openssl_accepts_tls_request() {
             let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
             let server = std::rc::Rc::new(
                 LocalSerialTcpServer::new(PlainProtocol, LocalSerialHandler)
+                    .with_runtime_state(runtime.clone())
+                    .unwrap()
                     .with_tcp_config(admission_tcp_config())
                     .with_admission(nacelle_core::AllowAll, admission_config())
                     .unwrap(),
@@ -610,6 +679,7 @@ async fn local_serial_optional_openssl_accepts_tls_request() {
                 .await
                 .expect("response should read");
             assert_eq!(&response, b"ok");
+            assert!(registered(&runtime).await.connection.tls.is_some());
 
             client.shutdown().await.expect("client shutdown");
             shutdown.shutdown();
@@ -617,6 +687,7 @@ async fn local_serial_optional_openssl_accepts_tls_request() {
                 .await
                 .expect("server task should join")
                 .expect("server should stop");
+            assert!(runtime.control().connections(1).unwrap().is_empty());
         })
         .await;
 }
