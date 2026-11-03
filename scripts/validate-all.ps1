@@ -36,8 +36,10 @@ Invoke-Step "nacelle-http full tests" { cargo test -p nacelle-http --features tl
 Invoke-Step "nacelle-http full clippy" { cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "reference protocol tests" { cargo test -p nacelle-reference-protocol --all-targets }
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
-Invoke-Step "examples check" { cargo check -p nacelle-examples --all-features --all-targets }
-Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
+Invoke-Step "examples Rustls check" { cargo check -p nacelle-examples --no-default-features --features "bench,experimental-memory,http,tcp,tls-self-signed" --all-targets }
+Invoke-Step "examples Rustls clippy" { cargo clippy -p nacelle-examples --no-default-features --features "bench,experimental-memory,http,tcp,tls-self-signed" --all-targets -- -D warnings }
+Invoke-Step "examples OpenSSL check" { cargo check -p nacelle-examples --no-default-features --features "bench,experimental-memory,http,openssl,tcp" --all-targets }
+Invoke-Step "examples OpenSSL clippy" { cargo clippy -p nacelle-examples --no-default-features --features "bench,experimental-memory,http,openssl,tcp" --all-targets -- -D warnings }
 Invoke-Step "examples HTTP-only check" { cargo check -p nacelle-examples --no-default-features --features http --all-targets }
 Invoke-Step "examples HTTP-only clippy" { cargo clippy -p nacelle-examples --no-default-features --features http --all-targets -- -D warnings }
 Invoke-Step "nacelle full tests" { cargo test -p nacelle --features "http" --all-targets }
@@ -59,6 +61,11 @@ Invoke-Step "stress client tests" { cargo test -p nacelle-stress-test --all-targ
 Invoke-Step "stress client no-default tests" { cargo test -p nacelle-stress-test --no-default-features --all-targets }
 Invoke-Step "stress server tests" { cargo test -p nacelle-stress-server --all-targets }
 Invoke-Step "stress server no-default tests" { cargo test -p nacelle-stress-server --no-default-features --all-targets }
+Invoke-Step "nacelle-core peer-limits tests" { cargo test -p nacelle-core --features peer-limits --all-targets }
+Invoke-Step "nacelle-tcp peer-limits TLS tests" { cargo test -p nacelle-tcp --features "peer-limits,tls-self-signed" --all-targets }
+Invoke-Step "nacelle-http peer-limits TLS tests" { cargo test -p nacelle-http --features "peer-limits,tls-self-signed" --all-targets }
+Invoke-Step "nacelle peer-limits tests" { cargo test -p nacelle --no-default-features --features "http,peer-limits,tcp" --all-targets }
+Invoke-Step "stress server and proxy peer-limits tests" { cargo test -p nacelle-stress-server -p nacelle-proxy --features peer-limits --all-targets }
 
 cargo tree -i serde_yaml *> $null
 if ($LASTEXITCODE -eq 0) {
