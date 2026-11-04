@@ -9,6 +9,9 @@
     </a>
     <img alt="Crates.io Total Downloads" src="https://img.shields.io/crates/d/nacelle">
     <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/microsoft/nacelle/ci.yml">
+    <a href="https://codecov.io/gh/microsoft/nacelle" >
+        <img src="https://codecov.io/gh/microsoft/nacelle/graph/badge.svg?token=3YEDQ6MR9H"/>
+    </a>
     <a href="https://securityscorecards.dev/viewer/?uri=github.com/microsoft/nacelle">
         <img src="https://api.securityscorecards.dev/projects/github.com/microsoft/nacelle/badge" alt="OpenSSF Scorecard" />
     </a>
