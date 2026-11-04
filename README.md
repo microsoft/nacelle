@@ -2,6 +2,21 @@
     <img src="docs/assets/nacelle-mark.svg" width="144" alt="Nacelle logo">
 </p>
 
+<p align="center">
+    <img alt="GitHub License" src="https://img.shields.io/github/license/microsoft/nacelle">
+    <a href="https://crates.io/crates/nacelle">
+        <img alt="Crates.io Version" src="https://img.shields.io/crates/v/nacelle" />
+    </a>
+    <img alt="Crates.io Total Downloads" src="https://img.shields.io/crates/d/nacelle">
+    <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/microsoft/nacelle/ci.yml">
+    <a href="https://codecov.io/gh/microsoft/nacelle" >
+        <img src="https://codecov.io/gh/microsoft/nacelle/graph/badge.svg?token=3YEDQ6MR9H"/>
+    </a>
+    <a href="https://securityscorecards.dev/viewer/?uri=github.com/microsoft/nacelle">
+        <img src="https://api.securityscorecards.dev/projects/github.com/microsoft/nacelle/badge" alt="OpenSSF Scorecard" />
+    </a>
+</p>
+
 <h1 align="center">Nacelle</h1>
 
 Nacelle is an experimental Tokio-based Rust library for building typed streaming
