@@ -2,6 +2,10 @@
     <img src="docs/assets/nacelle-mark.svg" width="144" alt="Nacelle logo">
 </p>
 
+<p align="center">
+    [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/microsoft/nacelle/badge)](https://scorecard.dev/viewer/?uri=github.com/microsoft/nacelle)
+</p>
+
 <h1 align="center">Nacelle</h1>
 
 Nacelle is an experimental Tokio-based Rust library for building typed streaming
