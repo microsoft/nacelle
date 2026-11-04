@@ -3,7 +3,9 @@
 </p>
 
 <p align="center">
-    [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/microsoft/nacelle/badge)](https://scorecard.dev/viewer/?uri=github.com/microsoft/nacelle)
+    <a href="https://securityscorecards.dev/viewer/?uri=github.com/microsoft/nacelle">
+        <img src="https://api.securityscorecards.dev/projects/github.com/microsoft/nacelle/badge" alt="OpenSSF Scorecard" />
+    </a>
 </p>
 
 <h1 align="center">Nacelle</h1>
