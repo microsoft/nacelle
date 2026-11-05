@@ -229,9 +229,9 @@ runtime. A separate one-worker Tokio runtime supervises listeners and exports
 metrics; increasing `--server-threads` does not create another equally sized
 supervisor pool. Process affinity alone does not pin each listener thread to a
 specific physical core.
-Its plaintext shared-handler path uses borrowed TCP socket halves rather than
-the generic split allocation and mutex. Serial handlers and TLS retain their
-generic I/O path; compare those modes separately.
+Its plaintext shared and serial handler paths use borrowed TCP socket halves
+rather than the generic split allocation and mutex. TLS retains the generic I/O
+path; compare handler and transport modes separately.
 
 The fixture's shared 64-byte success template is read-only static storage, so
 its `Bytes` clones/drops do not update a shared reference count. Custom sizes

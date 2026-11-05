@@ -87,7 +87,13 @@ check_bind_available() {
 check_bind_available
 
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-cargo build --release --target-dir "$TARGET_DIR" \
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [[ -z "$HOST_TARGET" ]]; then
+    echo "Unable to determine the Rust host target" >&2
+    exit 1
+fi
+RELEASE_DIR="$TARGET_DIR/$HOST_TARGET/release"
+cargo build --release --target "$HOST_TARGET" --target-dir "$TARGET_DIR" \
     --package nacelle-stress-server --package nacelle-stress-test
 check_bind_available
 
@@ -118,7 +124,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-"$TARGET_DIR/release/nacelle-stress-server" "${SERVER_ARGS[@]}" &
+"$RELEASE_DIR/nacelle-stress-server" "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 
 ready="false"
@@ -152,7 +158,7 @@ if [[ "$(effective_tls_self_signed)" == "true" ]]; then
     CLIENT_ARGS+=(--tls-insecure)
 fi
 
-"$TARGET_DIR/release/nacelle-stress-test" "${CLIENT_ARGS[@]}" &
+"$RELEASE_DIR/nacelle-stress-test" "${CLIENT_ARGS[@]}" &
 CLIENT_PID=$!
 wait "$CLIENT_PID"
 CLIENT_PID=""
