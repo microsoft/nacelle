@@ -19,9 +19,10 @@ class StressLauncherTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="nacelle-launcher-")
         self.root = Path(self.temporary.name)
         self.bin = self.root / "bin"
-        self.release = self.root / "target" / "release"
+        self.release = self.root / "target" / "test-host" / "release"
         self.bin.mkdir()
         self.release.mkdir(parents=True)
+        self.script(self.bin / "rustc", "print('host: test-host')")
         self.env = {
             **os.environ,
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
