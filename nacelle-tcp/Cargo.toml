@@ -14,6 +14,7 @@ categories = ["asynchronous", "network-programming"]
 [features]
 default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
+compact-connections = []
 experimental-openssl-detection = ["openssl"]
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 openssl = ["dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl"]
@@ -51,4 +52,4 @@ harness = false
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["buffer-rotation", "phase-timing", "rustls", "tls-self-signed"]
+features = ["buffer-rotation", "compact-connections", "phase-timing", "rustls", "tls-self-signed"]

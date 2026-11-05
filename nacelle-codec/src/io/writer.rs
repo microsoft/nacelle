@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io;
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::MessageEncoder;
@@ -121,7 +121,7 @@ where
                     "transport accepted no queued bytes",
                 ));
             }
-            drop(self.buffer.split_to(written));
+            self.buffer.advance(written);
         }
         self.writer.flush().await
     }

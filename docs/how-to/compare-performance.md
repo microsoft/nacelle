@@ -34,6 +34,131 @@ its parent and the pinned starting revision. Keep allocation-instrumented runs
 separate from throughput/latency samples. Shared-host measurements establish
 local variance, not a dedicated-host performance guarantee.
 
+For Linux stress-worker experiments, record the process CPU mask and any
+`--worker-cpus` list separately. Compare an unchanged default, affinity alone,
+and `--worker-local-response` under the same worker count and effective CPU
+placement. Worker-local templates can reduce shared reference-count traffic
+while increasing RSS; record peak memory and single-connection controls rather
+than assuming a multi-worker gain applies to them. Keep the
+[response-write policy](run-stress-tests.md) identical unless batching is the
+explicit variable under test.
+The default shared 64-byte fixture template is static; use a custom response
+size when isolating owned-template contention, and record `--response-bytes`.
+
+## Two distinct TCP workloads
+
+Build both stress tools before measuring. For one persistent connection with
+one request outstanding, use immediate responses, one listener, and one client
+worker. On Linux, pin the process to an allowed physical-core CPU; one unpinned
+listener shares the main thread's current-thread runtime:
+
+```bash
+taskset -c 0 target/release/nacelle-stress-server \
+  --config examples/nacelle-stress-server/configs/tcp.toml \
+  --bind 127.0.0.1:7879 --server-threads 1 \
+  --handler-mode serial --response-write-mode immediate
+```
+
+In another terminal:
+
+```bash
+TOKIO_WORKER_THREADS=1 taskset -c 12 target/release/nacelle-stress-test \
+  --addr 127.0.0.1:7879 --connections 1 --pipeline 1 \
+  --duration-secs 30 --payload-bytes 256
+```
+
+Replace `0` and `12` with allowed CPUs on separate physical cores. Serial
+dispatch avoids per-request shared connection-context cloning; the fixture's
+plaintext path also avoids generic split locking. Compare serial and shared
+dispatch separately, then hold the selected mode and runtime topology fixed
+between revisions. This is not connection churn: do not set
+`--requests-per-connection 1`.
+For a separate client-runtime comparison, add `--current-thread` to the client
+command above while keeping the server binary and configuration fixed. This
+removes the extra client worker thread; it is an end-to-end profile comparison,
+not evidence of a server implementation improvement. Hold the client runtime
+fixed when comparing server revisions.
+An explicit `--worker-cpus 0` instead adds a dedicated listener runtime and
+thread, leaving supervision on the main thread. Measure that topology separately
+rather than assuming it improves a one-request workload.
+
+For the serial fixture's native I/O path, select `--handler-mode serial` with
+`--response-write-mode coalesce-buffered` and use multiple requests in flight.
+Measure a one-connection, pipeline-64 case separately from a many-connection,
+pipeline-8 case. Keep listener count, affinity, handler mode,
+and the same coalesced policy fixed at both revisions. A gain from switching
+immediate delivery to coalescing is a configuration gain, not evidence that the
+one-request path improved. Report server CPU per completed request and latency;
+coalescing cannot combine responses that the client has not requested yet.
+
+## Sequential TCP and TLS round trips
+
+Use one persistent connection, pipeline depth 1, and immediate responses when
+measuring a sequential driver. Receive and validate the complete response before
+sending the next request. Do not substitute a pipelined or batched workload.
+Keep the request payload at 256 bytes and the response behavior identical in
+plaintext and TLS comparisons.
+
+For local self-signed TLS, use the same one-listener server command above with
+`examples/nacelle-stress-server/configs/tcp-tls.toml`. Run the client with:
+
+```bash
+taskset -c 12 target/release/nacelle-stress-test \
+  --addr 127.0.0.1:7879 --connections 1 --pipeline 1 \
+  --payload-bytes 256 --current-thread --tls-insecure \
+  --warmup-secs 5 --duration-secs 30
+```
+
+The insecure trust option is only for this local self-signed fixture. Record the
+printed negotiated TLS version and cipher. Omit `--tls-insecure` and select the
+plaintext server config for the transport control; do not silently change
+response size, timeouts, metrics, or allocator.
+
+Warmup uses the same established connections and drains their responses before
+the measured phase. `measurement_start` and `measurement_end` are flushed
+outside the request loop. Initial connections, TLS handshakes, warmup, and final
+shutdown are excluded from the client request statistics. Server console windows
+still include warmup: use matching steady-state CPU snapshots or whole diagnostic
+windows after warmup rather than dividing startup totals by measured requests.
+
+Report RPS, mean RTT, p50/p95/p99, client and server user/kernel CPU per request,
+memory, thread count, and allocation/syscall evidence separately. Current RTT
+starts before request frame preparation and includes write/flush through complete
+response validation. Earlier client revisions started timing after the write;
+their latency values are not comparable. Current percentiles include every
+completion in a bounded histogram, whose bucket upper bounds overestimate by
+less than 0.4%. Repeat unchanged controls and interleave baseline/candidate runs
+before claiming a gain.
+
+For a separate blocking-client experiment, add `--blocking-io` while keeping
+the same binary, server, TLS cipher, payload, and pipeline depth 1. It creates
+one additional blocking worker per connection; compare memory and thread count
+as well as latency and CPU. It changes client I/O scheduling, not the server
+implementation, and does not allow requests to overlap within a connection.
+
+After the one-connection comparison, measure 2, 4, 8, 16, and 32 independent
+connections with `--pipeline 1`. Record worker counts and CPU placement for each
+case. Report aggregate throughput separately from single-connection throughput;
+`connections / RPS` is not an independently measured latency distribution.
+
+To compare the opt-in compact response-buffer profile, keep the builds separate:
+
+```bash
+cargo build --release -p nacelle-stress-server --target-dir target/perf-baseline
+cargo build --release -p nacelle-stress-server --features nacelle/compact-connections --target-dir target/perf-compact
+```
+
+Run `target/perf-baseline/release/nacelle-stress-server` and
+`target/perf-compact/release/nacelle-stress-server` with otherwise identical
+commands and immediate responses.
+Keep coalescing as a separate control; it retains its configured buffer
+capacity in both builds. For idle-memory comparisons, complete and validate at
+least one response on every connection before sampling settled RSS. Report the
+verified socket count, startup RSS, incremental RSS per connection, allocator,
+and response-buffer capacity. Stay below the configured connection cap and
+within idle deadlines. Process RSS excludes kernel socket memory and does not
+establish a deployment's maximum connection capacity.
+
 Suggested local benchmark:
 
 ```bash
@@ -62,6 +187,45 @@ costs are included. These are not persistent keep-alive, slow-reader, p99, or
 HTTPS measurements. The comparison scripts' `critical-paths` suite uses the
 TCP-only feature selection; run this HTTP selection separately with an
 identical harness at both revisions.
+
+For persistent HTTP/1 requests without pipelining:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp http" -- http_keep_alive --noplot
+```
+
+These cases use 1 or 16 concurrent connections, 64 sequential requests per
+connection, and empty or 256-byte echoed bodies. They use the same two-worker
+runtime, system allocator, and no-recorder telemetry as the connection benchmark.
+Connection setup is included once per 64 requests. Client work is included;
+these cases do not measure server-only CPU, p99 latency, or HTTPS.
+
+Compare shared permit contention separately:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- request_permit_contended --noplot
+```
+
+The owned and borrowed cases enforce the same runtime request limit. Borrowed
+permits are used internally by scoped transport operations; they do not disable
+accounting or replace public owned permits.
+
+To isolate fragmented buffered bodies:
+
+```bash
+cargo bench -p nacelle-examples --bench critical_paths --features "bench tcp" -- tcp_body_read_128x256 --noplot
+```
+
+Each case processes 128 requests with 256-byte bodies over in-memory I/O capped
+at 32 or 4,096 bytes per read. The former forces the incomplete-body fallback;
+the latter is a buffered control. The fixture checks each complete body, uses a
+current-thread runtime, and installs no recorder. These are body-path timings,
+not a measurement of fragmentation frequency or network throughput. Fewer body
+allocations alone do not establish lower CPU cost.
+
+The `ready_timeout` group in the same target isolates timeout-wrapper cost for
+an immediately-ready future, comparing Tokio's wrapper with Nacelle's deferred
+timer construction. It does not measure pending timers or network latency.
 
 The telemetry group can be run independently:
 
@@ -259,11 +423,15 @@ Use the Linux profiling helper for repeatable plain-TCP diagnostics:
 
 The helper builds the `profiling` Cargo profile with optimization, debug
 information, and frame pointers. Its default `--feature-set minimal` uses
-`--no-default-features`, which disables TLS and mimalloc. The stress server's
-downstream console metrics recorder remains active, but request and response
-body-size histograms default off so profiling isolates the runtime from the
-debug recorder's raw sample retention. Pass `--byte-metrics` when measuring
-that recorder overhead deliberately. The system allocator is required because
+`--no-default-features`, which disables TLS and the server's mimalloc feature.
+The stress client still uses mimalloc. The stress server's console recorder
+remains active, but the helper keeps body-size recording off by default for
+comparability with earlier profiles. Pass `--byte-metrics` to include the
+server's default byte accounting. Its current console recorder stores bounded
+sharded byte totals, not raw byte-size samples; compare the same recorder revision,
+shard policy, and switches when attributing overhead. Shard selection occurs
+when cached handles register; aggregation occurs during console snapshots.
+The system allocator is required because
 Heaptrack cannot intercept calls made directly to mimalloc. Treat this as a
 diagnostic profile, not as a matched comparison with the default mimalloc
 build.
@@ -319,6 +487,31 @@ Each run writes metadata, raw logs, and text reports under
 records `cycles:u` at 999 Hz with frame-pointer call graphs. Heaptrack launches
 the server directly so allocator interception survives process startup, then
 applies any requested CPU affinity to all server threads.
+
+Client logs also include server user/kernel CPU seconds and
+`server_cpu_us_per_request`, computed from process-wide `/proc/PID/stat` counters
+around each client invocation. CPU totals include connection setup, teardown,
+and the server's metrics-console work during that interval; they exclude client
+CPU. The counters have clock-tick granularity, so use several-second samples.
+`server_average_cores` divides that CPU total by the client's reported load
+duration and is approximate because client startup lies outside that duration.
+
+Start a non-pipelined comparison with the same explicit profile at both
+revisions:
+
+```bash
+./scripts/profile-linux.sh \
+	--tool baseline \
+	--config examples/nacelle-stress-server/configs/tcp.toml \
+	--server-threads 4 --connections 64 --pipeline 1 \
+	--payload-bytes 256 --warmup-secs 5 --duration-secs 15 --runs 3
+```
+
+Add disjoint physical CPU lists for the host, keep the client binary fixed, and
+alternate baseline/candidate order. Compare CPU per request, user/kernel split,
+throughput, and tail latency together. Repeat with pipeline depth 8 as a separate
+control. Do not treat a small throughput difference inside baseline variance as
+an improvement, or extrapolate a user-space microbenchmark to total socket CPU.
 
 The helper can compare handler ownership and response delivery without
 changing their safe defaults:
@@ -491,8 +684,8 @@ Suggested RPS comparison:
 ./examples/run-stress-test.sh --config examples/nacelle-stress-server/configs/tcp.toml --server-threads 48 --connections 256 --pipeline 8 --duration-secs 30 --payload-bytes 256
 ```
 
-The stress server installs a `metrics-util` recorder and prints a compact metrics
-snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
+The stress server installs a console recorder backed by `metrics-util` and prints
+a compact metrics snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
 `request_metrics` config; started/completed counters and byte counters are on by
 default, while in-flight and duration metrics remain opt-in. Request duration
 metrics are opt-in as well, which avoids request `Instant` work on core/HTTP

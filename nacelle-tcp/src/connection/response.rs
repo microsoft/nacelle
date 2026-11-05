@@ -112,8 +112,15 @@ pub(super) struct ResponseDelivery {
 
 impl ResponseDelivery {
     pub(super) fn new(config: &NacelleTcpConfig) -> Self {
+        let capacity = if cfg!(feature = "compact-connections")
+            && matches!(config.response_write_policy, ResponseWritePolicy::Immediate)
+        {
+            0
+        } else {
+            config.response_buffer_capacity
+        };
         Self {
-            pending: BytesMut::with_capacity(config.response_buffer_capacity),
+            pending: BytesMut::with_capacity(capacity),
             base_capacity: config.response_buffer_capacity,
             policy: config.response_write_policy,
             abandoned: false,
@@ -146,7 +153,14 @@ impl ResponseDelivery {
     fn reset(&mut self) {
         if self.pending.capacity() > self.base_capacity {
             drop(std::mem::take(&mut self.pending));
-            self.pending = BytesMut::with_capacity(self.base_capacity);
+            let capacity = if cfg!(feature = "compact-connections")
+                && matches!(self.policy, ResponseWritePolicy::Immediate)
+            {
+                0
+            } else {
+                self.base_capacity
+            };
+            self.pending = BytesMut::with_capacity(capacity);
         } else {
             self.pending.clear();
         }
@@ -181,20 +195,15 @@ impl ResponseDelivery {
         drop(previous);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn stage_frame<W, E, Observer>(
+    fn encode_frame<E, Observer>(
         &mut self,
-        writer: &mut W,
-        tcp_limits: &NacelleTcpLimits,
         frame_capacity: usize,
-        _runtime_state: &NacelleRuntimeState,
         telemetry: &NacelleTelemetry<Observer>,
         metrics_context: Option<&NacelleMetricsContext>,
         phase_duration_metrics: bool,
         encode: E,
-    ) -> Result<FrameDelivery, ResponseDeliveryError>
+    ) -> Result<(usize, usize), ResponseDeliveryError>
     where
-        W: AsyncWrite + Unpin,
         E: FnOnce(&mut FrameBuffer<'_>) -> Result<(), NacelleError>,
         Observer: NacelleTelemetryObserver,
     {
@@ -236,24 +245,54 @@ impl ResponseDelivery {
         }
         let frame_len = self.pending.len().saturating_sub(frame_start);
 
-        let delivered_bytes = if self.should_flush() {
-            self.flush_with_current_frame(
-                writer,
-                tcp_limits,
-                telemetry,
-                metrics_context,
-                phase_duration_metrics,
-                frame_start,
-                frame_len,
-            )
-            .await?
-        } else {
-            0
-        };
-        Ok(FrameDelivery {
-            encoded_bytes: frame_len,
-            delivered_bytes,
-        })
+        Ok((frame_start, frame_len))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_frame<'a, W, E, Observer>(
+        &'a mut self,
+        writer: &'a mut W,
+        tcp_limits: &'a NacelleTcpLimits,
+        frame_capacity: usize,
+        _runtime_state: &NacelleRuntimeState,
+        telemetry: &'a NacelleTelemetry<Observer>,
+        metrics_context: Option<&'a NacelleMetricsContext>,
+        phase_duration_metrics: bool,
+        encode: E,
+    ) -> impl std::future::Future<Output = Result<FrameDelivery, ResponseDeliveryError>> + 'a
+    where
+        W: AsyncWrite + Unpin,
+        E: FnOnce(&mut FrameBuffer<'_>) -> Result<(), NacelleError>,
+        Observer: NacelleTelemetryObserver,
+    {
+        let frame = self.encode_frame(
+            frame_capacity,
+            telemetry,
+            metrics_context,
+            phase_duration_metrics,
+            encode,
+        );
+        async move {
+            let (frame_start, frame_len) = frame?;
+            let delivered_bytes = if self.should_flush() {
+                self.flush_with_current_frame(
+                    writer,
+                    tcp_limits,
+                    telemetry,
+                    metrics_context,
+                    phase_duration_metrics,
+                    frame_start,
+                    frame_len,
+                )
+                .await?
+            } else {
+                0
+            };
+            Ok(FrameDelivery {
+                encoded_bytes: frame_len,
+                delivered_bytes,
+            })
+        }
     }
 
     pub(super) async fn flush<W, Observer>(
@@ -833,6 +872,85 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "compact-connections")]
+    #[tokio::test]
+    async fn compact_immediate_storage_reuses_small_frames_and_releases_large_frames() {
+        let config = NacelleTcpConfig {
+            response_buffer_capacity: 64,
+            response_write_policy: ResponseWritePolicy::Immediate,
+            ..NacelleTcpConfig::default()
+        };
+        let mut delivery = ResponseDelivery::new(&config);
+        let runtime_state = NacelleRuntimeState::default();
+        let telemetry = NacelleTelemetry::default();
+        let phase_duration_metrics = TcpTelemetryPlan::new(&telemetry).phase_duration;
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let mut writer = RecordingWriter(bytes.clone());
+        let mut expected = Vec::new();
+        let mut small_pointer = None;
+        assert_eq!(delivery.pending.capacity(), 0);
+
+        let large = [b'x'; 1024];
+        for (index, payload) in [b"first".as_slice(), b"later", &large, b"after"]
+            .into_iter()
+            .enumerate()
+        {
+            delivery
+                .stage_frame(
+                    &mut writer,
+                    &NacelleTcpLimits::default(),
+                    payload.len(),
+                    &runtime_state,
+                    &telemetry,
+                    None,
+                    phase_duration_metrics,
+                    |frame| frame.extend_from_slice(payload),
+                )
+                .await
+                .expect("frame should be delivered");
+            expected.extend_from_slice(payload);
+            assert_eq!(
+                &*bytes.lock().expect("recording writer poisoned"),
+                &expected
+            );
+            assert!(delivery.pending.is_empty());
+            if index == 2 {
+                assert_eq!(delivery.pending.capacity(), 0);
+            } else {
+                assert_eq!(delivery.pending.capacity(), 5);
+                if index == 0 {
+                    small_pointer = Some(delivery.pending.as_ptr());
+                } else if index == 1 {
+                    assert_eq!(Some(delivery.pending.as_ptr()), small_pointer);
+                }
+            }
+        }
+
+        let error = delivery
+            .stage_frame(
+                &mut writer,
+                &NacelleTcpLimits::default(),
+                128,
+                &runtime_state,
+                &telemetry,
+                None,
+                phase_duration_metrics,
+                |frame| {
+                    frame.extend_from_slice(b"bad!")?;
+                    Err(NacelleError::InvalidFrame("injected encoder failure"))
+                },
+            )
+            .await
+            .expect_err("encoding should fail");
+        assert!(matches!(error.error, NacelleError::InvalidFrame(_)));
+        assert_eq!(
+            &*bytes.lock().expect("recording writer poisoned"),
+            &expected
+        );
+        assert!(delivery.pending.is_empty());
+        assert_eq!(delivery.pending.capacity(), 5);
+    }
+
     #[tokio::test]
     async fn failed_encoder_after_growth_restores_base_capacity() {
         let config = NacelleTcpConfig {
@@ -869,63 +987,68 @@ mod tests {
 
     #[tokio::test]
     async fn failed_encoder_truncates_only_current_coalesced_frame() {
-        let config = NacelleTcpConfig {
-            response_buffer_capacity: 8,
-            response_write_policy: ResponseWritePolicy::FlushAtBytes(64),
-            ..NacelleTcpConfig::default()
-        };
-        let mut delivery = ResponseDelivery::new(&config);
-        let runtime_state = NacelleRuntimeState::default();
-        let telemetry = NacelleTelemetry::default();
-        let phase_duration_metrics = TcpTelemetryPlan::new(&telemetry).phase_duration;
-        let bytes = Arc::new(Mutex::new(Vec::new()));
-        let mut writer = RecordingWriter(bytes.clone());
+        for frame_capacity in [4, 8] {
+            let config = NacelleTcpConfig {
+                response_buffer_capacity: 8,
+                response_write_policy: ResponseWritePolicy::CoalesceBuffered,
+                ..NacelleTcpConfig::default()
+            };
+            let mut delivery = ResponseDelivery::new(&config);
+            let runtime_state = NacelleRuntimeState::default();
+            let telemetry = NacelleTelemetry::default();
+            let phase_duration_metrics = TcpTelemetryPlan::new(&telemetry).phase_duration;
+            let bytes = Arc::new(Mutex::new(Vec::new()));
+            let mut writer = RecordingWriter(bytes.clone());
 
-        delivery
-            .stage_frame(
-                &mut writer,
-                &NacelleTcpLimits::default(),
-                4,
-                &runtime_state,
-                &telemetry,
-                None,
-                phase_duration_metrics,
-                |frame| frame.extend_from_slice(b"good"),
-            )
-            .await
-            .expect("first frame should stage");
-        let error = delivery
-            .stage_frame(
-                &mut writer,
-                &NacelleTcpLimits::default(),
-                4,
-                &runtime_state,
-                &telemetry,
-                None,
-                phase_duration_metrics,
-                |frame| {
-                    frame.extend_from_slice(b"bad")?;
-                    Err(NacelleError::InvalidFrame("injected encoder failure"))
-                },
-            )
-            .await
-            .expect_err("second frame should fail");
-        assert!(matches!(
-            error.error,
-            NacelleError::InvalidFrame("injected encoder failure")
-        ));
+            delivery
+                .stage_frame(
+                    &mut writer,
+                    &NacelleTcpLimits::default(),
+                    4,
+                    &runtime_state,
+                    &telemetry,
+                    None,
+                    phase_duration_metrics,
+                    |frame| frame.extend_from_slice(b"good"),
+                )
+                .await
+                .expect("first frame should stage");
+            let error = delivery
+                .stage_frame(
+                    &mut writer,
+                    &NacelleTcpLimits::default(),
+                    frame_capacity,
+                    &runtime_state,
+                    &telemetry,
+                    None,
+                    phase_duration_metrics,
+                    |frame| {
+                        frame.extend_from_slice(b"bad!")?;
+                        Err(NacelleError::InvalidFrame("injected encoder failure"))
+                    },
+                )
+                .await
+                .expect_err("second frame should fail");
+            assert!(matches!(
+                error.error,
+                NacelleError::InvalidFrame("injected encoder failure")
+            ));
+            assert_eq!(&delivery.pending[..], b"good");
+            assert_eq!(delivery.pending.capacity(), delivery.base_capacity);
+            assert!(bytes.lock().expect("recording writer poisoned").is_empty());
 
-        delivery
-            .flush(
-                &mut writer,
-                &NacelleTcpLimits::default(),
-                &telemetry,
-                None,
-                phase_duration_metrics,
-            )
-            .await
-            .expect("prior frame should flush");
-        assert_eq!(&*bytes.lock().expect("recording writer poisoned"), b"good");
+            delivery
+                .flush(
+                    &mut writer,
+                    &NacelleTcpLimits::default(),
+                    &telemetry,
+                    None,
+                    phase_duration_metrics,
+                )
+                .await
+                .expect("prior frame should flush");
+            assert_eq!(&*bytes.lock().expect("recording writer poisoned"), b"good");
+        }
     }
 
     #[tokio::test]

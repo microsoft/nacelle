@@ -419,11 +419,36 @@ where
         })
     }
 
-    /// Serve one connection from independently owned read and write halves.
+    /// Serve one connection from owned or borrowed read and write halves.
+    ///
+    /// Dropping this future drops the supplied halves. Borrowed halves leave
+    /// their stream with its owner; discard or finalize that stream instead of
+    /// resuming the cancelled protocol. Connection capacity and tracking end
+    /// when this future completes or is dropped.
+    ///
+    /// Borrow a TCP stream's specialized halves without a generic I/O split:
+    ///
+    /// ```no_run
+    /// use nacelle_core::NacelleError;
+    /// use nacelle_tcp::{SharedProtocol, TcpHandler, TcpServer};
+    /// use tokio::net::TcpStream;
+    ///
+    /// async fn serve<P, H>(
+    ///     server: &TcpServer<P, H>,
+    ///     mut stream: TcpStream,
+    /// ) -> Result<(), NacelleError>
+    /// where
+    ///     P: SharedProtocol,
+    ///     H: TcpHandler<P>,
+    /// {
+    ///     let (reader, writer) = stream.split();
+    ///     server.serve_halves(reader, writer).await
+    /// }
+    /// ```
     pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
     where
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
     {
         serve_connection_with_connection_meta_and_tcp_state(
             reader,
@@ -440,6 +465,9 @@ where
     }
 
     /// Serve split I/O halves with caller-supplied connection metadata.
+    ///
+    /// Owned and borrowed halves follow the cancellation and capacity contract
+    /// described by [`Self::serve_halves`].
     pub async fn serve_halves_with_connection_meta<R, W>(
         &self,
         reader: R,
@@ -447,8 +475,8 @@ where
         connection: NacelleConnectionMeta,
     ) -> Result<(), NacelleError>
     where
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static,
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
     {
         serve_connection_with_connection_meta_and_tcp_state(
             reader,

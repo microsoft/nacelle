@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -76,9 +76,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Kill any stale instances
-pkill -f 'nacelle-stress-server' 2>/dev/null || true
-sleep 0.2
+PORT="${BIND##*:}"
+command -v ss >/dev/null || { echo "ss is required" >&2; exit 1; }
+check_bind_available() {
+    if ss -H -ltn "sport = :$PORT" | grep . >/dev/null; then
+        echo "Bind address is already in use: $BIND" >&2
+        return 1
+    fi
+}
+check_bind_available
+
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [[ -z "$HOST_TARGET" ]]; then
+    echo "Unable to determine the Rust host target" >&2
+    exit 1
+fi
+RELEASE_DIR="$TARGET_DIR/$HOST_TARGET/release"
+cargo build --release --target "$HOST_TARGET" --target-dir "$TARGET_DIR" \
+    --package nacelle-stress-server --package nacelle-stress-test
+check_bind_available
 
 SERVER_ARGS=(
     --bind "$BIND"
@@ -89,19 +106,43 @@ if [[ "$CONFIG_PATH" != "config.toml" && "$CONFIG_PATH" != "./config.toml" ]]; t
     SERVER_ARGS+=(--config "$CONFIG_PATH")
 fi
 
-# Start server in background
-SERVER_CARGO_ARGS=(run --release --package nacelle-stress-server)
-cargo "${SERVER_CARGO_ARGS[@]}" -- "${SERVER_ARGS[@]}" &
-SERVER_PID=$!
-trap 'kill $SERVER_PID 2>/dev/null' EXIT
+SERVER_PID=""
+CLIENT_PID=""
+cleanup() {
+    local status=$?
+    local pid
+    trap - EXIT INT TERM
+    for pid in "$CLIENT_PID" "$SERVER_PID"; do
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-# Wait for the port to be open (up to 5 seconds)
-for i in $(seq 1 50); do
-    if ss -tlpn "sport = :${BIND##*:}" 2>/dev/null | grep -q LISTEN; then
+"$RELEASE_DIR/nacelle-stress-server" "${SERVER_ARGS[@]}" &
+SERVER_PID=$!
+
+ready="false"
+for _ in $(seq 1 100); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "Stress server exited before listening on $BIND" >&2
+        exit 1
+    fi
+    if ss -H -ltnp "sport = :$PORT" | grep -F "pid=$SERVER_PID," >/dev/null; then
+        ready="true"
         break
     fi
     sleep 0.1
 done
+if [[ "$ready" != "true" ]]; then
+    echo "Stress server did not listen on $BIND within 10 seconds" >&2
+    exit 1
+fi
 
 echo "--- nacelle threads=$SERVER_THREADS connections=$CONNECTIONS pipeline=$PIPELINE ---"
 
@@ -117,4 +158,7 @@ if [[ "$(effective_tls_self_signed)" == "true" ]]; then
     CLIENT_ARGS+=(--tls-insecure)
 fi
 
-cargo run --release --package nacelle-stress-test -- "${CLIENT_ARGS[@]}"
+"$RELEASE_DIR/nacelle-stress-test" "${CLIENT_ARGS[@]}" &
+CLIENT_PID=$!
+wait "$CLIENT_PID"
+CLIENT_PID=""

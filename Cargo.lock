@@ -894,6 +894,7 @@ name = "nacelle-stress-server"
 version = "0.4.0-dev.1"
 dependencies = [
  "bytes",
+ "core_affinity",
  "libmimalloc-sys",
  "metrics",
  "metrics-util",

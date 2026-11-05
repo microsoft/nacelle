@@ -141,8 +141,13 @@ Use `with_connection_metrics`, `with_request_metrics`, `with_runtime_metrics`,
 A shared `NacelleRuntimeState` has one runtime-metric policy; configure servers
 sharing that state consistently before serving traffic.
 
-The stress server installs a debugging recorder and prints a compact console
-snapshot every 5 seconds. Production applications should install their chosen
+The stress server prints a console snapshot every 5 seconds. Its recorder
+aggregates request/response body-size samples into constant-space byte totals
+across labels, using fixed cache-line-isolated shards and off-path draining;
+other metrics use the `metrics-util` debugging recorder. Snapshot window
+boundaries are approximate; successive drains conserve non-saturating totals.
+This stress-only aggregation does not change the library's histogram contract.
+Production applications should install their chosen
 recorder before constructing Nacelle runtime state, telemetry, or servers. If no
 recorder is installed, facade handles are no-ops.
 

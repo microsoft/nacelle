@@ -21,6 +21,7 @@ use nacelle_stress_common::STRESS_OPCODE;
 use serde::Deserialize;
 
 const DEFAULT_CONFIG_PATH: &str = "config.toml";
+static DEFAULT_RESPONSE_PAYLOAD: [u8; 64] = [0x5A; 64];
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -84,10 +85,14 @@ pub struct ServerConfig {
     pub config_sources: Vec<String>,
     pub bind: SocketAddr,
     pub server_threads: usize,
+    /// Optional ordered logical CPU IDs, one per effective listener worker.
+    pub worker_cpus: Option<Vec<usize>>,
     pub handler_mode: HandlerMode,
     pub handler_timeout_disabled: bool,
     pub tcp_timeouts_disabled: bool,
     pub response_bytes: usize,
+    /// Allocate a response template on each listener worker instead of sharing one.
+    pub worker_local_response: bool,
     pub response_write_mode: ResponseWriteMode,
     pub read_buffer_capacity: usize,
     pub response_buffer_capacity: usize,
@@ -111,10 +116,12 @@ impl Default for ServerConfig {
             server_threads: std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1),
+            worker_cpus: None,
             handler_mode: HandlerMode::Shared,
             handler_timeout_disabled: false,
             tcp_timeouts_disabled: false,
             response_bytes: 64,
+            worker_local_response: false,
             response_write_mode: ResponseWriteMode::Immediate,
             read_buffer_capacity: 64 * 1024,
             response_buffer_capacity: 16 * 1024,
@@ -137,8 +144,10 @@ impl Default for ServerConfig {
 struct ServerConfigFile {
     bind: Option<SocketAddr>,
     server_threads: Option<usize>,
+    worker_cpus: Option<Vec<usize>>,
     handler_mode: Option<HandlerMode>,
     response_bytes: Option<usize>,
+    worker_local_response: Option<bool>,
     response_write_mode: Option<ResponseWriteMode>,
     read_buffer_capacity: Option<usize>,
     response_buffer_capacity: Option<usize>,
@@ -232,11 +241,17 @@ impl ServerConfig {
         if let Some(server_threads) = file.server_threads {
             self.server_threads = server_threads;
         }
+        if let Some(worker_cpus) = file.worker_cpus {
+            self.worker_cpus = Some(worker_cpus);
+        }
         if let Some(handler_mode) = file.handler_mode {
             self.handler_mode = handler_mode;
         }
         if let Some(response_bytes) = file.response_bytes {
             self.response_bytes = response_bytes;
+        }
+        if let Some(worker_local_response) = file.worker_local_response {
+            self.worker_local_response = worker_local_response;
         }
         if let Some(response_write_mode) = file.response_write_mode {
             self.response_write_mode = response_write_mode;
@@ -289,6 +304,51 @@ impl ServerConfig {
         }
         if let Some(tcp_limits) = file.tcp_limits {
             self.apply_tcp_limits_file(tcp_limits);
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.server_threads == 0 {
+            return Err("--server-threads must be greater than zero".into());
+        }
+        let effective_workers = if cfg!(target_os = "linux") {
+            self.server_threads.max(1)
+        } else {
+            1
+        };
+        if let Some(cpus) = &self.worker_cpus {
+            if !cfg!(target_os = "linux") {
+                return Err("--worker-cpus requires Linux".into());
+            }
+            if cpus.is_empty() {
+                return Err("--worker-cpus must contain at least one CPU ID".into());
+            }
+            let mut unique = cpus.clone();
+            unique.sort_unstable();
+            if unique.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err("--worker-cpus must not contain duplicate CPU IDs".into());
+            }
+            if cpus.len() != effective_workers {
+                return Err(format!(
+                    "--worker-cpus must contain {effective_workers} CPU IDs, one per listener worker"
+                )
+                .into());
+            }
+        }
+        let template_count = if self.worker_local_response {
+            effective_workers
+        } else {
+            1
+        };
+        if self.response_bytes.checked_mul(template_count).is_none() {
+            return Err("total response template byte budget overflows usize".into());
+        }
+        if self.phase_duration_metrics && !cfg!(feature = "phase-timing") {
+            return Err(
+                "phase duration metrics require the nacelle-stress-server phase-timing feature"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -470,15 +530,19 @@ where
 
 pub fn build_server(
     config: &ServerConfig,
-) -> Result<StressServer<impl TcpHandler<LengthDelimitedProtocol>>, NacelleError> {
-    let response_payload = Bytes::from(vec![0x5A; config.response_bytes]);
-    let mut tcp_config = NacelleTcpConfig::default()
-        .with_read_buffer_capacity(config.read_buffer_capacity)
-        .with_response_buffer_capacity(config.response_buffer_capacity)
-        .with_request_body_chunk_size(config.request_body_chunk_size)
-        .with_request_body_channel_capacity(config.request_body_channel_capacity)
-        .with_response_write_policy(config.response_write_mode.into());
-    tcp_config.head_read_limits = config.head_read_limits;
+) -> Result<StressServer<impl TcpHandler<LengthDelimitedProtocol> + use<>>, NacelleError> {
+    build_server_with_runtime_state(
+        config,
+        build_runtime_state(config)?,
+        NacelleTelemetry::default(),
+    )
+}
+
+/// Construct process-wide startup limits and initial live connection controls.
+///
+/// Call once before building listener workers; workers must share clones of the
+/// returned state rather than reconstructing or partitioning its budgets.
+pub fn build_runtime_state(config: &ServerConfig) -> Result<NacelleRuntimeState, NacelleError> {
     let runtime_state = NacelleRuntimeState::new(config.limits.clone());
     runtime_state
         .control()
@@ -488,39 +552,96 @@ pub fn build_server(
             .connection_limits
             .max_connection_opens_per_peer_per_second,
     )?;
+    Ok(runtime_state)
+}
+
+/// Build one response template and server around an already configured state.
+///
+/// Worker-local mode calls this once per listener worker, after optional CPU
+/// pinning and before serving. Shared-template mode calls it once and clones
+/// the server. No live thresholds or rate-table history are reset.
+///
+/// Shared templates matching the immutable default payload use static storage.
+/// Custom sizes and explicit worker-local templates retain owned allocations.
+///
+/// Use this function for both paths when their returned server types must
+/// match; [`build_server`] exposes a separate opaque handler type.
+pub fn build_server_with_runtime_state<Observer>(
+    config: &ServerConfig,
+    runtime_state: NacelleRuntimeState,
+    telemetry: NacelleTelemetry<Observer>,
+) -> Result<
+    StressServer<impl TcpHandler<LengthDelimitedProtocol> + use<Observer>, Observer>,
+    NacelleError,
+>
+where
+    Observer: NacelleTelemetryObserver,
+{
+    let response_payload = if config.response_bytes == DEFAULT_RESPONSE_PAYLOAD.len()
+        && !config.worker_local_response
+    {
+        Bytes::from_static(&DEFAULT_RESPONSE_PAYLOAD)
+    } else {
+        Bytes::from(vec![0x5A; config.response_bytes])
+    };
+    build_server_with_payload(config, runtime_state, telemetry, response_payload)
+}
+
+fn build_server_with_payload<Observer>(
+    config: &ServerConfig,
+    runtime_state: NacelleRuntimeState,
+    telemetry: NacelleTelemetry<Observer>,
+    response_payload: Bytes,
+) -> Result<
+    StressServer<impl TcpHandler<LengthDelimitedProtocol> + use<Observer>, Observer>,
+    NacelleError,
+>
+where
+    Observer: NacelleTelemetryObserver,
+{
+    let mut tcp_config = NacelleTcpConfig::default()
+        .with_read_buffer_capacity(config.read_buffer_capacity)
+        .with_response_buffer_capacity(config.response_buffer_capacity)
+        .with_request_body_chunk_size(config.request_body_chunk_size)
+        .with_request_body_channel_capacity(config.request_body_channel_capacity)
+        .with_response_write_policy(config.response_write_mode.into());
+    tcp_config.head_read_limits = config.head_read_limits;
     let shared_response_payload = response_payload.clone();
-    let shared_server = TcpServer::<LengthDelimitedProtocol>::builder()
-        .protocol(LengthDelimitedProtocol)
-        .tcp_config(tcp_config.clone())
-        .runtime_state(runtime_state.clone())?
-        .tcp_limits(config.tcp_limits)
-        .handler(handler_fn(
-            move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
-                let response_payload = shared_response_payload.clone();
-                async move {
-                    let opcode = context.request().head.opcode;
-                    while let Some(chunk) = context.request_mut().body.next_chunk().await {
-                        let _ = chunk?;
-                    }
-                    if opcode != STRESS_OPCODE {
-                        return Err(NacelleError::handler(std::io::Error::other(format!(
-                            "unknown opcode {}",
-                            opcode
-                        ))));
-                    }
-                    context.respond(TcpResponse::bytes(response_payload)).await
-                }
-            },
-        ))
-        .build()?;
     match config.handler_mode {
-        HandlerMode::Shared => Ok(StressServer::Shared(shared_server)),
+        HandlerMode::Shared => Ok(StressServer::Shared(
+            TcpServer::<LengthDelimitedProtocol>::builder()
+                .protocol(LengthDelimitedProtocol)
+                .tcp_config(tcp_config)
+                .telemetry(telemetry)
+                .runtime_state(runtime_state)?
+                .tcp_limits(config.tcp_limits)
+                .handler(handler_fn(
+                    move |mut context: TcpRequestContext<LengthDelimitedProtocol>| {
+                        let response_payload = shared_response_payload.clone();
+                        async move {
+                            let opcode = context.request().head.opcode;
+                            while let Some(chunk) = context.request_mut().body.next_chunk().await {
+                                let _ = chunk?;
+                            }
+                            if opcode != STRESS_OPCODE {
+                                return Err(NacelleError::handler(std::io::Error::other(format!(
+                                    "unknown opcode {}",
+                                    opcode
+                                ))));
+                            }
+                            context.respond(TcpResponse::bytes(response_payload)).await
+                        }
+                    },
+                ))
+                .build()?,
+        )),
         HandlerMode::Serial => Ok(StressServer::Serial(
             SerialTcpServer::new(
                 LengthDelimitedProtocol,
                 SerialEchoHandler { response_payload },
             )
             .with_tcp_config(tcp_config)
+            .with_telemetry(telemetry)
             .with_runtime_state(runtime_state)?
             .with_tcp_limits(config.tcp_limits),
         )),
@@ -570,6 +691,17 @@ fn parse_args_with_default_config(
             "--server-threads" => {
                 config.server_threads = parse_value(&arg, args.next())?;
             }
+            "--worker-cpus" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("missing value for {arg}"))?;
+                config.worker_cpus = Some(
+                    value
+                        .split(',')
+                        .map(|cpu| cpu.trim().parse::<usize>())
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+            }
             "--handler-mode" => {
                 config.handler_mode = parse_value(&arg, args.next())?;
             }
@@ -584,6 +716,9 @@ fn parse_args_with_default_config(
             }
             "--response-bytes" => {
                 config.response_bytes = parse_value(&arg, args.next())?;
+            }
+            "--worker-local-response" => {
+                config.worker_local_response = true;
             }
             "--response-write-mode" => {
                 config.response_write_mode = parse_value(&arg, args.next())?;
@@ -621,14 +756,7 @@ fn parse_args_with_default_config(
         }
     }
 
-    if config.server_threads == 0 {
-        return Err("--server-threads must be greater than zero".into());
-    }
-    if config.phase_duration_metrics && !cfg!(feature = "phase-timing") {
-        return Err(
-            "phase duration metrics require the nacelle-stress-server phase-timing feature".into(),
-        );
-    }
+    config.validate()?;
 
     if cli_overrides {
         config.config_sources.push("cli args".to_string());
@@ -645,6 +773,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
     println!("  bind: {}", config.bind);
     println!("  server_threads: {}", config.server_threads);
     println!("  actual_server_threads: {actual_server_threads}");
+    println!("  worker_cpus: {:?}", config.worker_cpus);
     println!("  handler_mode: {:?}", config.handler_mode);
     println!(
         "  handler_timeout_disabled: {}",
@@ -652,6 +781,22 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
     );
     println!("  tcp_timeouts_disabled: {}", config.tcp_timeouts_disabled);
     println!("  response_bytes: {}", config.response_bytes);
+    println!("  worker_local_response: {}", config.worker_local_response);
+    let template_count = if config.worker_local_response {
+        actual_server_threads
+    } else {
+        1
+    };
+    println!(
+        "  response_template_bytes: {}",
+        config
+            .response_bytes
+            .checked_mul(template_count)
+            .map_or_else(
+                || "overflow (invalid configuration)".to_string(),
+                |bytes| bytes.to_string()
+            )
+    );
     println!("  response_write_mode: {:?}", config.response_write_mode);
     println!("  read_buffer_capacity: {}", config.read_buffer_capacity);
     println!(
@@ -814,12 +959,16 @@ pub fn print_help(runtime: &str) {
            --bind <addr>                             Listen address (default 127.0.0.1:7878)\n\
            --config <path>                           Load TOML config before applying CLI flags\n\
            --server-threads <count>                  Threads (default: logical CPUs)\n\
+           --worker-cpus <id,id,...>                 Linux CPU IDs, one per listener worker; no pinning by default\n\
            --handler-mode <shared|serial>            Connection-state handler mode (default: shared)\n\
            --disable-timeouts                        Disable handler, allocation, read, write, shutdown, and idle\n\
                                                      timeouts for diagnostic comparisons only.\n\
            --disable-handler-timeout                 Disable only the handler timeout for diagnostics.\n\
            --disable-tcp-timeouts                    Disable read, write, shutdown, and idle timeouts for diagnostics.\n\
            --response-bytes <bytes>                  Response payload bytes per request (default 64)\n\
+           --worker-local-response                   Allocate one response template per listener worker;\n\
+                                                     payload storage is workers * response-bytes instead\n\
+                                                     of one shared template. Global limits stay shared.\n\
            --response-write-mode <mode>              immediate (default) or coalesce-buffered\n\
            --read-buffer <bytes>                     Read buffer capacity (default 65536)\n\
            --response-buffer <bytes>                 Response encode buffer capacity (default 16384)\n\
@@ -851,7 +1000,475 @@ pub fn print_help(runtime: &str) {
 
 #[cfg(test)]
 mod tests {
+    use nacelle::core::NacelleResourceLimitReason;
+    use nacelle::core::telemetry::{NacelleInMemoryObserver, NacelleTelemetryEventKind};
+    use nacelle_reference_protocol::{FRAME_FLAG_END, FRAME_FLAG_ERROR, FRAME_FLAG_START};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     use super::*;
+
+    #[test]
+    fn worker_modes_apply_toml_overlays_and_cli() {
+        let missing = Path::new("missing-default-config.toml");
+        let defaults = parse_args_with_default_config([], "tokio", missing).expect("defaults");
+        assert!(!defaults.worker_local_response);
+        assert_eq!(defaults.worker_cpus, None);
+
+        let config = parse_args_with_default_config(
+            ["--worker-local-response".to_string()],
+            "tokio",
+            missing,
+        )
+        .expect("worker-local response mode");
+        assert!(config.worker_local_response);
+        assert_eq!(config.config_sources.last().unwrap(), "cli args");
+        let mut overlay = ServerConfig::default();
+        overlay
+            .apply_config_file(
+                toml::from_str::<ServerConfigFile>("worker_local_response = true").expect("TOML"),
+            )
+            .expect("worker-local response overlay");
+        overlay
+            .apply_config_file(ServerConfigFile::default())
+            .expect("empty overlay");
+        assert!(overlay.worker_local_response);
+        overlay
+            .apply_config_file(
+                toml::from_str::<ServerConfigFile>("worker_local_response = false").expect("TOML"),
+            )
+            .expect("reset overlay");
+        assert!(!overlay.worker_local_response);
+    }
+
+    #[test]
+    fn worker_cpu_configuration_rejects_invalid_lists() {
+        let missing = Path::new("missing-default-config.toml");
+        for cpus in ["", "0,0", "0", "-1,2", "0,", "0,,2", "0-2"] {
+            assert!(
+                parse_args_with_default_config(
+                    [
+                        "--server-threads".to_string(),
+                        "2".to_string(),
+                        "--worker-cpus".to_string(),
+                        cpus.to_string(),
+                    ],
+                    "tokio",
+                    missing,
+                )
+                .is_err()
+            );
+        }
+        for cpus in ["[]", "[0, 0]", "[0]"] {
+            let mut config = ServerConfig::default();
+            config
+                .apply_config_file(
+                    toml::from_str::<ServerConfigFile>(&format!(
+                        "server_threads = 2\nworker_cpus = {cpus}"
+                    ))
+                    .expect("TOML"),
+                )
+                .expect("overlay");
+            assert!(config.validate().is_err());
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert!(
+            parse_args_with_default_config(
+                [
+                    "--server-threads".to_string(),
+                    "8".to_string(),
+                    "--worker-cpus".to_string(),
+                    "0".to_string(),
+                ],
+                "tokio",
+                missing,
+            )
+            .expect_err("affinity requires Linux")
+            .to_string()
+            .contains("requires Linux")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_cpu_configuration_validates_after_final_overrides() {
+        let config = parse_args_with_default_config(
+            [
+                "--server-threads".to_string(),
+                "2".to_string(),
+                "--worker-cpus".to_string(),
+                "4, 0,2".to_string(),
+                "--server-threads".to_string(),
+                "3".to_string(),
+            ],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .expect("final worker count");
+        assert_eq!(config.worker_cpus, Some(vec![4, 0, 2]));
+
+        let mut overlay = ServerConfig::default();
+        for input in [
+            "server_threads = 3\nworker_cpus = [4, 0, 2]",
+            "server_threads = 2",
+        ] {
+            overlay
+                .apply_config_file(toml::from_str::<ServerConfigFile>(input).expect("TOML"))
+                .expect("overlay");
+        }
+        assert!(overlay.validate().is_err());
+        overlay
+            .apply_config_file(
+                toml::from_str::<ServerConfigFile>("worker_cpus = [4, 0]").expect("TOML"),
+            )
+            .expect("final CPU overlay");
+        overlay.validate().expect("final configuration");
+        assert_eq!(overlay.worker_cpus, Some(vec![4, 0]));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_template_budget_rejects_overflow_only_when_opted_in() {
+        let args = [
+            "--server-threads".to_string(),
+            "2".to_string(),
+            "--response-bytes".to_string(),
+            (usize::MAX / 2 + 1).to_string(),
+        ];
+        let missing = Path::new("missing-default-config.toml");
+        parse_args_with_default_config(args.clone(), "tokio", missing)
+            .expect("one shared template does not multiply storage");
+        let error = parse_args_with_default_config(
+            args.into_iter()
+                .chain(["--worker-local-response".to_string()]),
+            "tokio",
+            missing,
+        )
+        .expect_err("worker template budget overflows");
+        assert!(error.to_string().contains("template byte budget"));
+    }
+
+    #[test]
+    fn worker_servers_share_runtime_budgets_and_live_controls() {
+        for handler_mode in [HandlerMode::Shared, HandlerMode::Serial] {
+            let mut config = ServerConfig {
+                handler_mode,
+                worker_local_response: true,
+                ..ServerConfig::default()
+            };
+            config.connection_limits.max_connections = Some(2);
+            config.limits.max_in_flight_requests = 1;
+            config.limits.max_streaming_tasks = 1;
+            config.limits.max_connections_per_peer = Some(1);
+            let state = build_runtime_state(&config).expect("runtime state");
+            let telemetry = NacelleTelemetry::default().with_runtime_metrics(false);
+            let server_a = {
+                let owned_config = config.clone();
+                build_server_with_runtime_state(&owned_config, state.clone(), telemetry.clone())
+                    .expect("first worker")
+            };
+            state
+                .control()
+                .set_max_connections(Some(1))
+                .expect("live cap");
+            let server_b =
+                build_server_with_runtime_state(&config, state.clone(), telemetry.clone())
+                    .expect("second worker");
+            let state_a = match &server_a {
+                StressServer::Shared(server) => {
+                    assert!(!server.telemetry().runtime_metrics_enabled());
+                    server.runtime_state()
+                }
+                StressServer::Serial(server) => {
+                    assert!(!server.telemetry().runtime_metrics_enabled());
+                    server.runtime_state()
+                }
+            };
+            let state_b = match &server_b {
+                StressServer::Shared(server) => server.runtime_state(),
+                StressServer::Serial(server) => server.runtime_state(),
+            };
+            let mut identity = state_a.clone();
+            identity
+                .replace(state_b.clone())
+                .expect("workers install the identical shared state");
+            assert_eq!(state_b.control().snapshot().max_connections, Some(1));
+
+            let connection = state_a.acquire_connection().expect("first connection");
+            assert!(matches!(
+                state_b.acquire_connection(),
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::Connections
+                ))
+            ));
+            drop(connection);
+            drop(state_b.acquire_connection().expect("released connection"));
+            let request = state_a.acquire_request().expect("first request");
+            assert!(matches!(
+                state_b.acquire_request(),
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::InFlightRequests
+                ))
+            ));
+            drop(request);
+            drop(state_b.acquire_request().expect("released request"));
+            let streaming = state_a
+                .acquire_streaming_task()
+                .expect("first streaming task");
+            assert!(matches!(
+                state_b.acquire_streaming_task(),
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::StreamingTasks
+                ))
+            ));
+            drop(streaming);
+            drop(
+                state_b
+                    .acquire_streaming_task()
+                    .expect("released streaming task"),
+            );
+
+            state_a
+                .control()
+                .set_max_connections(Some(2))
+                .expect("raise live cap");
+            let peer = "127.0.0.1".parse().expect("peer");
+            let connection = state_a
+                .acquire_connection_for_peer(peer)
+                .expect("first peer connection");
+            assert!(matches!(
+                state_b.acquire_connection_for_peer(peer),
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::PeerConnections
+                ))
+            ));
+            drop(connection);
+            drop(
+                state_b
+                    .acquire_connection_for_peer(peer)
+                    .expect("released peer connection"),
+            );
+            assert_eq!(state.active_connections(), 0);
+            assert_eq!(state.active_requests(), 0);
+            assert_eq!(state.active_streaming_tasks(), 0);
+        }
+    }
+
+    #[test]
+    fn worker_server_rebuild_preserves_connection_rate_history() {
+        for handler_mode in [HandlerMode::Shared, HandlerMode::Serial] {
+            let mut config = ServerConfig {
+                handler_mode,
+                ..ServerConfig::default()
+            };
+            config.limits.connection_rate_limit_table_capacity = 1;
+            config
+                .connection_limits
+                .max_connection_opens_per_peer_per_second = Some(1);
+            let state = build_runtime_state(&config).expect("runtime state");
+            let server_a = build_server_with_runtime_state(
+                &config,
+                state.clone(),
+                NacelleTelemetry::default(),
+            )
+            .expect("first worker");
+            let state_a = match &server_a {
+                StressServer::Shared(server) => server.runtime_state(),
+                StressServer::Serial(server) => server.runtime_state(),
+            };
+            let peer = "127.0.0.1".parse().expect("peer");
+            drop(
+                state_a
+                    .acquire_connection_for_peer(peer)
+                    .expect("first peer open"),
+            );
+            state
+                .control()
+                .set_connection_open_rate(None)
+                .expect("disable rate");
+            let server_b = build_server_with_runtime_state(
+                &config,
+                state.clone(),
+                NacelleTelemetry::default(),
+            )
+            .expect("second worker");
+            let state_b = match &server_b {
+                StressServer::Shared(server) => server.runtime_state(),
+                StressServer::Serial(server) => server.runtime_state(),
+            };
+            assert_eq!(
+                state_b
+                    .control()
+                    .snapshot()
+                    .max_connection_opens_per_peer_per_second,
+                None
+            );
+            state_b
+                .control()
+                .set_connection_open_rate(Some(1))
+                .expect("reenable rate without clearing history");
+            assert!(matches!(
+                state_b.acquire_connection_for_peer(peer),
+                Err(NacelleError::ResourceLimit(
+                    NacelleResourceLimitReason::PeerConnectionRate
+                ))
+            ));
+            assert_eq!(state.active_connections(), 0);
+        }
+    }
+
+    #[test]
+    fn worker_response_templates_share_within_workers_but_not_across_workers() {
+        for handler_mode in [HandlerMode::Shared, HandlerMode::Serial] {
+            let config = ServerConfig {
+                handler_mode,
+                response_bytes: 257,
+                worker_local_response: true,
+                ..ServerConfig::default()
+            };
+            let state = build_runtime_state(&config).expect("runtime state");
+            let payload_a = Bytes::from(vec![0x5A; config.response_bytes]);
+            let payload_b = Bytes::from(vec![0x5A; config.response_bytes]);
+            let server_a = build_server_with_payload(
+                &config,
+                state.clone(),
+                NacelleTelemetry::default(),
+                payload_a.clone(),
+            )
+            .expect("first worker");
+            let server_b = build_server_with_payload(
+                &config,
+                state,
+                NacelleTelemetry::default(),
+                payload_b.clone(),
+            )
+            .expect("second worker");
+            assert_eq!(payload_a, payload_b);
+            assert_ne!(payload_a.as_ptr(), payload_b.as_ptr());
+            assert!(!payload_a.is_unique());
+            assert!(!payload_b.is_unique());
+            let clone = server_a.clone();
+            drop(server_a);
+            assert!(!payload_a.is_unique());
+            drop(clone);
+            assert!(payload_a.is_unique());
+            assert!(!payload_b.is_unique());
+            drop(server_b);
+            assert!(payload_b.is_unique());
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_servers_preserve_fragmented_request_and_response_wire_behavior() {
+        for handler_mode in [HandlerMode::Shared, HandlerMode::Serial] {
+            for response_write_mode in [
+                ResponseWriteMode::Immediate,
+                ResponseWriteMode::CoalesceBuffered,
+            ] {
+                for (response_bytes, worker_local_response) in [
+                    (0, false),
+                    (0, true),
+                    (64, false),
+                    (64, true),
+                    (257, false),
+                    (257, true),
+                ] {
+                    let config = ServerConfig {
+                        handler_mode,
+                        response_write_mode,
+                        response_bytes,
+                        worker_local_response,
+                        ..ServerConfig::default()
+                    };
+                    let state = build_runtime_state(&config).expect("runtime state");
+                    let observer = NacelleInMemoryObserver::new();
+                    let server = build_server_with_runtime_state(
+                        &config,
+                        state.clone(),
+                        NacelleTelemetry::default().with_observer(observer.clone()),
+                    )
+                    .expect("worker server");
+                    let (mut client, server_io) = tokio::io::duplex(32);
+                    let client = async {
+                        for request_id in [7, 8] {
+                            let request = LengthDelimitedProtocol
+                                .encode_request_frame(
+                                    request_id,
+                                    STRESS_OPCODE,
+                                    FRAME_FLAG_START | FRAME_FLAG_END,
+                                    b"fragmented-body",
+                                )
+                                .expect("request frame");
+                            client.write_all(&request[..7]).await.expect("partial head");
+                            tokio::task::yield_now().await;
+                            client
+                                .write_all(&request[7..])
+                                .await
+                                .expect("request remainder");
+                            let expected = LengthDelimitedProtocol
+                                .encode_request_frame(
+                                    request_id,
+                                    STRESS_OPCODE,
+                                    FRAME_FLAG_START | FRAME_FLAG_END,
+                                    &vec![0x5A; response_bytes],
+                                )
+                                .expect("response frame");
+                            let mut response = vec![0; expected.len()];
+                            client.read_exact(&mut response).await.expect("response");
+                            assert_eq!(response.as_slice(), expected.as_ref());
+                        }
+                        let opcode = STRESS_OPCODE + 1;
+                        let request = LengthDelimitedProtocol
+                            .encode_request_frame(9, opcode, 0, b"invalid")
+                            .expect("invalid opcode frame");
+                        client.write_all(&request).await.expect("invalid request");
+                        let mut error_wire = Vec::new();
+                        client
+                            .read_to_end(&mut error_wire)
+                            .await
+                            .expect("error response");
+                        let error = NacelleError::handler(std::io::Error::other(format!(
+                            "unknown opcode {opcode}"
+                        )));
+                        let expected = LengthDelimitedProtocol
+                            .encode_request_frame(
+                                9,
+                                opcode,
+                                FRAME_FLAG_START | FRAME_FLAG_END | FRAME_FLAG_ERROR,
+                                error.to_string().as_bytes(),
+                            )
+                            .expect("error frame");
+                        assert_eq!(error_wire.as_slice(), expected.as_ref());
+                    };
+                    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+                        tokio::join!(server.serve_io(server_io), client)
+                    })
+                    .await
+                    .expect("responses must arrive without another request");
+                    assert!(matches!(result, Err(NacelleError::Handler(_))));
+                    let events = observer.events();
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(
+                                |event| event.kind == NacelleTelemetryEventKind::RequestCompleted
+                            )
+                            .count(),
+                        3
+                    );
+                    assert_eq!(
+                        events
+                            .iter()
+                            .filter(|event| event.kind == NacelleTelemetryEventKind::RequestFailed)
+                            .count(),
+                        1
+                    );
+                    assert_eq!(state.active_connections(), 0);
+                    assert_eq!(state.active_requests(), 0);
+                    assert_eq!(state.active_streaming_tasks(), 0);
+                }
+            }
+        }
+    }
 
     #[test]
     fn head_read_limits_validate_before_applying_an_overlay() {

@@ -100,7 +100,10 @@ pub enum ResponseWritePolicy {
 pub struct NacelleTcpConfig {
     /// Initial cumulative socket read-buffer capacity.
     pub read_buffer_capacity: usize,
-    /// Initial coalesced response write-buffer capacity.
+    /// Initial response-buffer capacity and `CoalesceBuffered` threshold.
+    ///
+    /// With `compact-connections`, immediate-response storage starts empty
+    /// instead. This capacity still controls when drained storage is released.
     pub response_buffer_capacity: usize,
     /// Maximum accepted protocol frame length.
     pub max_frame_len: usize,
@@ -141,7 +144,9 @@ impl NacelleTcpConfig {
         self
     }
 
-    /// Set the initial coalesced response-buffer capacity.
+    /// Set the response-buffer capacity and coalescing threshold.
+    ///
+    /// See [`Self::response_buffer_capacity`] for compact immediate responses.
     pub fn with_response_buffer_capacity(mut self, capacity: usize) -> Self {
         self.response_buffer_capacity = capacity.max(1024);
         self

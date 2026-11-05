@@ -1192,7 +1192,7 @@ where
                 unread_body,
             );
         }
-        let _request_permit = match self.runtime_state.acquire_request_tracked() {
+        let _request_permit = match self.runtime_state.acquire_request_borrowed() {
             Ok(permit) => permit,
             Err(error) => {
                 self.telemetry.request_failed(
@@ -1253,9 +1253,9 @@ where
             body,
             body_len_hint,
             &request_body_bytes,
-            self.runtime_state.clone(),
+            &self.runtime_state,
             self.http_limits,
-            self.telemetry.clone(),
+            &self.telemetry,
         );
         let request =
             HttpRequest::new(head.method, head.uri, head.headers, effective_peer_ip, body);
@@ -1273,7 +1273,7 @@ where
         };
         let handler_result =
             if let Some(timeout) = self.runtime_state.startup_limits().handler_timeout {
-                tokio::time::timeout(timeout, handler_with_body)
+                nacelle_core::runtime::timeout(timeout, handler_with_body)
                     .await
                     .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
             } else {
@@ -1355,7 +1355,7 @@ where
     ) -> Result<Response<HttpBody<Observer, Permit>>, NacelleError> {
         let mut response = response_to_http(
             response,
-            self.runtime_state.clone(),
+            self.runtime_state.startup_limits().max_response_body_bytes,
             self.telemetry.clone(),
             &self.http_policy,
         )?

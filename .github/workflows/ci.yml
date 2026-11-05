@@ -49,6 +49,14 @@ jobs:
       - name: Audit serving documentation
         run: .github/scripts/check-serving-docs.sh
 
+  stress-tools:
+    name: stress tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Test stress launcher
+        run: python3 .github/scripts/test-stress-launcher.py
+
   public-api:
     name: public API
     # Remove `false &&` to re-enable the release-only check.

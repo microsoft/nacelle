@@ -148,6 +148,7 @@ if [[ -n "$SERVER_CPUS" || -n "$CLIENT_CPUS" ]]; then
     command -v taskset >/dev/null || { echo "taskset is required for CPU pinning" >&2; exit 1; }
 fi
 command -v ss >/dev/null || { echo "ss is required" >&2; exit 1; }
+CLOCK_TICKS="$(getconf CLK_TCK)"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -218,6 +219,7 @@ fi
     echo "runs=$RUNS"
     echo "server_cpus=${SERVER_CPUS:-unbound}"
     echo "client_cpus=${CLIENT_CPUS:-unbound}"
+    echo "clock_ticks_per_second=$CLOCK_TICKS"
     lscpu
 } > "$OUTPUT_DIRECTORY/metadata.txt"
 
@@ -308,6 +310,7 @@ start_server() {
 run_client() {
     local duration="$1"
     local output="$2"
+    local cpu_before cpu_after
     local command=(
         "$CLIENT_BINARY"
         --addr "$BIND"
@@ -325,7 +328,24 @@ run_client() {
     if [[ -n "$CLIENT_CPUS" ]]; then
         command=(taskset -c "$CLIENT_CPUS" "${command[@]}")
     fi
+    cpu_before="$(awk '{ sub(/^.*\) /, ""); print $12, $13 }' "/proc/$SERVER_PID/stat")"
     "${command[@]}" | tee "$output"
+    cpu_after="$(awk '{ sub(/^.*\) /, ""); print $12, $13 }' "/proc/$SERVER_PID/stat")"
+    awk -v before="$cpu_before" -v after="$cpu_after" -v hz="$CLOCK_TICKS" '
+        /^completed_requests / { requests = $2 }
+        /^effective_rps / { rps = $2 }
+        END {
+            split(before, b); split(after, a)
+            user = (a[1] - b[1]) / hz
+            system_cpu = (a[2] - b[2]) / hz
+            printf "server_user_cpu_seconds   %.6f\n", user
+            printf "server_system_cpu_seconds %.6f\n", system_cpu
+            if (requests > 0) {
+                printf "server_cpu_us_per_request %.6f\n", (user + system_cpu) * 1000000 / requests
+                printf "server_average_cores      %.3f\n", (user + system_cpu) * rps / requests
+            }
+        }
+    ' "$output" | tee -a "$output"
 }
 
 run_warmup() {

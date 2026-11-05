@@ -9,7 +9,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::admission::{LocalTcpAdmitted, SerialHandlerAdapter, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
-use crate::connection::{serve_local_serial_stream, serve_serial_stream_admitted};
+use crate::connection::{
+    serve_local_serial_stream, serve_serial_halves_admitted, serve_serial_stream_admitted,
+};
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{LocalAppStateHandler, Protocol, SharedAppStateHandler};
 use nacelle_core::AdmissionConfig;
@@ -229,6 +231,58 @@ where
     /// Return the stable listener label.
     pub fn listener_label(&self) -> Arc<str> {
         self.listener.clone()
+    }
+
+    /// Serve a serial connection from owned or borrowed read and write halves.
+    ///
+    /// Connection capacity and tracking end when this future completes or is
+    /// dropped. Dropping borrowed halves leaves the stream with its owner;
+    /// discard or finalize it rather than resuming the cancelled protocol.
+    /// TCP's specialized borrowed halves avoid the generic I/O split.
+    pub async fn serve_halves<R, W>(&self, reader: R, writer: W) -> Result<(), NacelleError>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        self.serve_halves_with_connection_meta(
+            reader,
+            writer,
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .await
+    }
+
+    /// Serve serial split I/O with caller-supplied connection metadata.
+    ///
+    /// Owned and borrowed halves follow [`Self::serve_halves`]'s cancellation,
+    /// capacity, and tracking contract.
+    pub async fn serve_halves_with_connection_meta<R, W>(
+        &self,
+        reader: R,
+        writer: W,
+        connection: NacelleConnectionMeta,
+    ) -> Result<(), NacelleError>
+    where
+        R: AsyncRead + Unpin + Send,
+        W: AsyncWrite + Unpin + Send,
+    {
+        let connection = connection.with_listener(self.listener.clone());
+        let registration = self.runtime_state.register_connection(&connection)?;
+        let activity = registration.activity();
+        registration
+            .run(serve_serial_halves_admitted(
+                reader,
+                writer,
+                self.protocol.clone(),
+                self.handler.clone(),
+                self.config.clone(),
+                self.telemetry.clone(),
+                self.runtime_state.clone(),
+                self.tcp_limits,
+                connection,
+                activity,
+            ))
+            .await
     }
 
     /// Serve one serial connection.

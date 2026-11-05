@@ -332,7 +332,7 @@ where
             record_tcp_error(telemetry, metrics_context, "request_body_limit", &error);
             return Err(error);
         }
-        _request_permit = Some(match runtime_state.acquire_request_tracked() {
+        _request_permit = Some(match runtime_state.acquire_request_borrowed() {
             Ok(permit) => permit,
             Err(error) => {
                 record_tcp_error(telemetry, metrics_context, "request_permit", &error);
@@ -449,7 +449,7 @@ where
         } else {
             let _streaming_permit =
                 runtime_state
-                    .acquire_streaming_task_tracked()
+                    .acquire_streaming_task_borrowed()
                     .inspect_err(|error| {
                         record_tcp_error(telemetry, metrics_context, "streaming_task", error)
                     })?;
@@ -674,7 +674,7 @@ where
         OptionalResponder::new(TcpResponder::new(response_context)),
     );
     if let Some(timeout) = runtime_state.startup_limits().handler_timeout {
-        tokio::time::timeout(timeout, future)
+        nacelle_core::runtime::timeout(timeout, future)
             .await
             .map_err(|_| NacelleError::Timeout(NacelleTimeoutReason::Handler))?
     } else {

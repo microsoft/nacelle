@@ -1,4 +1,9 @@
 //! TCP transport for Nacelle.
+//!
+//! The optional `compact-connections` feature allocates immediate-response
+//! buffers lazily and retains small buffers between requests. Coalescing keeps
+//! its configured initial capacity. Limits, deadlines, and wire behavior are
+//! unchanged; the feature does not pool buffers or box request futures.
 
 pub mod admission;
 pub mod config;
