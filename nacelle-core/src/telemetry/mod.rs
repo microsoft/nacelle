@@ -920,8 +920,24 @@ where
         }
     }
 
+    /// Install this telemetry instance's runtime-metric policy on shared state.
+    ///
+    /// Builder-time registrations may replace an earlier policy. The policy is
+    /// sealed on first runtime use; later conflicting registrations leave it
+    /// intact.
+    /// Use [`Self::try_register_runtime_state`] when the caller needs to detect
+    /// a conflict.
     pub fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        state.set_metrics_enabled(self.runtime_metrics_enabled());
+        let _ = self.try_register_runtime_state(state);
+    }
+
+    /// Try to install this telemetry instance's runtime-metric policy.
+    ///
+    /// Before first runtime use, this installs or updates the policy and returns
+    /// `true`. Afterwards, repeating the sealed policy is idempotent and returns
+    /// `true`, while a conflicting policy is rejected and returns `false`.
+    pub fn try_register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) -> bool {
+        state.install_metrics_enabled(self.runtime_metrics_enabled())
     }
 
     fn record(&self, event: NacelleTelemetryEvent) {
@@ -1321,6 +1337,19 @@ mod tests {
         assert!(telemetry.request_duration_metrics_enabled());
         assert!(telemetry.runtime_metrics_enabled());
         assert!(telemetry.error_metrics_enabled());
+    }
+
+    #[test]
+    fn shared_runtime_metric_policy_seals_on_first_use() {
+        let state = crate::limits::NacelleRuntimeState::default();
+        let enabled = NacelleTelemetry::default();
+        let disabled = NacelleTelemetry::default().with_runtime_metrics(false);
+
+        assert!(enabled.try_register_runtime_state(state.clone()));
+        assert!(disabled.try_register_runtime_state(state.clone()));
+        drop(state.acquire_request().expect("request capacity"));
+        assert!(disabled.try_register_runtime_state(state.clone()));
+        assert!(!enabled.try_register_runtime_state(state));
     }
 
     #[test]

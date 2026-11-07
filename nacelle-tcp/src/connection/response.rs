@@ -584,19 +584,21 @@ where
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
-        match delivery
-            .flush(
-                writer,
-                tcp_limits,
-                telemetry,
-                metrics_context,
-                phase_duration_metrics,
-            )
-            .await
-        {
-            Ok(written) => delivered_wire_bytes = delivered_wire_bytes.saturating_add(written),
-            Err(error) => {
-                return Err(error.with_previous(response_wire_bytes, delivered_wire_bytes));
+        if delivery.has_pending() {
+            match delivery
+                .flush(
+                    writer,
+                    tcp_limits,
+                    telemetry,
+                    metrics_context,
+                    phase_duration_metrics,
+                )
+                .await
+            {
+                Ok(written) => delivered_wire_bytes = delivered_wire_bytes.saturating_add(written),
+                Err(error) => {
+                    return Err(error.with_previous(response_wire_bytes, delivered_wire_bytes));
+                }
             }
         }
         let Some(chunk) = body.next_chunk().await else {

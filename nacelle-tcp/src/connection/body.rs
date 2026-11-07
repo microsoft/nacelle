@@ -7,7 +7,7 @@ use crate::limits::NacelleTcpLimits;
 use nacelle_core::error::NacelleError;
 use nacelle_core::request::NacelleBody;
 
-use super::io::read_buf_with_timeout;
+use super::io::{read_buf_before_deadline, request_body_read_deadline};
 
 pub(super) async fn read_buffered_request_body<R>(
     reader: &mut R,
@@ -22,6 +22,7 @@ where
     if body_len == 0 {
         return Ok(NacelleBody::empty());
     }
+    let deadline = request_body_read_deadline(tcp_limits);
 
     let mut body = BytesMut::with_capacity(body_len);
     if !read_buf.is_empty() {
@@ -32,9 +33,9 @@ where
     while body.len() < body_len {
         let bytes_read = if bounded_reads {
             let remaining = body_len - body.len();
-            read_buf_with_timeout(reader, &mut (&mut body).limit(remaining), tcp_limits).await?
+            read_buf_before_deadline(reader, &mut (&mut body).limit(remaining), deadline).await?
         } else {
-            read_buf_with_timeout(reader, &mut body, tcp_limits).await?
+            read_buf_before_deadline(reader, &mut body, deadline).await?
         };
         if bytes_read == 0 {
             return Err(NacelleError::UnexpectedEof);
@@ -69,6 +70,7 @@ async fn pump_request_body_chunks<R>(
 where
     R: AsyncRead + Unpin,
 {
+    let deadline = request_body_read_deadline(tcp_limits);
     let mut remaining = body_len;
     let mut receiver_open = true;
 
@@ -87,9 +89,9 @@ where
         let next_len = remaining.min(config.request_body_chunk_size);
         let mut chunk = BytesMut::with_capacity(next_len);
         let read = if config.head_read_limits.is_some() {
-            read_buf_with_timeout(reader, &mut (&mut chunk).limit(next_len), tcp_limits).await
+            read_buf_before_deadline(reader, &mut (&mut chunk).limit(next_len), deadline).await
         } else {
-            read_buf_with_timeout(reader, &mut chunk, tcp_limits).await
+            read_buf_before_deadline(reader, &mut chunk, deadline).await
         };
         let bytes_read = match read {
             Ok(bytes_read) => bytes_read,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -228,7 +228,7 @@ struct NacelleRuntimeStateInner {
     max_connections: AtomicUsize,
     connection_open_rate: AtomicUsize,
     control_update: Mutex<()>,
-    metrics_enabled: AtomicBool,
+    metrics_policy: AtomicU8,
     active_connections: PaddedCounter,
     active_requests: PaddedCounter,
     active_streaming_tasks: PaddedCounter,
@@ -526,7 +526,7 @@ impl NacelleRuntimeState {
                 max_connections: AtomicUsize::new(16_384),
                 connection_open_rate: AtomicUsize::new(usize::MAX),
                 control_update: Mutex::new(()),
-                metrics_enabled: AtomicBool::new(true),
+                metrics_policy: AtomicU8::new(0),
                 active_connections: PaddedCounter::new(),
                 active_requests: PaddedCounter::new(),
                 active_streaming_tasks: PaddedCounter::new(),
@@ -651,12 +651,48 @@ impl NacelleRuntimeState {
         target.store(limit.unwrap_or(usize::MAX), Ordering::Release);
     }
 
-    pub(crate) fn set_metrics_enabled(&self, enabled: bool) {
-        self.inner.metrics_enabled.store(enabled, Ordering::Release);
+    pub(crate) fn install_metrics_enabled(&self, enabled: bool) -> bool {
+        let policy = if enabled { 2 } else { 1 };
+        let mut installed = self.inner.metrics_policy.load(Ordering::Acquire);
+        loop {
+            if installed >= 3 {
+                return installed == policy + 2;
+            }
+            match self.inner.metrics_policy.compare_exchange_weak(
+                installed,
+                policy,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => installed = actual,
+            }
+        }
     }
 
     fn metrics_enabled(&self) -> bool {
-        self.inner.metrics_enabled.load(Ordering::Acquire)
+        let mut policy = self.inner.metrics_policy.load(Ordering::Acquire);
+        loop {
+            match policy {
+                3 => return false,
+                4 => return true,
+                // The default policy is enabled. Values 3 and 4 are the sealed
+                // forms of disabled and enabled, respectively.
+                0..=2 => {
+                    let sealed = if policy == 1 { 3 } else { 4 };
+                    match self.inner.metrics_policy.compare_exchange_weak(
+                        policy,
+                        sealed,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => return sealed == 4,
+                        Err(actual) => policy = actual,
+                    }
+                }
+                _ => unreachable!("invalid runtime metric policy"),
+            }
+        }
     }
 
     fn active_connections_metric(&self) -> &metrics::Gauge {
