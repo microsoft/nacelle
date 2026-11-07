@@ -247,6 +247,9 @@ future, but Nacelle does not promise fairness across listeners or workers.
 
 Application permits remain held through body resolution and response
 production. They do not extend runtime request metrics to remote delivery.
+The unlabelled runtime permit gauges belong to the independent runtime metric
+domain; changing request metric mode or application admission does not move or
+duplicate those gauge release boundaries.
 Silent TCP completion releases after body resolution; HTTP response bodies own
 their permits after the service future returns. EOF, response error, early
 drop, task cancellation, and suppressed HEAD/empty bodies release ownership.

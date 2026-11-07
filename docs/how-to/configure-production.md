@@ -102,6 +102,14 @@ read, response write, keep-alive, and max connection age behavior. Use its
 optional deadlines, and `NacelleLimits::without_handler_timeout()` for handler
 execution.
 
+Keep the default `NacelleRequestMetrics::CountersAndBytes` mode when existing
+dashboards require body-size histograms. Use `Counters` to retain request
+lifecycle counters without byte writes, or `Off` to suppress both. Configure
+request duration, labelled request in-flight, and TCP phase timing separately
+through `NacelleTelemetryDiagnostics`; these diagnostics are off by default.
+`with_metrics(false)` suppresses metrics but does not suppress telemetry
+observers.
+
 Dangerous configurations:
 
 - unbounded connections with large per-connection buffers

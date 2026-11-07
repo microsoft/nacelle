@@ -77,9 +77,7 @@ fn admission_error_metrics_and_observers_have_independent_exact_ownership() {
                         .with_error_metrics(errors)
                         .with_connection_metrics(false)
                         .with_runtime_metrics(false)
-                        .with_request_started_metrics(false)
-                        .with_request_completed_metrics(false)
-                        .with_byte_count_metrics(false)
+                        .with_request_metrics(nacelle_core::NacelleRequestMetrics::Off)
                         .with_observer(observer.clone());
                     let server = Arc::new(server(rule, Arc::default()).with_telemetry(telemetry));
                     let (io, _) = ObservedIo::new(

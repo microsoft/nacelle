@@ -138,6 +138,15 @@ write, keep-alive, and max connection age behavior on `HyperServer`. Its
 optional deadlines; `NacelleLimits::without_handler_timeout()` disables the
 core handler deadline.
 
+Telemetry defaults preserve connection, runtime, error, request counter, and
+request/response byte series. Select `NacelleRequestMetrics::Counters` to omit
+byte histograms or `Off` to omit request counters and bytes; errors remain an
+independent domain. Request duration, labelled request in-flight, and TCP phase
+timing are separate opt-ins in `NacelleTelemetryDiagnostics`. The global
+`with_metrics(false)` gate suppresses every metric domain without suppressing
+observers or erasing the configured modes. Install the process recorder before
+constructing telemetry or servers so cached handles bind to it.
+
 Dangerous configurations:
 
 - unbounded connections with large per-connection buffers

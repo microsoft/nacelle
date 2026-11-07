@@ -32,9 +32,9 @@ pub use peer_rate::{
 pub use request::{NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta};
 pub use runtime::{NacelleRuntimeTopology, declare_worker_topology};
 pub use telemetry::{
-    CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetricsConfig,
-    NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryEvent, NacelleTelemetryEventKind,
-    NacelleTelemetryObserver, NacelleTransport, NoopObserver,
+    CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetrics,
+    NacelleTelemetry, NacelleTelemetryConfig, NacelleTelemetryDiagnostics, NacelleTelemetryEvent,
+    NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport, NoopObserver,
 };
 pub use tracking::{
     NacelleCloseOutcome, NacelleConnectionActivityState, NacelleConnectionCapabilities,

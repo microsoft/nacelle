@@ -230,7 +230,9 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use nacelle_core::telemetry::{NacelleInMemoryObserver, NoopObserver};
+    use nacelle_core::telemetry::{
+        NacelleInMemoryObserver, NacelleTelemetryDiagnostics, NoopObserver,
+    };
 
     use super::*;
 
@@ -264,13 +266,17 @@ mod tests {
 
     #[test]
     fn phase_plan_requires_compile_time_and_runtime_opt_in() {
-        let configured = NacelleTelemetry::default().with_phase_duration_metrics(true);
+        let configured =
+            NacelleTelemetry::default().with_diagnostics(NacelleTelemetryDiagnostics {
+                tcp_phase_duration: true,
+                ..NacelleTelemetryDiagnostics::default()
+            });
         assert_eq!(
             TcpTelemetryPlan::new(&configured).phase_duration,
             cfg!(feature = "phase-timing")
         );
 
-        let runtime_disabled = configured.with_phase_duration_metrics(false);
+        let runtime_disabled = configured.with_diagnostics(NacelleTelemetryDiagnostics::default());
         assert!(!TcpTelemetryPlan::new(&runtime_disabled).phase_duration);
     }
 

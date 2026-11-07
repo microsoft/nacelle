@@ -10,7 +10,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use nacelle::core::pipeline::handler_fn;
 use nacelle::core::telemetry::{NacelleTelemetryObserver, NoopObserver};
-use nacelle::core::{NacelleError, NacelleLimits, NacelleRuntimeState, NacelleTelemetry};
+use nacelle::core::{
+    NacelleError, NacelleLimits, NacelleRequestMetrics, NacelleRuntimeState, NacelleTelemetry,
+    NacelleTelemetryDiagnostics,
+};
 use nacelle::tcp::{
     NacelleTcpConfig, NacelleTcpLimits, ResponseWritePolicy, SerialTcpHandler,
     SerialTcpRequestContext, SerialTcpServer, TcpHandler, TcpHeadReadLimits, TcpRequestContext,
@@ -100,8 +103,8 @@ pub struct ServerConfig {
     pub request_body_channel_capacity: usize,
     pub head_read_limits: Option<TcpHeadReadLimits>,
     pub low_memory: bool,
-    pub byte_metrics: bool,
-    pub phase_duration_metrics: bool,
+    pub request_metrics: NacelleRequestMetrics,
+    pub telemetry_diagnostics: NacelleTelemetryDiagnostics,
     pub tls_self_signed: bool,
     pub limits: NacelleLimits,
     pub connection_limits: nacelle::core::NacelleConnectionLimits,
@@ -129,8 +132,8 @@ impl Default for ServerConfig {
             request_body_channel_capacity: 8,
             head_read_limits: None,
             low_memory: false,
-            byte_metrics: true,
-            phase_duration_metrics: false,
+            request_metrics: NacelleRequestMetrics::CountersAndBytes,
+            telemetry_diagnostics: NacelleTelemetryDiagnostics::default(),
             tls_self_signed: false,
             limits: NacelleLimits::default(),
             connection_limits: nacelle::core::NacelleConnectionLimits::default(),
@@ -155,8 +158,7 @@ struct ServerConfigFile {
     request_body_channel_capacity: Option<usize>,
     head_read_limits: Option<HeadReadLimitsConfigFile>,
     low_memory: Option<bool>,
-    byte_metrics: Option<bool>,
-    phase_duration_metrics: Option<bool>,
+    telemetry: Option<TelemetryConfigFile>,
     tls_self_signed: Option<bool>,
     limits: Option<LimitsConfigFile>,
     connection_limits: Option<ConnectionLimitsConfigFile>,
@@ -173,6 +175,33 @@ struct LimitsConfigFile {
     max_request_body_bytes: Option<usize>,
     max_response_body_bytes: Option<usize>,
     handler_timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelemetryConfigFile {
+    request_metrics: Option<RequestMetricsConfig>,
+    request_duration: Option<bool>,
+    request_in_flight: Option<bool>,
+    tcp_phase_duration: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum RequestMetricsConfig {
+    Off,
+    Counters,
+    CountersAndBytes,
+}
+
+impl From<RequestMetricsConfig> for NacelleRequestMetrics {
+    fn from(value: RequestMetricsConfig) -> Self {
+        match value {
+            RequestMetricsConfig::Off => Self::Off,
+            RequestMetricsConfig::Counters => Self::Counters,
+            RequestMetricsConfig::CountersAndBytes => Self::CountersAndBytes,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -274,11 +303,19 @@ impl ServerConfig {
         if let Some(low_memory) = file.low_memory {
             self.low_memory = low_memory;
         }
-        if let Some(byte_metrics) = file.byte_metrics {
-            self.byte_metrics = byte_metrics;
-        }
-        if let Some(phase_duration_metrics) = file.phase_duration_metrics {
-            self.phase_duration_metrics = phase_duration_metrics;
+        if let Some(telemetry) = file.telemetry {
+            if let Some(request_metrics) = telemetry.request_metrics {
+                self.request_metrics = request_metrics.into();
+            }
+            if let Some(request_duration) = telemetry.request_duration {
+                self.telemetry_diagnostics.request_duration = request_duration;
+            }
+            if let Some(request_in_flight) = telemetry.request_in_flight {
+                self.telemetry_diagnostics.request_in_flight = request_in_flight;
+            }
+            if let Some(tcp_phase_duration) = telemetry.tcp_phase_duration {
+                self.telemetry_diagnostics.tcp_phase_duration = tcp_phase_duration;
+            }
         }
         if let Some(tls_self_signed) = file.tls_self_signed {
             self.tls_self_signed = tls_self_signed;
@@ -344,7 +381,7 @@ impl ServerConfig {
         if self.response_bytes.checked_mul(template_count).is_none() {
             return Err("total response template byte budget overflows usize".into());
         }
-        if self.phase_duration_metrics && !cfg!(feature = "phase-timing") {
+        if self.telemetry_diagnostics.tcp_phase_duration && !cfg!(feature = "phase-timing") {
             return Err(
                 "phase duration metrics require the nacelle-stress-server phase-timing feature"
                     .into(),
@@ -738,14 +775,20 @@ fn parse_args_with_default_config(
             "--low-memory" => {
                 config.low_memory = true;
             }
-            "--byte-metrics" => {
-                config.byte_metrics = true;
+            "--request-metrics" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("missing value for {arg}"))?;
+                config.request_metrics = parse_request_metrics(&value)?;
             }
-            "--no-byte-metrics" => {
-                config.byte_metrics = false;
+            "--request-duration-metrics" => {
+                config.telemetry_diagnostics.request_duration = true;
             }
-            "--phase-duration-metrics" => {
-                config.phase_duration_metrics = true;
+            "--request-in-flight-metrics" => {
+                config.telemetry_diagnostics.request_in_flight = true;
+            }
+            "--tcp-phase-duration-metrics" => {
+                config.telemetry_diagnostics.tcp_phase_duration = true;
             }
             "--tls-self-signed" => {
                 config.tls_self_signed = true;
@@ -812,10 +855,10 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
         config.request_body_channel_capacity
     );
     println!("  low_memory: {}", config.low_memory);
-    println!("  byte_metrics: {}", config.byte_metrics);
+    println!("  request_metrics: {:?}", config.request_metrics);
     println!(
-        "  phase_duration_metrics: {}",
-        config.phase_duration_metrics
+        "  telemetry_diagnostics: {:?}",
+        config.telemetry_diagnostics
     );
     println!("  tls_self_signed: {}", config.tls_self_signed);
     println!("  connection_limits:");
@@ -945,6 +988,20 @@ where
     Ok(value.parse::<T>()?)
 }
 
+fn parse_request_metrics(
+    value: &str,
+) -> Result<NacelleRequestMetrics, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "off" => Ok(NacelleRequestMetrics::Off),
+        "counters" => Ok(NacelleRequestMetrics::Counters),
+        "counters-and-bytes" => Ok(NacelleRequestMetrics::CountersAndBytes),
+        _ => Err(format!(
+            "invalid request metrics mode {value:?}; expected off, counters, or counters-and-bytes"
+        )
+        .into()),
+    }
+}
+
 pub fn print_help(runtime: &str) {
     println!(
         "Nacelle stress server ({runtime})\n\
@@ -981,9 +1038,10 @@ pub fn print_help(runtime: &str) {
                                                      Equivalent env vars (no recompile required):\n\
                                                        MIMALLOC_PURGE_DELAY=0\n\
                                                        MIMALLOC_ARENA_EAGER_COMMIT=0\n\
-           --byte-metrics                            Enable request/response byte counters.\n\
-           --no-byte-metrics                         Disable request/response byte counters.\n\
-           --phase-duration-metrics                  Enable diagnostic TCP phase histograms; requires\n\
+           --request-metrics <mode>                  off, counters, or counters-and-bytes (default).\n\
+           --request-duration-metrics                Enable diagnostic request duration histograms.\n\
+           --request-in-flight-metrics               Enable the labelled request in-flight gauge.\n\
+           --tcp-phase-duration-metrics              Enable diagnostic TCP phase histograms; requires\n\
                                                      the phase-timing Cargo feature.\n\
            --tls-self-signed                         Serve TCP over TLS with an ephemeral\n\
                                                      self-signed certificate. The stress server\n\
@@ -1560,9 +1618,13 @@ response_buffer_capacity = 2048
 request_body_chunk_size = 1024
 request_body_channel_capacity = 2
 low_memory = true
-byte_metrics = true
-phase_duration_metrics = false
 tls_self_signed = true
+
+[telemetry]
+request_metrics = "counters-and-bytes"
+request_duration = true
+request_in_flight = true
+tcp_phase_duration = false
 
 [connection_limits]
 max_connections = 128000
@@ -1599,8 +1661,13 @@ idle_timeout_ms = 120000
         assert_eq!(config.request_body_chunk_size, 1024);
         assert_eq!(config.request_body_channel_capacity, 2);
         assert!(config.low_memory);
-        assert!(config.byte_metrics);
-        assert!(!config.phase_duration_metrics);
+        assert_eq!(
+            config.request_metrics,
+            NacelleRequestMetrics::CountersAndBytes
+        );
+        assert!(config.telemetry_diagnostics.request_duration);
+        assert!(config.telemetry_diagnostics.request_in_flight);
+        assert!(!config.telemetry_diagnostics.tcp_phase_duration);
         assert!(config.tls_self_signed);
         assert_eq!(config.connection_limits.max_connections, Some(128_000));
         assert_eq!(config.limits.max_connections_per_peer, Some(4_096));
@@ -1646,6 +1713,47 @@ idle_timeout_ms = 120000
     }
 
     #[test]
+    fn toml_rejects_removed_telemetry_keys() {
+        for key in ["byte_metrics", "phase_duration_metrics"] {
+            let error = toml::from_str::<ServerConfigFile>(&format!("{key} = true\n"))
+                .expect_err("removed telemetry key should be unavailable");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{key}`"))
+            );
+        }
+    }
+
+    #[test]
+    fn cli_rejects_removed_and_invalid_telemetry_options() {
+        for args in [
+            vec!["--byte-metrics".to_string()],
+            vec!["--phase-duration-metrics".to_string()],
+        ] {
+            let error = parse_args_with_default_config(
+                args,
+                "tokio",
+                Path::new("missing-default-config.toml"),
+            )
+            .expect_err("removed telemetry option should be unavailable");
+            assert!(error.to_string().contains("unknown argument"));
+        }
+
+        let error = parse_args_with_default_config(
+            ["--request-metrics".to_string(), "bytes".to_string()],
+            "tokio",
+            Path::new("missing-default-config.toml"),
+        )
+        .expect_err("invalid request metrics mode should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("expected off, counters, or counters-and-bytes")
+        );
+    }
+
+    #[test]
     fn cli_selects_serial_handler_mode() {
         let config = parse_args_with_default_config(
             ["--handler-mode".to_string(), "serial".to_string()],
@@ -1676,15 +1784,15 @@ idle_timeout_ms = 120000
     }
 
     #[test]
-    fn phase_duration_metrics_require_compile_time_support() {
+    fn tcp_phase_duration_metrics_require_compile_time_support() {
         let result = parse_args_with_default_config(
-            ["--phase-duration-metrics".to_string()],
+            ["--tcp-phase-duration-metrics".to_string()],
             "tokio",
             Path::new("missing-default-config.toml"),
         );
 
         #[cfg(feature = "phase-timing")]
-        assert!(result.unwrap().phase_duration_metrics);
+        assert!(result.unwrap().telemetry_diagnostics.tcp_phase_duration);
         #[cfg(not(feature = "phase-timing"))]
         assert!(
             result

@@ -84,6 +84,8 @@ cargo run -p nacelle-examples --bin tls_echo --features tls-self-signed
 cargo run -p nacelle-examples --bin tls_http_echo --no-default-features --features http,tls-self-signed
 cargo run -p nacelle-examples --bin listener_tcp
 cargo run -p nacelle-examples --bin unix_echo
+cargo run -p nacelle-examples --bin tcp_connection_control
+cargo run -p nacelle-examples --bin http_connection_control --no-default-features --features http
 cargo run -p nacelle-examples --bin openssl_echo --no-default-features --features openssl -- cert.pem key.pem
 ```
 
@@ -157,7 +159,8 @@ Start with these public entry points:
 - Use `without_handler_timeout()`, the four `NacelleTcpLimits::without_*_timeout()`
   builders, and the HTTP `without_*_timeout()` / `without_max_connection_age()`
   builders when an explicitly unbounded policy is required.
-- `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}` for metrics and telemetry.
+- `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig,
+  NacelleRequestMetrics, NacelleTelemetryDiagnostics}` for metrics and telemetry.
 - `nacelle::core::NacelleError::hint()` with the `error-hints` feature for
   optional operator guidance. `NacelleError::Display` remains stable across
   feature combinations; applications append hints deliberately where suitable.

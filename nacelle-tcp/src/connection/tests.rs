@@ -15,8 +15,8 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
-    NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    NacelleInMemoryObserver, NacelleRequestMetrics, NacelleTelemetry, NacelleTelemetryEventKind,
+    NacelleTelemetryObserver,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -488,13 +488,7 @@ fn request_failure_metrics_do_not_require_an_observer() {
                     Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
                 }),
                 NacelleTcpConfig::default(),
-                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetricsConfig {
-                    started: false,
-                    completed: false,
-                    in_flight: false,
-                    duration_ms: false,
-                    byte_counts: false,
-                }),
+                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetrics::Off),
                 NacelleRuntimeState::default(),
                 NacelleConnectionMeta::tcp(None, None),
             ));
