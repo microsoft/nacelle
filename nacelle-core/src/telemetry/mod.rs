@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::request::NacelleConnectionAccounting;
+
 mod sink;
 pub use sink::{
     CompositeObserver, NacelleInMemoryObserver, NacelleTelemetryEvent, NacelleTelemetryEventKind,
@@ -104,6 +106,7 @@ pub struct NacelleMetricsContext {
     pub listener: Arc<str>,
     pub protocol: &'static str,
     pub tls: &'static str,
+    pub accounting: NacelleConnectionAccounting,
     connection_attributes: Arc<[metrics::Label]>,
     request_attributes: Arc<[metrics::Label]>,
     connection_accepted: OnceLock<metrics::Counter>,
@@ -129,10 +132,27 @@ impl NacelleMetricsContext {
         protocol: &'static str,
         tls: &'static str,
     ) -> Self {
+        Self::new_with_accounting(
+            transport,
+            listener,
+            protocol,
+            tls,
+            NacelleConnectionAccounting::Metered,
+        )
+    }
+
+    pub fn new_with_accounting(
+        transport: NacelleTransport,
+        listener: Arc<str>,
+        protocol: &'static str,
+        tls: &'static str,
+        accounting: NacelleConnectionAccounting,
+    ) -> Self {
         let connection_attributes: Arc<[metrics::Label]> = Arc::from([
             metrics::Label::new("listener", listener.to_string()),
             metrics::Label::from_static_parts("transport", transport.as_str()),
             metrics::Label::from_static_parts("tls", tls),
+            metrics::Label::from_static_parts("accounting", accounting.as_str()),
         ]);
         let request_attributes: Arc<[metrics::Label]> = attributes_with_label(
             connection_attributes.as_ref(),
@@ -144,6 +164,7 @@ impl NacelleMetricsContext {
             listener,
             protocol,
             tls,
+            accounting,
             connection_accepted: OnceLock::new(),
             connection_active: OnceLock::new(),
             request_started: OnceLock::new(),
@@ -1210,12 +1231,49 @@ mod tests {
             assert_eq!(
                 labels,
                 vec![
+                    ("accounting", "metered"),
                     ("listener", "test"),
                     ("protocol", "test"),
                     ("status", "ok"),
                     ("tls", "none"),
                     ("transport", "tcp"),
                 ]
+            );
+        }
+    }
+
+    #[test]
+    fn connection_metrics_distinguish_exempt_accounting() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let telemetry = NacelleTelemetry::default();
+            let context = NacelleMetricsContext::new_with_accounting(
+                NacelleTransport::new("http"),
+                Arc::from("health"),
+                "http1",
+                "none",
+                NacelleConnectionAccounting::Exempt,
+            );
+            telemetry.connection_accepted(&context);
+            telemetry.connection_closed(NacelleTransport::new("http"), Some(&context), "eof");
+        });
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        for metric in [
+            "server.connection.accepted",
+            "server.connection.active",
+            "server.connection.closed",
+        ] {
+            let key = snapshot
+                .iter()
+                .find_map(|(key, _, _, _)| (key.key().name() == metric).then_some(key.key()))
+                .unwrap_or_else(|| panic!("missing metric {metric}"));
+            assert!(
+                key.labels()
+                    .any(|label| label.key() == "accounting" && label.value() == "exempt"),
+                "missing exempt accounting label on {metric}"
             );
         }
     }

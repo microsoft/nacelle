@@ -743,6 +743,9 @@ impl NacelleRuntimeState {
         connection: &crate::request::NacelleConnectionMeta,
         capabilities: NacelleConnectionCapabilities,
     ) -> Result<NacelleConnectionRegistration, NacelleError> {
+        if connection.accounting == crate::request::NacelleConnectionAccounting::Exempt {
+            return Ok(NacelleConnectionRegistration::exempt());
+        }
         let permit = match connection.peer_ip {
             Some(peer) => self.acquire_connection_for_peer(peer)?,
             None => self.acquire_connection_tracked()?,
@@ -1204,6 +1207,33 @@ mod tests {
                 NacelleResourceLimitReason::Connections
             ))
         ));
+    }
+
+    #[test]
+    fn exempt_connection_skips_capacity_and_management() {
+        let state = NacelleRuntimeState::new(NacelleLimits::default().with_connection_tracking(
+            crate::tracking::NacelleConnectionTracking::new(1).expect("tracking"),
+        ));
+        let control = state.control();
+        control
+            .set_max_connections(Some(0))
+            .expect("zero connection capacity");
+        let connection = crate::request::NacelleConnectionMeta::tcp(None, None)
+            .with_accounting(crate::request::NacelleConnectionAccounting::Exempt);
+
+        let registration = state
+            .register_connection(&connection)
+            .expect("exempt connection");
+
+        assert_eq!(state.active_connections(), 0);
+        assert!(registration.activity().is_none());
+        assert!(
+            control
+                .connections(8)
+                .is_some_and(|entries| entries.is_empty())
+        );
+        drop(registration);
+        assert_eq!(state.active_connections(), 0);
     }
 
     #[test]

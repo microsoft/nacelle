@@ -62,11 +62,15 @@ they do not change request semantics.
 - **Limits:** `NacelleRuntimeState` supplies process-wide connection, per-peer,
   request, streaming-task, and body-size limits. TCP and HTTP
   server configurations add transport timeouts, frame/header policy, and edge
-  limits. Listener and direct overloads do not bypass connection capacity or
-  configured connection registration. The former public
+  limits. Listener and direct overloads do not implicitly bypass connection
+  capacity or configured connection registration. The former public
   `without_connection_limit` helpers are removed; use `serve_stream`,
   `serve_local_stream`, `serve_serial_stream`, or `serve_local_serial_stream`
   and do not acquire an additional caller-owned connection permit.
+  Dedicated internal listeners can explicitly select
+  `NacelleConnectionAccounting::Exempt`; ordinary connections remain metered.
+  Exempt connections remain visible in transport metrics but do not consume the
+  runtime connection permit gauge or enter the administrative registry.
   Borrowed serial I/O returns to the caller on cancellation and must not resume
   the cancelled protocol.
 - **Features:** plain TCP and Unix serving require `tcp`; HTTP/1 requires

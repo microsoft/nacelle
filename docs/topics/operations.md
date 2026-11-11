@@ -222,11 +222,11 @@ rather than embedded in the metric name:
 | Metric | Type | Notes |
 | --- | --- | --- |
 | `server.runtime.workers` | Gauge | Worker threads serving the process, reported once by the first listener to start. A value of `1` means throughput is capped to one core. Thread-per-core hosts report their declared process-wide worker count. |
-| `server.connection.active` | Gauge | Current active connections. Listener-labeled series provide transport-level detail; unlabeled series represent runtime permit usage. |
+| `server.connection.active` | Gauge | Current active connections. Listener-labeled series include `accounting="metered|exempt"`; unlabeled series represent metered runtime permit usage only. |
 | `server.request.active` | Gauge | Current active requests. Protocol-labeled series provide request-level detail; unlabeled series represent runtime permit usage. |
 | `server.streaming_task.active` | Gauge | Current runtime streaming body tasks. |
-| `server.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
-| `server.connection.closed` | Counter | Closed connections, labeled with close reason where available. |
+| `server.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS and `accounting="metered|exempt"` where available. |
+| `server.connection.closed` | Counter | Closed connections, labeled with accounting and close reason where available. |
 | `server.connection.rejected` | Counter | Connections rejected before acceptance. |
 | `server.request.started` | Counter | Requests started. |
 | `server.request.completed` | Counter | Requests completed, labeled by status where available. |

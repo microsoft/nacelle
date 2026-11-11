@@ -27,7 +27,12 @@ where
     io.drop_state = Some(server.runtime.runtime_state.clone());
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
     (
-        run_http_connection(server, std::future::ready(Ok((io, metadata))), registration),
+        run_http_connection(
+            server,
+            std::future::ready(Ok((io, metadata.clone()))),
+            registration,
+            http_connection_metrics_context(&metadata, "none"),
+        ),
         id,
     )
 }
@@ -526,11 +531,30 @@ fn tracking_close_ownership_preserves_http_metric_gates_and_labels() {
                 vec![("transport", "http")]
             );
         }
-        assert!(
-            snapshot
-                .iter()
-                .all(|(key, _, _, _)| key.key().name() != "server.connection.closed")
-        );
+        let closed: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == "server.connection.closed")
+            .collect();
+        assert_eq!(closed.len(), usize::from(metrics && connections));
+        if let Some((key, _, _, value)) = closed.first() {
+            assert_eq!(value, &DebugValue::Counter(1));
+            let mut labels: Vec<_> = key
+                .key()
+                .labels()
+                .map(|label| (label.key(), label.value()))
+                .collect();
+            labels.sort_unstable();
+            assert_eq!(
+                labels,
+                vec![
+                    ("accounting", "metered"),
+                    ("close_reason", "administrative_close"),
+                    ("listener", "direct"),
+                    ("tls", "none"),
+                    ("transport", "http"),
+                ]
+            );
+        }
         assert!(
             snapshot
                 .iter()
@@ -590,8 +614,13 @@ async fn local_non_send_handler_and_permit_remain_owned_through_retirement() {
     let registration = register_http_connection(&state, &metadata).unwrap();
     let (mut io, observed) = ObservedIo::new("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
     io.drop_state = Some(state.clone());
-    let future =
-        run_local_http_connection(server, std::future::ready(Ok((io, metadata))), registration);
+    let metrics_context = http_connection_metrics_context(&metadata, "none");
+    let future = run_local_http_connection(
+        server,
+        std::future::ready(Ok((io, metadata))),
+        registration,
+        metrics_context,
+    );
     tokio::pin!(future);
     assert_pending(future.as_mut());
     assert_eq!(Rc::strong_count(&permit), 3);

@@ -29,7 +29,9 @@ pub use limits::{
 pub use peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
-pub use request::{NacelleBody, NacelleConnectionMeta, NacelleConnectionTlsMeta};
+pub use request::{
+    NacelleBody, NacelleConnectionAccounting, NacelleConnectionMeta, NacelleConnectionTlsMeta,
+};
 pub use runtime::{NacelleRuntimeTopology, declare_worker_topology};
 pub use telemetry::{
     CompositeObserver, NacelleInMemoryObserver, NacelleMetricsContext, NacelleRequestMetrics,

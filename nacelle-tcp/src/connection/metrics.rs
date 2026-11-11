@@ -36,11 +36,12 @@ pub(super) fn tcp_metrics_context<P>(
 where
     P: Protocol,
 {
-    NacelleMetricsContext::new(
+    NacelleMetricsContext::new_with_accounting(
         connection.transport,
         connection.listener.clone(),
         protocol.name(),
         connection.tls_label(),
+        connection.accounting,
     )
 }
 

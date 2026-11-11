@@ -52,6 +52,16 @@ rate accounting, respectively. Unlimited connections still consume permits and
 update the existing gauges. Unix sockets have no invented peer IP: they consume
 total capacity but bypass IP-based concurrency and rate checks.
 
+Connections are metered by default. For a dedicated internal listener, such as
+an HTTP health endpoint that must remain reachable during overload,
+`with_connection_accounting(NacelleConnectionAccounting::Exempt)` bypasses the
+total, per-peer, open-rate, and administrative connection registry. Direct TCP
+serving can select the same behavior with
+`NacelleConnectionMeta::with_accounting(...)`. Exemption does not bypass request,
+streaming, body, timeout, or application-admission limits. HTTP path-based
+request exemption is a separate request-accounting concern because the path is
+not known when the connection is accepted.
+
 Lowering below occupancy does not evict connections. Admissions already racing
 an update may finish with the threshold observed by that check; later checks
 read the new value. The order remains total capacity, optional peer concurrency,
