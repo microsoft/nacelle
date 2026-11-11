@@ -420,7 +420,7 @@ impl Registry {
         };
         if entry
             .state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state < FORCED).then_some(RETIRING)
             })
             .is_err()
