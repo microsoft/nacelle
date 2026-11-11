@@ -1,0 +1,71 @@
+name: codecov
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+  nightly: nightly-2026-04-16
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+    - name: Install Rust
+      # --no-self-update is necessary because the windows environment cannot self-update rustup.exe.
+      run: rustup update stable --no-self-update
+    - name: Install OpenSSL build dependencies (Linux)
+      if: startsWith(matrix.os, 'ubuntu')
+      run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+    - name: Install OpenSSL build dependencies (macOS)
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        brew update
+        brew install pkg-config openssl@3
+        echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+    - name: Install OpenSSL build dependencies (Windows)
+      if: startsWith(matrix.os, 'windows')
+      shell: pwsh
+      run: |
+        vcpkg install openssl:x64-windows
+        "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+        "VCPKGRS_DYNAMIC=1" >> $env:GITHUB_ENV
+    - name: Install cargo-hack
+      uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+      with:
+        tool: cargo-hack
+    - name: Test
+      run: .github/scripts/test-stable.sh test
+      env:
+        CARGO_INCREMENTAL: '0'
+        RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+        RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
+    - name: rust-grcov
+      # You may pin to the exact commit or the version.
+      # uses: actions-rs/grcov@bb47b1ed7883a1502fa6875d562727ace2511248
+      uses: actions-rs/grcov@v0.1
+    - name: Codecov
+      # You may pin to the exact commit or the version.
+      # uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
+      uses: codecov/codecov-action@v5
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_ORG_TOKEN }}
+      with:
+        # Repository upload token - get it from codecov.io. Required only for private repositories
+        # token: # optional
+        # Specify whether the Codecov output should be verbose
+        verbose: true
+        fail_ci_if_error: true
