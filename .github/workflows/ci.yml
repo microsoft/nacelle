@@ -208,7 +208,7 @@ jobs:
       run: .github/scripts/test-stable.sh test
       env:
         CARGO_INCREMENTAL: '0'
-        RUSTFLAGS: '-Cinstrument-coverage'
+        RUSTFLAGS: '-Dwarnings -Cinstrument-coverage'
         RUSTDOCFLAGS: '-Cinstrument-coverage'
         LLVM_PROFILE_FILE: '${{ github.workspace }}/target/coverage/%p-%m.profraw'
     - name: Generate coverage report
