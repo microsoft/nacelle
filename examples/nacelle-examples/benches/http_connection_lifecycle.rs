@@ -61,7 +61,13 @@ impl Server {
 
     async fn empty(&self) {
         tokio::time::timeout(Duration::from_secs(5), async {
-            while self.state.active_connections() != 0 {
+            while self.state.active_connections() != 0
+                || self
+                    .state
+                    .control()
+                    .connections(1)
+                    .is_some_and(|entries| !entries.is_empty())
+            {
                 tokio::task::yield_now().await;
             }
         })
