@@ -9,9 +9,9 @@ use crate::peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };
 use crate::tracking::{
-    NacelleCloseOutcome, NacelleConnectionLookup, NacelleConnectionRegistration,
-    NacelleConnectionSnapshot, NacelleConnectionTracking, NacelleReclaimOutcome, Registry,
-    RegistryPartition,
+    NacelleCloseOutcome, NacelleConnectionCapabilities, NacelleConnectionLookup,
+    NacelleConnectionRegistration, NacelleConnectionSnapshot, NacelleConnectionTracking,
+    NacelleReclaimOutcome, NacelleRetireOutcome, Registry, RegistryPartition,
 };
 
 /// Startup-only limits. Live connection thresholds belong to [`NacelleRuntimeControl`].
@@ -341,12 +341,30 @@ impl NacelleRuntimeControl {
         )
     }
 
+    /// Request graceful retirement where the transport supports it.
+    ///
+    /// The timeout starts at selection and covers setup, body production,
+    /// output, and shutdown. Expiry forces cancellation, not successful drain.
+    /// Zero requests immediate expiry. Repeated selections do not extend the
+    /// deadline; [`Self::close_connection`] can escalate retirement to a force.
+    /// HTTP/HTTPS support this operation; TCP/Unix return
+    /// [`NacelleRetireOutcome::Unsupported`]. Snapshot capabilities describe
+    /// the transport, not whether its current work can finish before expiry.
+    pub fn retire_connection(&self, id: u64, timeout: Duration) -> NacelleRetireOutcome {
+        self.registry().map_or(
+            NacelleRetireOutcome::TrackingDisabled,
+            |(registry, partition)| registry.retire(partition, id, timeout),
+        )
+    }
+
     /// Select idle connections toward the current per-partition targets.
     ///
     /// At most `selection_budget` new closes are selected. Already-closing
     /// entries reserve their slots; active work is never selected. The report
     /// is a best-effort observation, not confirmation that targets were reached.
     /// Lowering a target alone never invokes this scan.
+    /// Transports without safe idle classification, including HTTP/HTTPS, are
+    /// skipped and counted in each partition's `unsupported` field.
     ///
     /// The selection budget does not limit entries visited. A scan may traverse
     /// all allocated registry storage while registration/removal wait for its lock.
@@ -673,13 +691,29 @@ impl NacelleRuntimeState {
         &self,
         connection: &crate::request::NacelleConnectionMeta,
     ) -> Result<NacelleConnectionRegistration, NacelleError> {
+        self.register_connection_with_capabilities(
+            connection,
+            NacelleConnectionCapabilities {
+                idle_reclaim: true,
+                graceful_retirement: false,
+            },
+        )
+    }
+
+    /// Register with the operations implemented by the owning transport.
+    #[doc(hidden)]
+    pub fn register_connection_with_capabilities(
+        &self,
+        connection: &crate::request::NacelleConnectionMeta,
+        capabilities: NacelleConnectionCapabilities,
+    ) -> Result<NacelleConnectionRegistration, NacelleError> {
         let permit = match connection.peer_ip {
             Some(peer) => self.acquire_connection_for_peer(peer)?,
             None => self.acquire_connection_tracked()?,
         };
         let registered = self
             .tracking()
-            .map(|registry| registry.register(connection))
+            .map(|registry| registry.register(connection, capabilities))
             .transpose()?;
         Ok(NacelleConnectionRegistration::new(permit, registered))
     }

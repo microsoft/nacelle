@@ -18,12 +18,14 @@ existing connections. Obtain the app/host handle before serving and retain it
 for updates; see [runtime control](../topics/runtime-limits.md#live-connection-control)
 for startup configuration, update errors, and aggregate worker scope.
 
-For explicit TCP/Unix retirement, opt into
+For explicit connection management, opt into
 `NacelleLimits::with_connection_tracking(NacelleConnectionTracking::new(n)?)`
 before installation. Set a registry capacity appropriate to the deployment,
-retain the installed control, and prefer `reclaim_idle(budget)` over forced
-close when active work must be preserved. Tracking is off by default and does
-not manage HTTP connections. See [tracking configuration and outcomes](../topics/runtime-limits.md#tracked-tcpunix-connections).
+retain the installed control, and prefer TCP/Unix `reclaim_idle(budget)` over
+forced close when active work must be preserved. HTTP/HTTPS support
+`retire_connection(id, timeout)` for deadline-bounded drain, not idle reclaim.
+Expiry and forced close can truncate delivery. Tracking is off by default.
+See [tracking configuration and outcomes](../topics/runtime-limits.md#tracked-connections).
 
 Recommended presets:
 

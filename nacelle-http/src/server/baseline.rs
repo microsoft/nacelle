@@ -11,6 +11,7 @@ use tokio::io::ReadBuf;
 use super::*;
 
 mod admission;
+mod tracking;
 
 #[derive(Default)]
 struct Observations {
@@ -18,11 +19,17 @@ struct Observations {
     output: Mutex<Vec<u8>>,
     block_write: AtomicBool,
     block_flush: AtomicBool,
+    flushes: AtomicUsize,
+    shutdowns: AtomicUsize,
+    reset: AtomicBool,
+    dropped: AtomicBool,
+    connections_at_drop: AtomicUsize,
 }
 
 struct ObservedIo {
     input: Bytes,
     observations: Arc<Observations>,
+    drop_state: Option<NacelleRuntimeState>,
 }
 
 impl ObservedIo {
@@ -32,6 +39,7 @@ impl ObservedIo {
             Self {
                 input: input.into(),
                 observations: observations.clone(),
+                drop_state: None,
             },
             observations,
         )
@@ -44,6 +52,9 @@ impl AsyncRead for ObservedIo {
         _cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if self.observations.reset.load(Ordering::Relaxed) {
+            return Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()));
+        }
         if self.input.is_empty() {
             return Poll::Pending;
         }
@@ -75,6 +86,7 @@ impl AsyncWrite for ObservedIo {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.observations.flushes.fetch_add(1, Ordering::Relaxed);
         if self.observations.block_flush.load(Ordering::Relaxed) {
             Poll::Pending
         } else {
@@ -83,7 +95,19 @@ impl AsyncWrite for ObservedIo {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.observations.shutdowns.fetch_add(1, Ordering::Relaxed);
         Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for ObservedIo {
+    fn drop(&mut self) {
+        if let Some(state) = &self.drop_state {
+            self.observations
+                .connections_at_drop
+                .store(state.active_connections(), Ordering::Relaxed);
+        }
+        self.observations.dropped.store(true, Ordering::Relaxed);
     }
 }
 
@@ -254,14 +278,11 @@ async fn rejected_expect_request_closes_even_with_a_buffered_next_request() {
             .with_http_policy(NacelleHttpPolicy::new().with_allowed_hosts(["allowed"])),
         );
         let state = server.runtime.runtime_state.clone();
-        run_http_connection(
-            server,
-            io,
-            NacelleConnectionMeta::http(None),
-            state.acquire_connection().expect("connection capacity"),
-        )
-        .await
-        .expect("connection completes normally");
+        let metadata = NacelleConnectionMeta::http(None);
+        let registration = register_http_connection(&state, &metadata).unwrap();
+        run_http_connection(server, std::future::ready(Ok((io, metadata))), registration)
+            .await
+            .expect("connection completes normally");
         let output = observed.output.lock().expect("output lock");
         assert!(output.starts_with(b"HTTP/1.1 421 "));
         assert!(!output.windows(12).any(|part| part == b"100 Continue"));
@@ -363,8 +384,9 @@ fn http_request_and_response_metrics_keep_distinct_completion_boundaries() {
                         context.respond(HttpResponse::bytes(StatusCode::OK, "hello")).await
                     },
                 )));
-                let permit = server.runtime.runtime_state.acquire_connection().expect("capacity");
-                run_http_connection(server, io, NacelleConnectionMeta::http(None), permit).await.expect("request");
+                let metadata = NacelleConnectionMeta::http(None);
+                let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
+                run_http_connection(server, std::future::ready(Ok((io, metadata))), registration).await.expect("request");
             });
     });
     let snapshot = snapshotter.snapshot().into_vec();

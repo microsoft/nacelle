@@ -109,7 +109,7 @@ not necessarily the entire process if the caller constructed separate states.
 
 ## Startup configuration
 
-### Tracked TCP/Unix connections
+### Tracked connections
 
 Tracking is off by default. Enable a finite registry before installing runtime
 state, then obtain the control handle from the app, host, or direct server that
@@ -130,7 +130,12 @@ control.set_max_connections(Some(4_000))?;
 let reclaim = control.reclaim_idle(128); // Explicit, best-effort idle selection.
 if let Some(connection) = snapshots.and_then(|mut entries| entries.pop()) {
     let lookup = control.connection(connection.connection.connection_id);
-    let close = control.close_connection(connection.connection.connection_id);
+    if connection.capabilities.graceful_retirement {
+        let retire = control.retire_connection(
+            connection.connection.connection_id, std::time::Duration::from_secs(5));
+    } else {
+        let close = control.close_connection(connection.connection.connection_id);
+    }
 }
 ```
 
@@ -150,6 +155,14 @@ no accumulated input or work remains. New input and reclaim compete atomically:
 if reclaim wins, that input is not dispatched. Bytes not yet observed by Nacelle
 can still be discarded by idle reclaim.
 
+Shared and worker-local HTTP/1 and Rustls HTTPS also register before setup.
+Their snapshots expose `idle_reclaim: false` and `graceful_retirement: true`;
+TCP/Unix expose the reverse. Hyper 1.10.1 has no public live-idle query covering
+partial/pipelined input and pending output. Established HTTP connections remain
+conservatively `Active`, even between requests. Request completion, response
+body EOF, and application-permit release are not evidence of socket flush or
+remote receipt. No second parser or per-request registry hooks infer idleness.
+
 `connection(id)` distinguishes `TrackingDisabled`, `Unknown`, and `Found`.
 Snapshots are owned, unordered observations, not live task handles or a stable
 pagination mechanism. `Unknown` includes finished IDs and IDs outside a worker
@@ -159,26 +172,40 @@ must not be reused while administrative callers can hold stale IDs.
 `close_connection(id)` distinguishes disabled/unknown, `Selected`, and
 `AlreadyClosing`. Forced close can cancel setup, active requests, response
 delivery, and pending normal shutdown. Selection is not teardown confirmation.
-It returns `NacelleError::ConnectionTerminated(Forced)` from direct serving,
+TCP returns `NacelleError::ConnectionTerminated(Forced)` from direct serving,
 does not invoke `Protocol::error_response`, and does not retry writes, flush,
 or shutdown. Outstanding completion callbacks resolve as cancelled, not
 delivered; already resolved callbacks are not repeated. Peers may have received
 partial or complete output. Borrowed serial I/O remains with the caller, who
 must not resume the cancelled protocol.
 
+`retire_connection(id, timeout)` requests graceful HTTP/HTTPS retirement,
+including during TLS setup. The absolute deadline starts at selection and covers
+setup, response production, output, and shutdown. Hyper disables keep-alive and
+continues polling accepted work; administration does not grant application
+admission or trigger `100 Continue`. Expiry forcibly drops remaining work and
+I/O, not successful delivery. Existing shorter transport deadlines still apply.
+Zero requests immediate expiry; an unrepresentable duration returns
+`DeadlineOutOfRange`. Other outcomes are `TrackingDisabled`, `Unknown`,
+`Unsupported` (including TCP/Unix), `Selected`, and `AlreadyClosing`.
+Repeated retirement does not extend the deadline. `close_connection` can
+escalate a retiring connection to immediate cancellation.
+
 `reclaim_idle(budget)` selects at most `budget` new idle closes toward each
 partition's current target. `None` has no gap. Existing closing reservations
 are subtracted before selecting more, including across concurrent scans.
 Reports include observed occupancy, target, already-closing count, new
-selections, and the unfilled gap. Insufficient idle entries or budget leave a
-nonzero gap. Lowering a target alone never scans or cancels work.
+selections, and the unfilled gap. Each partition also reports `unsupported`:
+nonclosing entries that cannot prove safe idle eligibility, including HTTP.
+Insufficient idle entries or budget leave a nonzero gap; HTTP connections may
+continue blocking new admissions. Lowering a target alone never scans or
+cancels work.
 
 Connection capacity remains occupied until work/I/O teardown, then the entry
 is removed. Setup failure, EOF, error, panic unwinding, cancellation, and task
 abort use the same registration owner. Listener `JoinSet` supervision and
 stop/drain/abort shutdown remain separate from administrative selection.
-HTTP connections do not participate in this registry yet; shared occupancy
-can include HTTP connections that cannot be selected.
+Listener shutdown does not automatically request per-connection HTTP retirement.
 
 Worker accounting divides registry capacity at startup, including zero shares
 that reject rather than disabling tracking. All partitions share duplicate-ID
@@ -188,8 +215,9 @@ handle; spare capacity is not borrowed across workers.
 Storage grows on registration, retains its bounded map high-water allocation,
 and holds only metadata/signals, not sockets, application state, or tasks.
 There is no registry allocation/lock or administrative waiter on tracking-off
-connections. Tracked request activity uses atomics, not registry locks or new
-request timers/metrics. Snapshot/reclaim scans can inspect the entire allocated
+connections. Tracked TCP request activity uses atomics; HTTP adds no request activity hooks.
+Only a selected graceful retirement starts an administrative deadline.
+Snapshot/reclaim scans can inspect the entire allocated
 registry even with a small result/selection budget; registration and removal
 wait for that lock. Choose capacity and scan frequency together.
 See [lifecycle measurements](performance-model.md#connection-tracking-costs).

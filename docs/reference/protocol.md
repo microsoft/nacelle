@@ -170,7 +170,7 @@ Request telemetry records encoded response bytes when a request completes; a
 later batch write, transport flush, or shutdown failure is reported as a
 connection operation error.
 
-With [connection tracking](../topics/runtime-limits.md#tracked-tcpunix-connections),
+With [connection tracking](../topics/runtime-limits.md#tracked-connections),
 idle additionally requires no accumulated input or pending request/callback work.
 An empty frame queue alone is insufficient. Idle reclaim competes with first
 input before dispatch; partial heads and all subsequent request/response work

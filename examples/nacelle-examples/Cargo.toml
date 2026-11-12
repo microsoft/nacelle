@@ -50,6 +50,11 @@ name = "connection_lifecycle"
 harness = false
 required-features = ["bench", "tcp"]
 
+[[bench]]
+name = "http_connection_lifecycle"
+harness = false
+required-features = ["bench", "http"]
+
 [[bin]]
 name = "echo"
 path = "src/bin/echo.rs"
@@ -103,6 +108,11 @@ required-features = ["http"]
 [[bin]]
 name = "http_admission"
 path = "src/bin/http_admission.rs"
+required-features = ["http"]
+
+[[bin]]
+name = "http_connection_control"
+path = "src/bin/http_connection_control.rs"
 required-features = ["http"]
 
 [[bin]]

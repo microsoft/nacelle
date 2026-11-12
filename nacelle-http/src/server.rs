@@ -31,7 +31,10 @@ use nacelle_core::telemetry::{
     NacelleTelemetry, NacelleTelemetryEventKind, NacelleTelemetryObserver, NacelleTransport,
     NoopObserver,
 };
-use nacelle_core::{AdmissionConfig, AdmissionContext, AdmissionRejection};
+use nacelle_core::tracking::{NacelleConnectionActivity, NacelleConnectionRegistration};
+use nacelle_core::{
+    AdmissionConfig, AdmissionContext, AdmissionRejection, NacelleConnectionCapabilities,
+};
 use nacelle_core::{NacellePeerRateLimitResult, NacellePeerRateLimiter};
 #[cfg(feature = "rustls")]
 use nacelle_rustls::NacelleTlsConfig;
@@ -192,6 +195,17 @@ where
 /// [`NacelleHttpPolicy`]. HTTP serving requires the facade's `http` feature;
 /// TLS methods additionally require `rustls`.
 ///
+/// Opt-in [`nacelle_core::NacelleConnectionTracking`] registers each accepted
+/// connection before setup, including TLS handshake. The installed
+/// [`nacelle_core::NacelleRuntimeControl`] supports forced close and
+/// [`retire_connection`](nacelle_core::NacelleRuntimeControl::retire_connection). Retirement
+/// disables Hyper keep-alive and polls through delivery under a deadline from
+/// selection; expiry cancels remaining work. Selection never confirms remote
+/// receipt. HTTP idle reclaim is unsupported: Hyper does not expose a live
+/// parser/output-idleness query, so established snapshots remain conservatively
+/// active. Tracking-off uses the same serving path without registry operations
+/// or administrative waiters.
+///
 /// # Errors
 ///
 /// Serving returns [`NacelleError`] for bind, accept, TLS configuration or
@@ -260,6 +274,8 @@ where
 /// [`HyperServer`] contract. Worker-local execution requires the facade's
 /// `experimental-thread-per-core` feature and is outside the supported `0.3`
 /// contract.
+/// Administrative control signals contain no worker-local handler, body, or
+/// application permit; retirement and cancellation execute on the owning worker.
 pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserver> {
     handler: Rc<H>,
     connection_state_factory: Rc<F>,
@@ -479,10 +495,9 @@ where
                 _ = shutdown.changed() => break,
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
-                    let connection_permit = match server
-                        .runtime
-                        .runtime_state
-                        .acquire_connection_for_peer(peer_addr.ip())
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let registration = match register_http_connection(&server.runtime.runtime_state, &connection)
                     {
                         Ok(permit) => permit,
                         Err(error) => {
@@ -493,13 +508,10 @@ where
                             continue;
                         }
                     };
-                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
-                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
-                        .with_listener(server.runtime.listener.clone());
                     let server = server.clone();
-                    connections.spawn_local(async move {
-                        run_local_http_connection(server, stream, connection, connection_permit).await
-                    });
+                    connections.spawn_local(run_local_http_connection(
+                        server, std::future::ready(Ok((stream, connection))), registration,
+                    ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -544,10 +556,9 @@ where
                 _ = shutdown.changed() => break,
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
-                    let connection_permit = match server
-                        .runtime
-                        .runtime_state
-                        .acquire_connection_for_peer(peer_addr.ip())
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let registration = match register_http_connection(&server.runtime.runtime_state, &connection)
                     {
                         Ok(permit) => permit,
                         Err(error) => {
@@ -558,35 +569,12 @@ where
                             continue;
                         }
                     };
-                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
-                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
-                        .with_listener(server.runtime.listener.clone());
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     let server = server.clone();
-                    connections.spawn_local(async move {
-                        let stream = match tokio::time::timeout(
-                            handshake_timeout,
-                            acceptor.accept(stream),
-                        )
-                        .await
-                        {
-                            Ok(Ok(stream)) => stream,
-                            Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                            Err(_) => {
-                                server.runtime.telemetry.timeout(
-                                    NacelleTransport::new("http"),
-                                    "tls_handshake",
-                                );
-                                return Err(NacelleError::Timeout(
-                                    NacelleTimeoutReason::TlsHandshake,
-                                ));
-                            }
-                        };
-                        let connection =
-                            connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
-                        run_local_http_connection(server, stream, connection, connection_permit)
-                            .await
-                    });
+                    let setup = accept_http_tls(
+                        stream, connection, acceptor, handshake_timeout, server.runtime.telemetry.clone(),
+                    );
+                    connections.spawn_local(run_local_http_connection(server, setup, registration));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -880,9 +868,9 @@ where
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
-                    let connection_permit = match server
-                        .runtime.runtime_state
-                        .acquire_connection_for_peer(peer_addr.ip())
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let registration = match register_http_connection(&server.runtime.runtime_state, &connection)
                     {
                         Ok(permit) => permit,
                         Err(error) => {
@@ -892,17 +880,10 @@ where
                             continue;
                         }
                     };
-                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
-                    let connection = NacelleConnectionMeta::http_socket(
-                        Some(peer_addr),
-                        local_addr,
-                    )
-                    .with_listener(server.runtime.listener.clone());
                     connections.spawn(run_http_connection(
                         server,
-                        stream,
-                        connection,
-                        connection_permit,
+                        std::future::ready(Ok((stream, connection))),
+                        registration,
                     ));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
@@ -1020,9 +1001,9 @@ where
                 accepted = listener.accept() => {
                     let (stream, peer_addr) = accepted?;
                     let server = server.clone();
-                    let connection_permit = match server
-                        .runtime.runtime_state
-                        .acquire_connection_for_peer(peer_addr.ip())
+                    let connection = NacelleConnectionMeta::http_socket(Some(peer_addr), local_addr)
+                        .with_listener(server.runtime.listener.clone());
+                    let registration = match register_http_connection(&server.runtime.runtime_state, &connection)
                     {
                         Ok(permit) => permit,
                         Err(error) => {
@@ -1032,40 +1013,11 @@ where
                             continue;
                         }
                     };
-                    server.runtime.telemetry.connection_opened(NacelleTransport::new("http"));
-                    let connection = NacelleConnectionMeta::http_socket(
-                        Some(peer_addr),
-                        local_addr,
-                    )
-                    .with_listener(server.runtime.listener.clone());
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
-                    connections.spawn(async move {
-                        let tls_stream = match tokio::time::timeout(
-                            handshake_timeout,
-                            acceptor.accept(stream),
-                        )
-                        .await
-                        {
-                            Ok(Ok(stream)) => stream,
-                            Ok(Err(error)) => return Err(NacelleError::protocol(error)),
-                            Err(_) => {
-                                server
-                                    .runtime.telemetry
-                                    .timeout(NacelleTransport::new("http"), "tls_handshake");
-                                return Err(NacelleError::Timeout(
-                                    NacelleTimeoutReason::TlsHandshake,
-                                ));
-                            }
-                        };
-                        let connection = connection.with_tls(nacelle_rustls::connection_tls_meta(tls_stream.get_ref().1));
-                        run_http_connection(
-                            server,
-                            tls_stream,
-                            connection,
-                            connection_permit,
-                        )
-                        .await
-                    });
+                    let setup = accept_http_tls(
+                        stream, connection, acceptor, handshake_timeout, server.runtime.telemetry.clone(),
+                    );
+                    connections.spawn(run_http_connection(server, setup, registration));
                 }
                 joined = connections.join_next(), if !connections.is_empty() => {
                     log_http_connection_result(joined);
@@ -1484,121 +1436,285 @@ fn connection_rejection_reason(error: &NacelleError) -> &'static str {
     }
 }
 
-async fn run_http_connection<H, F, Observer, I>(
-    server: Arc<HyperServer<H, F, Observer>>,
-    stream: I,
+fn register_http_connection(
+    state: &NacelleRuntimeState,
+    connection: &NacelleConnectionMeta,
+) -> Result<NacelleConnectionRegistration, NacelleError> {
+    state.register_connection_with_capabilities(
+        connection,
+        NacelleConnectionCapabilities {
+            idle_reclaim: false,
+            graceful_retirement: true,
+        },
+    )
+}
+
+#[cfg(feature = "rustls")]
+async fn accept_http_tls<Observer: NacelleTelemetryObserver>(
+    stream: tokio::net::TcpStream,
     connection: NacelleConnectionMeta,
-    _connection_permit: nacelle_core::limits::TrackedPermit,
-) -> Result<(), NacelleError>
+    acceptor: tokio_rustls::TlsAcceptor,
+    timeout: Duration,
+    telemetry: NacelleTelemetry<Observer>,
+) -> Result<
+    (
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        NacelleConnectionMeta,
+    ),
+    NacelleError,
+> {
+    let stream = match tokio::time::timeout(timeout, acceptor.accept(stream)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) => return Err(NacelleError::protocol(error)),
+        Err(_) => {
+            telemetry.timeout(NacelleTransport::new("http"), "tls_handshake");
+            return Err(NacelleError::Timeout(NacelleTimeoutReason::TlsHandshake));
+        }
+    };
+    let connection = connection.with_tls(nacelle_rustls::connection_tls_meta(stream.get_ref().1));
+    Ok((stream, connection))
+}
+
+struct HttpCloseGuard<Observer: NacelleTelemetryObserver> {
+    telemetry: NacelleTelemetry<Observer>,
+    activity: Option<NacelleConnectionActivity>,
+    completed: bool,
+}
+
+impl<Observer: NacelleTelemetryObserver> HttpCloseGuard<Observer> {
+    fn complete(&mut self, result: &Result<(), NacelleError>) {
+        let reason = self
+            .activity
+            .as_ref()
+            .and_then(NacelleConnectionActivity::close_reason);
+        let label = reason.map_or_else(
+            || {
+                if result.is_ok()
+                    && self
+                        .activity
+                        .as_ref()
+                        .and_then(NacelleConnectionActivity::retirement_deadline)
+                        .is_some()
+                {
+                    "administrative_retire"
+                } else {
+                    http_close_reason(result)
+                }
+            },
+            nacelle_core::NacelleConnectionCloseReason::as_str,
+        );
+        self.completed = true;
+        self.telemetry
+            .connection_closed(NacelleTransport::new("http"), None, label);
+    }
+}
+
+impl<Observer: NacelleTelemetryObserver> Drop for HttpCloseGuard<Observer> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let reason = self
+                .activity
+                .as_ref()
+                .and_then(NacelleConnectionActivity::close_reason);
+            if reason == Some(nacelle_core::NacelleConnectionCloseReason::RetirementDeadline) {
+                self.telemetry
+                    .timeout(NacelleTransport::new("http"), "administrative_retire");
+            }
+            self.telemetry.connection_closed(
+                NacelleTransport::new("http"),
+                None,
+                reason.map_or(
+                    "cancelled",
+                    nacelle_core::NacelleConnectionCloseReason::as_str,
+                ),
+            );
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    struct ObservedHttpConnection<F, Observer: NacelleTelemetryObserver> {
+        #[pin]
+        work: F,
+        close: HttpCloseGuard<Observer>,
+    }
+}
+
+impl<F, Observer> Future for ObservedHttpConnection<F, Observer>
+where
+    F: Future<Output = Result<(), NacelleError>>,
+    Observer: NacelleTelemetryObserver,
+{
+    type Output = Result<(), NacelleError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let result = this.work.poll(cx);
+        if let Poll::Ready(result) = &result {
+            this.close.complete(result);
+        }
+        result
+    }
+}
+
+fn observe_http_connection<F, Observer>(
+    registration: NacelleConnectionRegistration,
+    telemetry: NacelleTelemetry<Observer>,
+    work: F,
+) -> impl Future<Output = Result<(), NacelleError>>
+where
+    F: Future<Output = Result<(), NacelleError>>,
+    Observer: NacelleTelemetryObserver,
+{
+    let activity = registration.activity();
+    telemetry.connection_opened(NacelleTransport::new("http"));
+    registration.run(ObservedHttpConnection {
+        work,
+        close: HttpCloseGuard {
+            telemetry,
+            activity,
+            completed: false,
+        },
+    })
+}
+
+fn run_http_connection<H, F, Observer, I, Setup>(
+    server: Arc<HyperServer<H, F, Observer>>,
+    setup: Setup,
+    registration: NacelleConnectionRegistration,
+) -> impl Future<Output = Result<(), NacelleError>>
 where
     F: HttpConnectionStateFactory,
     H: HttpService<F::State>,
     Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    Setup: Future<Output = Result<(I, NacelleConnectionMeta), NacelleError>> + Send + 'static,
 {
-    let connection_info = ConnectionInfo::from(&connection);
-    let connection_state = Arc::new(server.connection_state_factory.create(&connection_info));
-    let connection = ConnectionContext::new(connection_info, connection_state);
-    let write_timeout = server.runtime.http_limits.response_write_timeout;
-    let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
-    let service_server = server.clone();
-    let service = service_fn(move |request| {
-        let server = service_server.clone();
-        let connection = connection.clone();
-        async move { server.handle(request, &connection).await }
-    });
-    let mut builder = http1::Builder::new();
-    server.runtime.http_limits.parser.apply(&mut builder);
-    builder
-        .timer(TokioTimer::new())
-        .header_read_timeout(server.runtime.http_limits.header_read_timeout)
-        .keep_alive(server.runtime.http_limits.keep_alive);
-    let connection = builder.serve_connection(io, service);
-    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
-        match tokio::time::timeout(max_age, connection).await {
-            Ok(result) => result.map_err(NacelleError::protocol),
-            Err(_) => {
-                server
-                    .runtime
-                    .telemetry
-                    .timeout(NacelleTransport::new("http"), "http_max_connection_age");
-                Err(NacelleError::Timeout(
-                    NacelleTimeoutReason::HttpMaxConnectionAge,
-                ))
-            }
+    let activity = registration.activity();
+    observe_http_connection(registration, server.runtime.telemetry.clone(), async move {
+        let (stream, metadata) = setup.await?;
+        if let Some(activity) = &activity {
+            activity.established(&metadata);
         }
-    } else {
-        connection.await.map_err(NacelleError::protocol)
-    };
-    server.runtime.telemetry.connection_closed(
-        NacelleTransport::new("http"),
-        None,
-        http_close_reason(&result),
-    );
-    result
+        let connection = metadata;
+        let connection_info = ConnectionInfo::from(&connection);
+        let connection_state = Arc::new(server.connection_state_factory.create(&connection_info));
+        let connection = ConnectionContext::new(connection_info, connection_state);
+        let service_server = server.clone();
+        let service = service_fn(move |request| {
+            let server = service_server.clone();
+            let connection = connection.clone();
+            async move { server.handle(request, &connection).await }
+        });
+        drive_http_connection(
+            stream,
+            service,
+            server.runtime.http_limits,
+            &server.runtime.telemetry,
+            activity.as_ref(),
+        )
+        .await
+    })
 }
 
-async fn run_local_http_connection<H, F, Observer, I>(
+fn run_local_http_connection<H, F, Observer, I, Setup>(
     server: Rc<LocalHyperServer<H, F, Observer>>,
-    stream: I,
-    connection: NacelleConnectionMeta,
-    _connection_permit: nacelle_core::limits::TrackedPermit,
-) -> Result<(), NacelleError>
+    setup: Setup,
+    registration: NacelleConnectionRegistration,
+) -> impl Future<Output = Result<(), NacelleError>>
 where
     F: LocalHttpConnectionStateFactory,
     H: LocalHttpService<F::State>,
     Observer: NacelleTelemetryObserver,
     I: AsyncRead + AsyncWrite + Unpin + 'static,
+    Setup: Future<Output = Result<(I, NacelleConnectionMeta), NacelleError>> + 'static,
 {
-    let connection_info = ConnectionInfo::from(&connection);
-    let connection_state = Rc::new(server.connection_state_factory.create(&connection_info));
-    let dispatch = LocalHttpDispatch {
-        handler: server.handler.clone(),
-        connection: ConnectionContext::new(connection_info, connection_state),
-    };
-    let write_timeout = server.runtime.http_limits.response_write_timeout;
-    let io = TimeoutIo::new(TokioIo::new(stream), write_timeout);
-    let service_server = server.clone();
-    let service_dispatch = dispatch.clone();
-    let service = service_fn(move |request| {
-        let server = service_server.clone();
-        let mut dispatch = service_dispatch.clone();
-        async move {
-            server
-                .runtime
-                .handle_with_dispatch(request, &mut dispatch)
-                .await
+    let activity = registration.activity();
+    observe_http_connection(registration, server.runtime.telemetry.clone(), async move {
+        let (stream, metadata) = setup.await?;
+        if let Some(activity) = &activity {
+            activity.established(&metadata);
         }
-    });
-    let mut builder = http1::Builder::new();
-    server.runtime.http_limits.parser.apply(&mut builder);
-    builder
-        .timer(TokioTimer::new())
-        .header_read_timeout(server.runtime.http_limits.header_read_timeout)
-        .keep_alive(server.runtime.http_limits.keep_alive);
-    let connection = builder.serve_connection(io, service);
-    let result = if let Some(max_age) = server.runtime.http_limits.max_connection_age {
-        match tokio::time::timeout(max_age, connection).await {
-            Ok(result) => result.map_err(NacelleError::protocol),
-            Err(_) => {
+        let connection = metadata;
+        let connection_info = ConnectionInfo::from(&connection);
+        let connection_state = Rc::new(server.connection_state_factory.create(&connection_info));
+        let dispatch = LocalHttpDispatch {
+            handler: server.handler.clone(),
+            connection: ConnectionContext::new(connection_info, connection_state),
+        };
+        let service_server = server.clone();
+        let service_dispatch = dispatch.clone();
+        let service = service_fn(move |request| {
+            let server = service_server.clone();
+            let mut dispatch = service_dispatch.clone();
+            async move {
                 server
                     .runtime
-                    .telemetry
-                    .timeout(NacelleTransport::new("http"), "http_max_connection_age");
+                    .handle_with_dispatch(request, &mut dispatch)
+                    .await
+            }
+        });
+        drive_http_connection(
+            stream,
+            service,
+            server.runtime.http_limits,
+            &server.runtime.telemetry,
+            activity.as_ref(),
+        )
+        .await
+    })
+}
+
+async fn drive_http_connection<I, S, B, Observer>(
+    stream: I,
+    service: S,
+    limits: NacelleHttpLimits,
+    telemetry: &NacelleTelemetry<Observer>,
+    activity: Option<&NacelleConnectionActivity>,
+) -> Result<(), NacelleError>
+where
+    I: AsyncRead + AsyncWrite + Unpin,
+    S: hyper::service::Service<Request<Incoming>, Response = Response<B>, Error = NacelleError>,
+    B: Body<Data = bytes::Bytes, Error = NacelleError> + 'static,
+    Observer: NacelleTelemetryObserver,
+{
+    let io = TimeoutIo::new(TokioIo::new(stream), limits.response_write_timeout);
+    let mut builder = http1::Builder::new();
+    limits.parser.apply(&mut builder);
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(limits.header_read_timeout)
+        .keep_alive(limits.keep_alive);
+    let connection = builder.serve_connection(io, service);
+    tokio::pin!(connection);
+    let serving = async {
+        if let Some(activity) = activity {
+            tokio::select! {
+                biased;
+                _ = activity.retirement_requested() => {
+                    connection.as_mut().graceful_shutdown();
+                    connection.await
+                }
+                result = &mut connection => result,
+            }
+        } else {
+            connection.await
+        }
+        .map_err(NacelleError::protocol)
+    };
+    if let Some(max_age) = limits.max_connection_age {
+        match tokio::time::timeout(max_age, serving).await {
+            Ok(result) => result,
+            Err(_) => {
+                telemetry.timeout(NacelleTransport::new("http"), "http_max_connection_age");
                 Err(NacelleError::Timeout(
                     NacelleTimeoutReason::HttpMaxConnectionAge,
                 ))
             }
         }
     } else {
-        connection.await.map_err(NacelleError::protocol)
-    };
-    server.runtime.telemetry.connection_closed(
-        NacelleTransport::new("http"),
-        None,
-        http_close_reason(&result),
-    );
-    result
+        serving.await
+    }
 }
 
 /// Low-cardinality close reason for an HTTP connection, mirroring the TCP
@@ -1952,11 +2068,29 @@ mod tests {
                         .with_no_client_auth(),
                 ));
                 let (shutdown, token) = nacelle_core::lifecycle::NacelleShutdown::pair();
+                let state = NacelleRuntimeState::new(
+                    nacelle_core::NacelleLimits::default().with_connection_tracking(
+                        nacelle_core::NacelleConnectionTracking::new(4).unwrap(),
+                    ),
+                );
+                let control = state.control();
                 let handler = nacelle_core::pipeline::local_handler_fn(
-                    |context: crate::LocalHttpRequestContext<()>| async move {
-                        context
-                            .respond(HttpResponse::bytes(StatusCode::OK, "local tls"))
-                            .await
+                    move |context: crate::LocalHttpRequestContext<()>| {
+                        let control = control.clone();
+                        async move {
+                            let nacelle_core::NacelleConnectionLookup::Found(snapshot) =
+                                control.connection(context.connection().info.connection_id)
+                            else {
+                                panic!("HTTPS registration");
+                            };
+                            assert_eq!(
+                                snapshot.connection.tls.as_ref().unwrap().provider,
+                                "rustls"
+                            );
+                            context
+                                .respond(HttpResponse::bytes(StatusCode::OK, "local tls"))
+                                .await
+                        }
                     },
                 );
                 let task = tokio::task::spawn_local(
@@ -1965,6 +2099,12 @@ mod tests {
                             nacelle_core::AllowAll,
                             AdmissionConfig::new(Duration::from_secs(1), 8).unwrap(),
                         )
+                        .with_runtime_context(
+                            NacelleTelemetry::default(),
+                            state.clone(),
+                            LocalHttpSharedState::default(),
+                        )
+                        .unwrap()
                         .serve_tls_listener(
                             listener,
                             generated.tls_config,
@@ -1986,6 +2126,8 @@ mod tests {
                 assert!(response.contains("local tls"));
                 shutdown.shutdown();
                 task.await.expect("join").expect("server");
+                assert_eq!(state.active_connections(), 0);
+                assert!(state.control().connections(4).unwrap().is_empty());
             })
             .await;
     }
@@ -2904,11 +3046,23 @@ mod tests {
             .with_no_client_auth();
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_config));
         let observed = Arc::new(Mutex::new(None));
+        let state = NacelleRuntimeState::new(
+            nacelle_core::NacelleLimits::default()
+                .with_connection_tracking(nacelle_core::NacelleConnectionTracking::new(4).unwrap()),
+        );
+        let control = state.control();
         let server = HyperServer::new(handler_fn({
             let observed = observed.clone();
             move |context: HttpRequestContext<()>| {
                 let observed = observed.clone();
+                let control = control.clone();
                 async move {
+                    let nacelle_core::NacelleConnectionLookup::Found(snapshot) =
+                        control.connection(context.connection().info.connection_id)
+                    else {
+                        panic!("HTTPS registration");
+                    };
+                    assert_eq!(snapshot.connection.tls.as_ref().unwrap().provider, "rustls");
                     *observed.lock().expect("observed metadata lock poisoned") =
                         Some(context.connection().info.clone());
                     context
@@ -2916,10 +3070,13 @@ mod tests {
                         .await
                 }
             }
-        }));
+        }))
+        .with_runtime_state(state.clone())
+        .unwrap();
+        let (shutdown, token) = nacelle_core::NacelleShutdown::pair();
         let server_task = tokio::spawn(async move {
             server
-                .serve_tls_listener(listener, generated.tls_config)
+                .serve_tls_listener_with_shutdown(listener, generated.tls_config, token)
                 .await
         });
 
@@ -2945,16 +3102,21 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("tls ok"));
-        let observed = observed.lock().expect("observed metadata lock poisoned");
-        let tls = observed
-            .as_ref()
-            .and_then(|connection| connection.tls.as_ref())
-            .expect("TLS metadata should reach the handler context");
-        assert_eq!(tls.provider, "rustls");
-        assert!(tls.protocol.is_some());
-        assert!(tls.cipher_suite.is_some());
-        assert_eq!(tls.server_name.as_deref(), Some("localhost"));
-        server_task.abort();
+        {
+            let observed = observed.lock().expect("observed metadata lock poisoned");
+            let tls = observed
+                .as_ref()
+                .and_then(|connection| connection.tls.as_ref())
+                .expect("TLS metadata should reach the handler context");
+            assert_eq!(tls.provider, "rustls");
+            assert!(tls.protocol.is_some());
+            assert!(tls.cipher_suite.is_some());
+            assert_eq!(tls.server_name.as_deref(), Some("localhost"));
+        }
+        shutdown.shutdown();
+        server_task.await.unwrap().unwrap();
+        assert_eq!(state.active_connections(), 0);
+        assert!(state.control().connections(4).unwrap().is_empty());
     }
 
     #[cfg(feature = "tls-self-signed")]

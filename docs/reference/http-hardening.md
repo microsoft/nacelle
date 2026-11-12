@@ -120,7 +120,20 @@ the connection to be polled through response production and underlying I/O
 flush. It does not expose a public live-idle query covering partial heads,
 pipelined input, and pending output. Request counters alone cannot establish
 that an HTTP connection is safe to reclaim as idle. Nacelle does not expose
-HTTP idle reclamation.
+HTTP idle reclamation: tracked snapshots advertise `idle_reclaim: false`, and
+`reclaim_idle` counts nonclosing HTTP entries as `unsupported`.
+
+Opt-in tracking registers shared/local HTTP and Rustls HTTPS before setup.
+`retire_connection(id, timeout)` requests Hyper graceful shutdown under an
+absolute deadline from selection, including TLS setup and pending output.
+Expiry cancels remaining work; `close_connection(id)` can force cancellation
+sooner. Neither operation grants pending application admission or polls an
+unadmitted `Expect: 100-continue` body. Registration and connection capacity
+remain owned until work and I/O teardown. See
+[tracked connections](../topics/runtime-limits.md#tracked-connections) for
+capacity, outcomes, and worker scope, and
+[operations](../topics/operations.md#administrative-connection-management)
+for static reasons and a runnable example.
 
 ## Peer limits and deployment policy
 

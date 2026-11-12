@@ -198,8 +198,9 @@ where
     H: HttpService<()>,
     Observer: NacelleTelemetryObserver,
 {
-    let permit = server.runtime.runtime_state.acquire_connection().unwrap();
-    run_http_connection(server, io, NacelleConnectionMeta::http(None), permit)
+    let metadata = NacelleConnectionMeta::http(None);
+    let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
+    run_http_connection(server, std::future::ready(Ok((io, metadata))), registration)
 }
 
 #[tokio::test]
@@ -614,9 +615,10 @@ async fn local_policy_and_permit_can_borrow_rc_state_across_await() {
         ))
         .with_admission(LocalRule(calls.clone()), config()),
     );
-    let permit = server.runtime.runtime_state.acquire_connection().unwrap();
+    let metadata = NacelleConnectionMeta::http(None);
+    let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
     let (io, _) = ObservedIo::new("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    run_local_http_connection(server, io, NacelleConnectionMeta::http(None), permit)
+    run_local_http_connection(server, std::future::ready(Ok((io, metadata))), registration)
         .await
         .unwrap();
     assert_eq!(calls.get(), 1);

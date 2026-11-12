@@ -20,10 +20,11 @@ limits stay in `NacelleLimits`. See [runtime control](../topics/runtime-limits.m
 for installed handles, retained rate history, update errors, and worker scope.
 
 `NacelleLimits::with_connection_tracking(NacelleConnectionTracking::new(n)?)`
-enables fixed-capacity TCP/Unix management. It is off by default, independent of
-the live connection ceiling, and does not enable HTTP management. Budget for
+enables fixed-capacity TCP/Unix and HTTP/HTTPS management. It is off by default,
+independent of the live connection ceiling. HTTP supports deadline-bounded
+`retire_connection`, but reports idle reclaim as unsupported. Budget for
 registry metadata and high-water storage in addition to socket/body buffers.
-See [tracked connections](../topics/runtime-limits.md#tracked-tcpunix-connections)
+See [tracked connections](../topics/runtime-limits.md#tracked-connections)
 for rejection, selection, cancellation, and worker-capacity semantics.
 
 Recommended presets:

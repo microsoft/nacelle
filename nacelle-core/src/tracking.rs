@@ -4,8 +4,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use crate::error::{NacelleConfigurationError, NacelleError, NacelleResourceLimitReason};
 use crate::limits::{NacelleRuntimeState, TrackedPermit};
@@ -64,12 +67,21 @@ impl NacelleConnectionTracking {
 pub enum NacelleConnectionActivityState {
     /// Controlled socket setup, protocol setup, or TLS handshake is incomplete.
     Setup,
-    /// Input, request work, response delivery, or a transport flush is pending.
+    /// Work is pending, or the transport cannot prove a quiescent boundary.
     Active,
     /// No accumulated input or pending work; the underlying writer is flushed.
     Idle,
-    /// Administrative cancellation was selected or normal teardown is pending.
+    /// Administrative retirement/cancellation or normal teardown is pending.
     Closing,
+}
+
+/// Operations the transport can implement without guessing its internal state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NacelleConnectionCapabilities {
+    /// The transport can arbitrate idle activation against reclamation.
+    pub idle_reclaim: bool,
+    /// The transport can drain a selected connection under a deadline.
+    pub graceful_retirement: bool,
 }
 
 /// Owned metadata snapshot. It contains no socket, task, or application state.
@@ -79,6 +91,8 @@ pub struct NacelleConnectionSnapshot {
     pub connection: NacelleConnectionMeta,
     /// Point-in-time transport observation.
     pub activity: NacelleConnectionActivityState,
+    /// Transport capabilities, independent of the current activity.
+    pub capabilities: NacelleConnectionCapabilities,
     /// Zero for shared accounting; otherwise the configured worker index.
     pub partition: usize,
 }
@@ -107,6 +121,23 @@ pub enum NacelleCloseOutcome {
     AlreadyClosing,
 }
 
+/// Graceful selection does not confirm response delivery or connection teardown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NacelleRetireOutcome {
+    /// This state was constructed without tracking.
+    TrackingDisabled,
+    /// The ID is absent, finished, or outside this handle's worker scope.
+    Unknown,
+    /// This transport does not implement graceful retirement.
+    Unsupported,
+    /// Retirement was signalled with an absolute deadline.
+    Selected,
+    /// Retirement, cancellation, or normal finishing is already selected.
+    AlreadyClosing,
+    /// The supplied timeout cannot be represented as a clock deadline.
+    DeadlineOutOfRange,
+}
+
 /// Static administrative cancellation reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NacelleConnectionCloseReason {
@@ -114,6 +145,8 @@ pub enum NacelleConnectionCloseReason {
     Forced,
     /// Idle-only cancellation selected toward a connection target.
     IdleReclaim,
+    /// Graceful retirement exceeded its deadline; remaining work was cancelled.
+    RetirementDeadline,
 }
 
 impl NacelleConnectionCloseReason {
@@ -122,6 +155,7 @@ impl NacelleConnectionCloseReason {
         match self {
             Self::Forced => "administrative_close",
             Self::IdleReclaim => "idle_reclaim",
+            Self::RetirementDeadline => "administrative_retire_timeout",
         }
     }
 }
@@ -137,6 +171,8 @@ pub struct NacelleReclaimPartition {
     pub target: Option<usize>,
     /// Closing entries counted as reservations before selecting more.
     pub already_closing: usize,
+    /// Nonclosing entries whose transport cannot prove safe idle eligibility.
+    pub unsupported: usize,
     /// Newly selected idle entries in this partition.
     pub selected: usize,
     /// Remaining target gap after closing reservations and new selections.
@@ -168,11 +204,15 @@ const FORCED: u8 = 3;
 const RECLAIMED: u8 = 4;
 const FINISHING: u8 = 5;
 const CLOSED: u8 = 6;
+const RETIRING: u8 = 7;
+const RETIRE_TIMEOUT: u8 = 8;
 
 #[derive(Debug)]
 struct Entry {
     metadata: Mutex<NacelleConnectionMeta>,
     state: AtomicU8,
+    capabilities: NacelleConnectionCapabilities,
+    retirement_deadline: OnceLock<Instant>,
     close: tokio::sync::Notify,
 }
 
@@ -201,6 +241,9 @@ impl NacelleConnectionActivity {
 
     /// Only the transport can establish a quiescent, fully flushed boundary.
     pub fn idle(&self) {
+        if !self.0.capabilities.idle_reclaim {
+            return;
+        }
         let _ = self
             .0
             .state
@@ -220,6 +263,7 @@ impl NacelleConnectionActivity {
         match self.0.state.load(Ordering::Acquire) {
             FORCED => Some(NacelleConnectionCloseReason::Forced),
             RECLAIMED => Some(NacelleConnectionCloseReason::IdleReclaim),
+            RETIRE_TIMEOUT => Some(NacelleConnectionCloseReason::RetirementDeadline),
             _ => None,
         }
     }
@@ -230,26 +274,57 @@ impl NacelleConnectionActivity {
             if let Some(reason) = self.close_reason() {
                 return reason;
             }
+            if let Some(deadline) = self.retirement_deadline() {
+                tokio::select! {
+                    biased;
+                    _ = tokio::time::sleep_until(deadline) => {
+                        let _ = self.0.state.compare_exchange(
+                            RETIRING, RETIRE_TIMEOUT, Ordering::AcqRel, Ordering::Acquire,
+                        );
+                        return self.close_reason().expect("retirement cancellation");
+                    }
+                    _ = notified => {}
+                }
+            } else {
+                notified.await;
+            }
+        }
+    }
+
+    pub fn retirement_deadline(&self) -> Option<Instant> {
+        self.0.retirement_deadline.get().copied()
+    }
+
+    /// Only a supported transport driver waits for graceful retirement.
+    pub async fn retirement_requested(&self) {
+        loop {
+            // Broadcast notifications cover both the driver and deadline owner.
+            let notified = self.0.close.notified();
+            if self.retirement_deadline().is_some() {
+                return;
+            }
             notified.await;
         }
     }
 
     fn select_close(&self, idle_only: bool) -> bool {
         let selected = if idle_only {
-            self.0
-                .state
-                .compare_exchange(IDLE, RECLAIMED, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
+            self.0.capabilities.idle_reclaim
+                && self
+                    .0
+                    .state
+                    .compare_exchange(IDLE, RECLAIMED, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
         } else {
             self.0
                 .state
                 .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
-                    (state < FORCED || state == FINISHING).then_some(FORCED)
+                    (state < FORCED || state == FINISHING || state == RETIRING).then_some(FORCED)
                 })
                 .is_ok()
         };
         if selected {
-            self.0.close.notify_one();
+            self.0.close.notify_waiters();
         }
         selected
     }
@@ -322,6 +397,44 @@ impl Registry {
         }
     }
 
+    pub(crate) fn retire(
+        &self,
+        partition: Option<usize>,
+        id: u64,
+        timeout: Duration,
+    ) -> NacelleRetireOutcome {
+        let inner = self.0.lock().expect("connection registry lock");
+        let Some(record) = inner
+            .entries
+            .get(&id)
+            .filter(|entry| partition.is_none_or(|p| p == entry.partition))
+        else {
+            return NacelleRetireOutcome::Unknown;
+        };
+        let entry = &record.activity.0;
+        if !entry.capabilities.graceful_retirement {
+            return NacelleRetireOutcome::Unsupported;
+        }
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            return NacelleRetireOutcome::DeadlineOutOfRange;
+        };
+        if entry
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state < FORCED).then_some(RETIRING)
+            })
+            .is_err()
+        {
+            return NacelleRetireOutcome::AlreadyClosing;
+        }
+        entry
+            .retirement_deadline
+            .set(deadline)
+            .expect("first retirement");
+        entry.close.notify_waiters();
+        NacelleRetireOutcome::Selected
+    }
+
     pub(crate) fn reclaim(
         &self,
         states: &[NacelleRuntimeState],
@@ -337,6 +450,7 @@ impl Registry {
                 active_connections: state.active_connections(),
                 target: state.connection_limits().max_connections,
                 already_closing: 0,
+                unsupported: 0,
                 selected: 0,
                 unfilled: 0,
             })
@@ -350,10 +464,12 @@ impl Registry {
             }
         };
         for entry in inner.entries.values() {
-            if let Some(index) = report_index(entry.partition)
-                && entry.activity.0.state.load(Ordering::Acquire) >= FORCED
-            {
-                partitions[index].already_closing += 1;
+            if let Some(index) = report_index(entry.partition) {
+                if entry.activity.0.state.load(Ordering::Acquire) >= FORCED {
+                    partitions[index].already_closing += 1;
+                } else if !entry.activity.0.capabilities.idle_reclaim {
+                    partitions[index].unsupported += 1;
+                }
             }
         }
         for report in &mut partitions {
@@ -404,6 +520,7 @@ impl RegistryRecord {
                 IDLE => NacelleConnectionActivityState::Idle,
                 _ => NacelleConnectionActivityState::Closing,
             },
+            capabilities: self.activity.0.capabilities,
             partition: self.partition,
         }
     }
@@ -420,6 +537,7 @@ impl RegistryPartition {
     pub(crate) fn register(
         &self,
         metadata: &NacelleConnectionMeta,
+        capabilities: NacelleConnectionCapabilities,
     ) -> Result<Registration, NacelleError> {
         let mut inner = self.registry.0.lock().expect("connection registry lock");
         if inner.entries.contains_key(&metadata.connection_id) {
@@ -435,6 +553,8 @@ impl RegistryPartition {
         let activity = NacelleConnectionActivity(Arc::new(Entry {
             metadata: Mutex::new(metadata.clone()),
             state: AtomicU8::new(SETUP),
+            capabilities,
+            retirement_deadline: OnceLock::new(),
             close: tokio::sync::Notify::new(),
         }));
         inner.entries.insert(
@@ -602,6 +722,162 @@ mod tests {
             } => (selected, unfilled),
             NacelleReclaimOutcome::TrackingDisabled => panic!("tracking enabled"),
         }
+    }
+
+    fn register_retirable(
+        state: &NacelleRuntimeState,
+        connection: &NacelleConnectionMeta,
+    ) -> NacelleConnectionRegistration {
+        state
+            .register_connection_with_capabilities(
+                connection,
+                NacelleConnectionCapabilities {
+                    idle_reclaim: false,
+                    graceful_retirement: true,
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn unsupported_idle_reclaim_is_reported_without_selecting_unknown_activity() {
+        let state = state(2);
+        let connection = NacelleConnectionMeta::http(None);
+        let registration = register_retirable(&state, &connection);
+        let activity = registration.activity().unwrap();
+        activity.established(&connection);
+        activity.idle();
+        let NacelleConnectionLookup::Found(snapshot) =
+            state.control().connection(connection.connection_id)
+        else {
+            panic!("registered connection");
+        };
+        assert_eq!(snapshot.activity, NacelleConnectionActivityState::Active);
+        assert!(!snapshot.capabilities.idle_reclaim);
+        assert!(snapshot.capabilities.graceful_retirement);
+        state.control().set_max_connections(Some(0)).unwrap();
+        let NacelleReclaimOutcome::Observed {
+            partitions,
+            selected: count,
+            unfilled,
+        } = state.control().reclaim_idle(2)
+        else {
+            panic!("tracking enabled");
+        };
+        assert_eq!((count, unfilled, partitions[0].unsupported), (0, 1, 1));
+        assert_eq!(
+            state
+                .control()
+                .retire_connection(connection.connection_id, Duration::MAX),
+            NacelleRetireOutcome::DeadlineOutOfRange,
+        );
+        assert_eq!(
+            state
+                .control()
+                .retire_connection(connection.connection_id, Duration::from_secs(30)),
+            NacelleRetireOutcome::Selected,
+        );
+        let deadline = activity.retirement_deadline();
+        assert_eq!(
+            state
+                .control()
+                .retire_connection(connection.connection_id, Duration::from_secs(90)),
+            NacelleRetireOutcome::AlreadyClosing,
+        );
+        assert_eq!(activity.retirement_deadline(), deadline);
+        assert_eq!(selected(state.control().reclaim_idle(2)), (0, 0));
+        assert_eq!(state.active_connections(), 1);
+        drop(registration);
+        assert_eq!(state.active_connections(), 0);
+    }
+
+    #[tokio::test]
+    async fn retirement_deadline_and_force_cancel_setup_without_releasing_capacity_early() {
+        for force in [false, true] {
+            let state = state(1);
+            let connection = NacelleConnectionMeta::http(None);
+            let registration = register_retirable(&state, &connection);
+            let activity = registration.activity().unwrap();
+            let observed = Arc::new(std::sync::atomic::AtomicUsize::new(99));
+            let owned = DropCheck {
+                state: state.clone(),
+                observed: observed.clone(),
+            };
+            let future = registration.run(async move {
+                let _owned = owned;
+                std::future::pending().await
+            });
+            tokio::pin!(future);
+            assert!(
+                future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                    .is_pending()
+            );
+            let requested = activity.retirement_requested();
+            tokio::pin!(requested);
+            assert!(
+                requested
+                    .as_mut()
+                    .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                    .is_pending()
+            );
+            let timeout = if force {
+                Duration::from_secs(30)
+            } else {
+                Duration::ZERO
+            };
+            assert_eq!(
+                state
+                    .control()
+                    .retire_connection(connection.connection_id, timeout),
+                NacelleRetireOutcome::Selected
+            );
+            requested.await;
+            if force {
+                assert_eq!(
+                    state.control().close_connection(connection.connection_id),
+                    NacelleCloseOutcome::Selected
+                );
+            }
+            let expected = if force {
+                NacelleConnectionCloseReason::Forced
+            } else {
+                NacelleConnectionCloseReason::RetirementDeadline
+            };
+            assert!(
+                matches!(future.await, Err(NacelleError::ConnectionTerminated(reason)) if reason == expected)
+            );
+            assert_eq!(observed.load(Ordering::SeqCst), 1);
+            assert_eq!(state.active_connections(), 0);
+            assert!(state.control().connections(1).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn retirement_distinguishes_disabled_unknown_and_unsupported() {
+        assert_eq!(
+            NacelleRuntimeState::default()
+                .control()
+                .retire_connection(1, Duration::ZERO),
+            NacelleRetireOutcome::TrackingDisabled,
+        );
+        let state = state(1);
+        let connection = NacelleConnectionMeta::tcp(None, None);
+        let registration = state.register_connection(&connection).unwrap();
+        assert_eq!(
+            state
+                .control()
+                .retire_connection(connection.connection_id, Duration::ZERO),
+            NacelleRetireOutcome::Unsupported,
+        );
+        drop(registration);
+        assert_eq!(
+            state
+                .control()
+                .retire_connection(connection.connection_id, Duration::ZERO),
+            NacelleRetireOutcome::Unknown,
+        );
     }
 
     #[test]
