@@ -31,6 +31,7 @@ docs/internal
 .github/plans/
 .github/ledger/
 .data/
+.docs/
 
 # Generated Reports
 .reports/
