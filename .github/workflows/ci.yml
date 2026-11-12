@@ -197,35 +197,15 @@ jobs:
       RUST_VERSION: nightly
       RUSTUP_TOOLCHAIN: nightly-2026-04-16
     steps:
-    - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-    - name: Install Rust
-      run: rustup update $nightly && rustup default $nightly && rustup component add llvm-tools-preview
-    - name: Install coverage tools
-      uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
-      with:
-        tool: cargo-hack,grcov
-    - name: Test
-      run: .github/scripts/test-stable.sh test
-      env:
-        CARGO_INCREMENTAL: '0'
-        RUSTFLAGS: '-Dwarnings -Cinstrument-coverage'
-        RUSTDOCFLAGS: '-Cinstrument-coverage'
-        LLVM_PROFILE_FILE: '${{ github.workspace }}/target/coverage/%p-%m.profraw'
-    - name: Generate coverage report
-      run: >-
-        grcov target/coverage --binary-path target/debug -s . -t lcov
-        --branch --ignore-not-existing -o target/coverage/lcov.info
-    - name: Codecov
-      uses: codecov/codecov-action@81cd2dc8148241f03f5839d295e000b8f761e378
-      env:
-        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-      with:
-        files: target/coverage/lcov.info
-        # Repository upload token - get it from codecov.io. Required only for private repositories
-        # token: # optional
-        # Specify whether the Codecov output should be verbose
-        verbose: true
-        fail_ci_if_error: true
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Install Rust
+        run: rustup update $nightly && rustup default $nightly
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
+        with:
+          tool: cargo-hack
+      - name: Test
+        run: .github/scripts/test-stable.sh test
 
   # Sanitizers
   tsan:
