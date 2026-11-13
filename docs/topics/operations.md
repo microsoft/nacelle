@@ -64,6 +64,9 @@ partial output and does not wait for TLS `close_notify`. Do not expose this
 capability to untrusted callers or put connection IDs into metric labels.
 The static forced-close reasons are `administrative_close` and `idle_reclaim`.
 TCP setup that fails before its open event does not manufacture a close event.
+After opening, TCP pairs that event with exactly one close outcome on normal
+completion, cancellation, or task abort, including exempt connections and
+connections with administrative tracking disabled.
 HTTP emits its open event before setup, and pairs it with exactly one close
 outcome through TLS failure, normal completion, cancellation, or task abort.
 

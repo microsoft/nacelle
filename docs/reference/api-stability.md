@@ -24,6 +24,22 @@ Experimental:
 - plaintext/OpenSSL detection behind `experimental-openssl-detection`
 - stress tooling config
 
+## TCP body-timeout migration
+
+The `0.4` development line changes TCP request-body timeouts from a fresh
+`NacelleTcpLimits::read_timeout` for each read to one absolute deadline for the
+remaining body. Buffered and streaming bodies share this policy; streaming
+channel waits count toward the deadline. The default remains 30 seconds.
+Regular progress no longer extends body processing: a body taking more than
+30 seconds can now fail with `NacelleTimeoutReason::RequestBodyRead` even if
+every individual read takes less than 30 seconds.
+
+Set `with_read_timeout(...)` to a budget that covers the complete body and
+streaming backpressure for the expected workload. Use `without_read_timeout()`
+only when an unbounded active-read policy is intentional. The body deadline
+is independent of the handler and idle deadlines; disabling handler timeouts
+does not disable body expiry.
+
 ## Telemetry configuration migration
 
 The `0.4` development line replaces `NacelleRequestMetricsConfig` and its five

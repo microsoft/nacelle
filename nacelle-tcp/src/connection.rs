@@ -58,7 +58,7 @@ use framing::{InstrumentedDecoder, map_message_read_error};
 use io::read_message_with_timeout;
 use io::shutdown_with_timeout;
 use lifecycle::{Activity, CloseGuard, Untracked};
-use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_close_reason, tcp_metrics_context};
+use metrics::{TcpTelemetryPlan, record_tcp_error, tcp_metrics_context};
 use request::{
     LocalRequestDispatch, LocalSerialRequestDispatch, RequestDispatch, SerialRequestDispatch,
     SharedRequestDispatch, run_request,
@@ -367,9 +367,12 @@ where
     }
     telemetry.connection_opened(transport);
     activity.established(&connection);
-    let mut close_guard = activity.tracked().map(|tracked| {
-        CloseGuard::new(tracked, &telemetry, connection_metrics.as_ref(), transport)
-    });
+    let mut close_guard = CloseGuard::new(
+        activity.tracked(),
+        &telemetry,
+        connection_metrics.as_ref(),
+        transport,
+    );
 
     let mut error_limits = tcp_limits;
     if let Some(admission) = handler.admission_state() {
@@ -508,9 +511,7 @@ where
         .and_then(NacelleConnectionActivity::close_reason)
     {
         let result = Err(NacelleError::ConnectionTerminated(reason));
-        if let Some(guard) = &mut close_guard {
-            guard.complete(&result);
-        }
+        close_guard.complete(&result);
         return result;
     }
     let mut closing_limits = if result.is_err() {
@@ -551,15 +552,7 @@ where
         Ok(()) => shutdown_result,
         Err(error) => Err(error),
     };
-    if let Some(guard) = &mut close_guard {
-        guard.complete(&result);
-    } else {
-        telemetry.connection_closed(
-            transport,
-            connection_metrics.as_ref(),
-            tcp_close_reason(&result),
-        );
-    }
+    close_guard.complete(&result);
     result
 }
 
