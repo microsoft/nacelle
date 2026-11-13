@@ -248,6 +248,70 @@ async fn pending<F: Future>(mut future: Pin<&mut F>) {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn body_deadline_cancels_handler_and_releases_permits_with_full_channel() {
+    for budget in [2, 4] {
+        let rule = Capacity::new(1);
+        let protocol = CustomProtocol::default();
+        let runtime = NacelleRuntimeState::new(NacelleLimits::default().without_handler_timeout());
+        let active = Arc::new(AtomicBool::new(false));
+        let server = TcpServer::<CustomProtocol>::builder()
+            .protocol(protocol.clone())
+            .tcp_config(
+                config(budget)
+                    .with_request_body_mode(TcpRequestBodyMode::Streaming)
+                    .with_request_body_chunk_size(1)
+                    .with_request_body_channel_capacity(1),
+            )
+            .tcp_limits(NacelleTcpLimits::default().with_read_timeout(Duration::from_millis(20)))
+            .runtime_state(runtime.clone())
+            .unwrap()
+            .handler(handler_fn({
+                let active = active.clone();
+                move |context: TcpRequestContext<CustomProtocol>| {
+                    let active = active.clone();
+                    async move {
+                        active.store(true, Ordering::SeqCst);
+                        let _reset = ResetOnDrop(active);
+                        std::future::pending::<()>().await;
+                        Ok(context.complete())
+                    }
+                }
+            }))
+            .admission(
+                rule.clone(),
+                AdmissionConfig::new(Duration::from_secs(1), 1).unwrap(),
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+        let transport = io(b"A\x04xy");
+        let writes = transport.writes.clone();
+        let mut serving = Box::pin(server.serve_io(transport));
+        pending(serving.as_mut()).await;
+        assert!(active.load(Ordering::SeqCst));
+        assert_eq!(runtime.active_requests(), 1);
+        assert_eq!(runtime.active_streaming_tasks(), 1);
+        assert_eq!(rule.semaphore.available_permits(), 0);
+
+        tokio::time::advance(Duration::from_millis(20)).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), serving)
+            .await
+            .expect("full body channel must not prevent deadline expiry");
+
+        assert!(matches!(
+            result,
+            Err(NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead))
+        ));
+        let wire: Vec<_> = writes.lock().unwrap().iter().flatten().copied().collect();
+        assert_error_wire(&protocol, Some(b'A'), &wire, b"[Acustom:request_body_read]");
+        assert!(!active.load(Ordering::SeqCst));
+        assert_released(&runtime);
+        assert_eq!(rule.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(rule.semaphore.available_permits(), 1);
+    }
+}
+
 #[tokio::test]
 async fn pending_admission_bounds_reads_and_waiters_without_connection_cap() {
     let rule = Capacity::new(0);

@@ -124,9 +124,14 @@ the first byte of a message with an empty input buffer, including the first
 message on a connection. `read_timeout` defaults to 30 seconds and bounds
 completion of a decoded message once bytes are available. Buffered partial
 messages enter the read phase immediately; additional bytes do not restart its
-deadline. Subsequent request-body reads each use `read_timeout`, never
-`idle_timeout`. Idle expiry reports `NacelleTimeoutReason::Idle`; message and
-body read expiry report `TcpRead` and `RequestBodyRead`, respectively.
+deadline. Request-body processing starts a separate absolute `read_timeout`
+deadline covering all remaining body reads and streaming channel waits; body
+progress does not restart it. Expiry cancels a still-running handler even with
+handler timeouts disabled or a full body channel. Body failures reach the
+request driver without waiting to enqueue an error into that channel.
+`idle_timeout` never applies to body reads. Idle expiry reports
+`NacelleTimeoutReason::Idle`; message and body read expiry report `TcpRead` and
+`RequestBodyRead`, respectively.
 
 Neither timeout is a fallback for the other. Idle time excludes handler execution
 and response delivery. Shutdown uses its own deadline so finalization policy can

@@ -292,8 +292,11 @@ listeners unless another layer enforces an equivalent deadline.
 TCP idle and read deadlines are independent. The default 120-second idle deadline
 bounds waiting for the first byte of a message with an empty input buffer. Once
 bytes are available, the 30-second read deadline bounds decoding that message
-without resetting on additional bytes. Each subsequent request-body read also
-uses the read deadline. Idle time does not include active messages, bodies,
+without resetting on additional bytes. Request-body processing starts a separate
+absolute deadline using the same timeout, covering all remaining body reads and
+streaming channel waits. Body progress does not restart this deadline. Expiry
+cancels a still-running handler even when handler timeouts are disabled or the
+body channel is full. Idle time does not include active messages, bodies,
 handlers, or response delivery.
 
 In 0.3.2, this replaces the earlier read-or-idle fallback: silent connections now

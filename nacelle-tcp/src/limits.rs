@@ -11,6 +11,7 @@ pub struct NacelleTcpLimits {
     /// deadline for reading its complete request body. Defaults to 30 seconds.
     ///
     /// Additional message or body bytes do not restart either deadline.
+    /// The body deadline includes waiting for streaming channel capacity.
     /// Does not limit the idle wait for the first byte of the next message.
     pub read_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
