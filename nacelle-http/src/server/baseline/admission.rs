@@ -198,7 +198,8 @@ where
 {
     let metadata = NacelleConnectionMeta::http(None);
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
-    let metrics_context = http_connection_metrics_context(&metadata, "none");
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
     run_http_connection(
         server,
         std::future::ready(Ok((io, metadata))),
@@ -622,7 +623,8 @@ async fn local_policy_and_permit_can_borrow_rc_state_across_await() {
     let metadata = NacelleConnectionMeta::http(None);
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
     let (io, _) = ObservedIo::new("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    let metrics_context = http_connection_metrics_context(&metadata, "none");
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
     run_local_http_connection(
         server,
         std::future::ready(Ok((io, metadata))),

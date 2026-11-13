@@ -522,7 +522,9 @@ where
                             continue;
                         }
                     };
-                    let metrics_context = http_connection_metrics_context(&connection, "none");
+                    let metrics_context = http_connection_metrics_context(
+                        &connection, "none", &server.runtime.telemetry,
+                    );
                     let server = server.clone();
                     connections.spawn_local(run_local_http_connection(
                         server, std::future::ready(Ok((stream, connection))), registration,
@@ -586,7 +588,9 @@ where
                             continue;
                         }
                     };
-                    let metrics_context = http_connection_metrics_context(&connection, "rustls");
+                    let metrics_context = http_connection_metrics_context(
+                        &connection, "rustls", &server.runtime.telemetry,
+                    );
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     let server = server.clone();
                     let setup = accept_http_tls(
@@ -912,7 +916,9 @@ where
                             continue;
                         }
                     };
-                    let metrics_context = http_connection_metrics_context(&connection, "none");
+                    let metrics_context = http_connection_metrics_context(
+                        &connection, "none", &server.runtime.telemetry,
+                    );
                     connections.spawn(run_http_connection(
                         server,
                         std::future::ready(Ok((stream, connection))),
@@ -1048,7 +1054,9 @@ where
                             continue;
                         }
                     };
-                    let metrics_context = http_connection_metrics_context(&connection, "rustls");
+                    let metrics_context = http_connection_metrics_context(
+                        &connection, "rustls", &server.runtime.telemetry,
+                    );
                     let acceptor = tokio_rustls::TlsAcceptor::from(tls_config.server_config());
                     let setup = accept_http_tls(
                         stream, connection, acceptor, handshake_timeout, server.runtime.telemetry.clone(),
@@ -1515,7 +1523,7 @@ async fn accept_http_tls<Observer: NacelleTelemetryObserver>(
 
 struct HttpCloseGuard<Observer: NacelleTelemetryObserver> {
     telemetry: NacelleTelemetry<Observer>,
-    metrics_context: NacelleMetricsContext,
+    metrics_context: Option<NacelleMetricsContext>,
     activity: Option<NacelleConnectionActivity>,
     completed: bool,
 }
@@ -1545,7 +1553,7 @@ impl<Observer: NacelleTelemetryObserver> HttpCloseGuard<Observer> {
         self.completed = true;
         self.telemetry.connection_closed(
             NacelleTransport::new("http"),
-            Some(&self.metrics_context),
+            self.metrics_context.as_ref(),
             label,
         );
     }
@@ -1564,7 +1572,7 @@ impl<Observer: NacelleTelemetryObserver> Drop for HttpCloseGuard<Observer> {
             }
             self.telemetry.connection_closed(
                 NacelleTransport::new("http"),
-                Some(&self.metrics_context),
+                self.metrics_context.as_ref(),
                 reason.map_or(
                     "cancelled",
                     nacelle_core::NacelleConnectionCloseReason::as_str,
@@ -1602,7 +1610,7 @@ where
 fn observe_http_connection<F, Observer>(
     registration: NacelleConnectionRegistration,
     telemetry: NacelleTelemetry<Observer>,
-    metrics_context: NacelleMetricsContext,
+    metrics_context: Option<NacelleMetricsContext>,
     work: F,
 ) -> impl Future<Output = Result<(), NacelleError>>
 where
@@ -1610,7 +1618,9 @@ where
     Observer: NacelleTelemetryObserver,
 {
     let activity = registration.activity();
-    telemetry.connection_accepted(&metrics_context);
+    if let Some(context) = &metrics_context {
+        telemetry.connection_accepted(context);
+    }
     telemetry.connection_opened(NacelleTransport::new("http"));
     registration.run(ObservedHttpConnection {
         work,
@@ -1627,7 +1637,7 @@ fn run_http_connection<H, F, Observer, I, Setup>(
     server: Arc<HyperServer<H, F, Observer>>,
     setup: Setup,
     registration: NacelleConnectionRegistration,
-    metrics_context: NacelleMetricsContext,
+    metrics_context: Option<NacelleMetricsContext>,
 ) -> impl Future<Output = Result<(), NacelleError>>
 where
     F: HttpConnectionStateFactory,
@@ -1673,7 +1683,7 @@ fn run_local_http_connection<H, F, Observer, I, Setup>(
     server: Rc<LocalHyperServer<H, F, Observer>>,
     setup: Setup,
     registration: NacelleConnectionRegistration,
-    metrics_context: NacelleMetricsContext,
+    metrics_context: Option<NacelleMetricsContext>,
 ) -> impl Future<Output = Result<(), NacelleError>>
 where
     F: LocalHttpConnectionStateFactory,
@@ -1724,17 +1734,20 @@ where
     )
 }
 
-fn http_connection_metrics_context(
+fn http_connection_metrics_context<Observer: NacelleTelemetryObserver>(
     connection: &NacelleConnectionMeta,
     tls: &'static str,
-) -> NacelleMetricsContext {
-    NacelleMetricsContext::new_with_accounting(
-        connection.transport,
-        connection.listener.clone(),
-        "http1",
-        tls,
-        connection.accounting,
-    )
+    telemetry: &NacelleTelemetry<Observer>,
+) -> Option<NacelleMetricsContext> {
+    telemetry.connection_metrics_enabled().then(|| {
+        NacelleMetricsContext::new_with_accounting(
+            connection.transport,
+            connection.listener.clone(),
+            "http1",
+            tls,
+            connection.accounting,
+        )
+    })
 }
 
 async fn drive_http_connection<I, S, B, Observer>(

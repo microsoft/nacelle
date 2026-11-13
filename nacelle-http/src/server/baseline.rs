@@ -280,7 +280,8 @@ async fn rejected_expect_request_closes_even_with_a_buffered_next_request() {
         let state = server.runtime.runtime_state.clone();
         let metadata = NacelleConnectionMeta::http(None);
         let registration = register_http_connection(&state, &metadata).unwrap();
-        let metrics_context = http_connection_metrics_context(&metadata, "none");
+        let metrics_context =
+            http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
         run_http_connection(
             server,
             std::future::ready(Ok((io, metadata))),
@@ -392,7 +393,8 @@ fn http_request_and_response_metrics_keep_distinct_completion_boundaries() {
                 )));
                 let metadata = NacelleConnectionMeta::http(None);
                 let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
-                let metrics_context = http_connection_metrics_context(&metadata, "none");
+                let metrics_context =
+                    http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
                 run_http_connection(
                     server,
                     std::future::ready(Ok((io, metadata))),

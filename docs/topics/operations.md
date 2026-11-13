@@ -161,6 +161,8 @@ metric domains while retaining any application recorder. This global gate does
 not erase individual domain settings, and telemetry observers remain active.
 Use `with_connection_metrics`, `with_request_metrics`, `with_runtime_metrics`,
 `with_error_metrics`, and `with_diagnostics` for independent policy.
+HTTP listeners skip connection metric context allocation when connection metrics
+are disabled; connection observer events remain active.
 A shared `NacelleRuntimeState` has one runtime-metric policy; configure servers
 sharing that state consistently before serving traffic.
 
