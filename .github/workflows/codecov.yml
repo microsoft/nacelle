@@ -6,6 +6,8 @@ name: codecov
 #     branches: [ "main" ]
 #   pull_request:
 #     branches: [ "main" ]
+on:
+  workflow_dispatch:
 
 permissions:
   contents: read
