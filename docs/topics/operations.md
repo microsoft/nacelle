@@ -64,6 +64,9 @@ partial output and does not wait for TLS `close_notify`. Do not expose this
 capability to untrusted callers or put connection IDs into metric labels.
 The static forced-close reasons are `administrative_close` and `idle_reclaim`.
 TCP setup that fails before its open event does not manufacture a close event.
+After opening, TCP pairs that event with exactly one close outcome on normal
+completion, cancellation, or task abort, including exempt connections and
+connections with administrative tracking disabled.
 HTTP emits its open event before setup, and pairs it with exactly one close
 outcome through TLS failure, normal completion, cancellation, or task abort.
 
@@ -88,10 +91,13 @@ The HTTP example requests bounded graceful retirement on Ctrl-C:
 cargo run -p nacelle-examples --no-default-features --features http --bin http_connection_control -- 127.0.0.1:8080
 ```
 
-Both examples pause admissions and then stop the listener. An admission already
-racing the pause can complete after the snapshot; the listener's drain deadline
-remains the final bound. Normal listener shutdown remains stop/drain/abort and
-does not automatically administratively retire each HTTP connection.
+Both examples install one typed semaphore admission policy with a one-second
+wait deadline and 64 framework-owned waiters, explicitly enable bounded
+connection tracking, and retain the runtime control before `run()`. Ctrl-C
+pauses new connections and then stops the listener. An admission already racing
+the pause can complete after the snapshot; the listener's drain deadline remains
+the final bound. Normal listener shutdown remains stop/drain/abort and does not
+automatically administratively retire each HTTP connection.
 See [tracking outcomes and ownership](runtime-limits.md#tracked-connections)
 for selection versus teardown, borrowed I/O, and worker scope.
 
@@ -148,16 +154,18 @@ on the table.
 
 Nacelle emits metrics through the `metrics` facade according to
 `NacelleTelemetryConfig`. Connection, runtime, and error domains are on by
-default. Request metrics are grouped under `request_metrics`: `started`,
-`completed`, and `byte_counts` are on by default, while `in_flight` and
-`duration_ms` are opt-in. TCP phase histograms require the non-default
-`phase-timing` Cargo feature and explicit runtime activation.
+default. `NacelleRequestMetrics::CountersAndBytes` is the request default;
+`Counters` keeps lifecycle counters without byte histograms and `Off` suppresses
+both. Request duration, labelled request in-flight, and TCP phase timing are
+independent fields in `NacelleTelemetryDiagnostics` and are off by default.
 
 Use `NacelleTelemetry::default().with_metrics(false)` to suppress all Nacelle
 metric domains while retaining any application recorder. This global gate does
 not erase individual domain settings, and telemetry observers remain active.
 Use `with_connection_metrics`, `with_request_metrics`, `with_runtime_metrics`,
-`with_error_metrics`, and `with_phase_duration_metrics` for independent policy.
+`with_error_metrics`, and `with_diagnostics` for independent policy.
+HTTP listeners skip connection metric context allocation when connection metrics
+are disabled; connection observer events remain active.
 A shared `NacelleRuntimeState` has one runtime-metric policy; configure servers
 sharing that state consistently before serving traffic.
 
@@ -171,9 +179,9 @@ Production applications should install their chosen
 recorder before constructing Nacelle runtime state, telemetry, or servers. If no
 recorder is installed, facade handles are no-ops.
 
-Request duration metrics remain opt-in through `NacelleTelemetryConfig`. With
-the default config, core/HTTP request paths avoid request timer work unless HTTP
-access logging is enabled.
+Request duration metrics remain opt-in through `NacelleTelemetryDiagnostics`.
+With the default config, core/HTTP request paths avoid request timer work unless
+HTTP access logging is enabled.
 
 Compile and activate TCP phase timing only for a diagnostic build:
 
@@ -183,8 +191,12 @@ nacelle = { version = "0.3.0", features = ["phase-timing"] }
 ```
 
 ```rust
-let telemetry = NacelleTelemetry::default()
-	.with_phase_duration_metrics(true);
+let telemetry = NacelleTelemetry::default().with_diagnostics(
+    NacelleTelemetryDiagnostics {
+        tcp_phase_duration: true,
+        ..NacelleTelemetryDiagnostics::default()
+    },
+);
 ```
 
 The `server.phase.duration_ms` histogram uses a low-cardinality `phase` label:
@@ -215,11 +227,11 @@ rather than embedded in the metric name:
 | Metric | Type | Notes |
 | --- | --- | --- |
 | `server.runtime.workers` | Gauge | Worker threads serving the process, reported once by the first listener to start. A value of `1` means throughput is capped to one core. Thread-per-core hosts report their declared process-wide worker count. |
-| `server.connection.active` | Gauge | Current active connections. Listener-labeled series provide transport-level detail; unlabeled series represent runtime permit usage. |
+| `server.connection.active` | Gauge | Current active connections. Listener-labeled series include `accounting="metered|exempt"`; unlabeled series represent metered runtime permit usage only. |
 | `server.request.active` | Gauge | Current active requests. Protocol-labeled series provide request-level detail; unlabeled series represent runtime permit usage. |
 | `server.streaming_task.active` | Gauge | Current runtime streaming body tasks. |
-| `server.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS where available. |
-| `server.connection.closed` | Counter | Closed connections, labeled with close reason where available. |
+| `server.connection.accepted` | Counter | Accepted connections, labeled by listener/transport/TLS and `accounting="metered|exempt"` where available. |
+| `server.connection.closed` | Counter | Closed connections, labeled with accounting and close reason where available. |
 | `server.connection.rejected` | Counter | Connections rejected before acceptance. |
 | `server.request.started` | Counter | Requests started. |
 | `server.request.completed` | Counter | Requests completed, labeled by status where available. |

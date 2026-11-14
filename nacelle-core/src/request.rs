@@ -15,6 +15,30 @@ use crate::telemetry::NacelleTransport;
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Whether one accepted connection participates in runtime connection accounting.
+///
+/// Exemption is intended for narrowly scoped internal traffic such as a dedicated
+/// health-check listener. It does not disable request, streaming, body, timeout,
+/// or application-admission limits.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NacelleConnectionAccounting {
+    /// Enforce connection limits and retain a connection permit while serving.
+    #[default]
+    Metered,
+    /// Bypass connection permits, peer limits, rate accounting, and management.
+    Exempt,
+}
+
+impl NacelleConnectionAccounting {
+    /// Stable, low-cardinality telemetry label.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Metered => "metered",
+            Self::Exempt => "exempt",
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NacelleConnectionTlsMeta {
@@ -69,6 +93,7 @@ impl NacelleConnectionTlsMeta {
 pub struct NacelleConnectionMeta {
     pub connection_id: u64,
     pub transport: NacelleTransport,
+    pub accounting: NacelleConnectionAccounting,
     pub listener: Arc<str>,
     pub peer_addr: Option<SocketAddr>,
     pub peer_ip: Option<IpAddr>,
@@ -82,6 +107,7 @@ impl fmt::Debug for NacelleConnectionMeta {
         f.debug_struct("NacelleConnectionMeta")
             .field("connection_id", &self.connection_id)
             .field("transport", &self.transport)
+            .field("accounting", &self.accounting)
             .field("listener", &self.listener)
             .field("peer_addr", &self.peer_addr)
             .field("peer_ip", &self.peer_ip)
@@ -97,6 +123,7 @@ impl NacelleConnectionMeta {
         Self {
             connection_id: next_connection_id(),
             transport: NacelleTransport::new("tcp"),
+            accounting: NacelleConnectionAccounting::Metered,
             listener: default_listener(),
             peer_ip: peer_addr.map(|addr| addr.ip()),
             peer_addr,
@@ -110,6 +137,7 @@ impl NacelleConnectionMeta {
         Self {
             connection_id: next_connection_id(),
             transport: NacelleTransport::new("unix_socket"),
+            accounting: NacelleConnectionAccounting::Metered,
             listener: default_listener(),
             peer_addr: None,
             peer_ip: None,
@@ -123,6 +151,7 @@ impl NacelleConnectionMeta {
         Self {
             connection_id: next_connection_id(),
             transport: NacelleTransport::new("http"),
+            accounting: NacelleConnectionAccounting::Metered,
             listener: default_listener(),
             peer_addr: None,
             peer_ip,
@@ -136,6 +165,7 @@ impl NacelleConnectionMeta {
         Self {
             connection_id: next_connection_id(),
             transport: NacelleTransport::new("http"),
+            accounting: NacelleConnectionAccounting::Metered,
             listener: default_listener(),
             peer_ip: peer_addr.map(|addr| addr.ip()),
             peer_addr,
@@ -152,6 +182,12 @@ impl NacelleConnectionMeta {
 
     pub fn with_listener(mut self, listener: impl Into<Arc<str>>) -> Self {
         self.listener = listener.into();
+        self
+    }
+
+    /// Select whether this connection consumes runtime connection capacity.
+    pub fn with_accounting(mut self, accounting: NacelleConnectionAccounting) -> Self {
+        self.accounting = accounting;
         self
     }
 

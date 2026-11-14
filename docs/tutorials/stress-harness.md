@@ -61,11 +61,10 @@ PowerShell example:
 ```
 
 The stress server installs a `metrics-util` recorder and prints a compact
-metrics snapshot every 5 seconds. It enables request
-started/completed counters plus request/response byte counters by default. The
-generic telemetry API groups those switches under `request_metrics`; the stress
-server exposes byte accounting as `byte_metrics = true`.
-Use `--no-byte-metrics` for a lower-overhead recorder run. Use
+metrics snapshot every 5 seconds. Its `[telemetry]` table defaults to
+`request_metrics = "counters-and-bytes"`; use `"counters"` to omit body-size
+histograms or `"off"` to suppress request counters and byte histograms. Use
+`--request-metrics counters` for a lower-overhead recorder run. Use
 `--no-default-features` with the plain TCP config for a Rustls-free,
 system-allocator baseline; metrics collection remains active.
 

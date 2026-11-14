@@ -608,6 +608,13 @@ impl NacelleConnectionRegistration {
         }
     }
 
+    pub(crate) const fn exempt() -> Self {
+        Self {
+            permit: None,
+            registered: None,
+        }
+    }
+
     pub fn activity(&self) -> Option<NacelleConnectionActivity> {
         self.registered.as_ref().map(|entry| entry.activity.clone())
     }

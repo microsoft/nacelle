@@ -246,12 +246,13 @@ the shards off the connection path. Snapshots have approximate window boundaries
 successive drains conserve totals unless their `u64` sum saturates.
 Library histogram names and types are unchanged. Other histograms,
 including opt-in phase diagnostics, retain the debugging recorder's sample
-storage. Request metrics are grouped under the generic telemetry
-`request_metrics` config; started/completed counters and byte counters are on by
-default, while in-flight and duration metrics remain opt-in. Request duration
-metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
-paths unless duration metrics or HTTP access logs are enabled. Use
-`--no-byte-metrics` when comparing the cost of byte accounting. Use the
+storage. Request metrics use the generic telemetry `request_metrics` mode; the
+default `counters-and-bytes` mode preserves lifecycle counters and byte
+histograms, while `counters` omits byte writes and `off` suppresses both.
+Diagnostics remain independent and opt-in, which avoids request `Instant` work
+on core/HTTP paths unless request duration metrics or HTTP access logs are
+enabled. Use `--request-metrics counters` when comparing the cost of byte
+accounting. Use the
 `telemetry_paths` benchmark for a no-recorder facade baseline; the stress server
 intentionally installs its console recorder in every feature set.
 

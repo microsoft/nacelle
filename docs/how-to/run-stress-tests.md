@@ -81,17 +81,16 @@ PowerShell example:
 ```
 
 The stress server installs a console recorder backed by `metrics-util` and prints
-a compact metrics snapshot every 5 seconds. It enables request
-started/completed counters plus request/response byte counters by default. The
-generic telemetry API groups those switches under `request_metrics`; the stress
-server exposes byte accounting as `byte_metrics = true`.
+a compact metrics snapshot every 5 seconds. Its `[telemetry]` table defaults to
+`request_metrics = "counters-and-bytes"`; use `"counters"` to omit body-size
+histograms or `"off"` to suppress request counters and byte histograms.
 Request/response body-size histogram samples are aggregated into constant-space
 byte totals across labels for this console; raw byte distributions are not
 retained. Cached handles collect into 64 cache-line-isolated shards, and the
 console drains them off the connection path. Window boundaries are approximate;
 totals are conserved across successive snapshots unless they saturate.
 This does not change the library's emitted metric names or types.
-Use `--no-byte-metrics` for a lower-overhead recorder run. Use
+Use `--request-metrics counters` for a lower-overhead recorder run. Use
 `--no-default-features` with the plain TCP config for a system-allocator,
 Rustls-free diagnostic; metrics collection remains active. Add
 `--features mimalloc-allocator` when the baseline must keep mimalloc while
@@ -194,7 +193,7 @@ only for a diagnostic run:
 ```bash
 cargo run --release -p nacelle-stress-server --features phase-timing -- \
   --config examples/nacelle-stress-server/configs/tcp.toml \
-  --phase-duration-metrics
+  --tcp-phase-duration-metrics
 ```
 
 The five-second metrics snapshot then prints count, mean, minimum, and maximum for

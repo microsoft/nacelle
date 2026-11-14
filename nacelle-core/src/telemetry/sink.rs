@@ -1,6 +1,8 @@
 //! Telemetry event model and statically dispatched observer contract. These types are independent
 //! of any metrics backend and describe the low-cardinality events Nacelle emits.
 
+use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,26 +120,103 @@ where
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// Bounded in-memory telemetry observer intended for tests and diagnostics.
+///
+/// Once its capacity is reached, recording a new event evicts the oldest event.
+#[derive(Debug, Clone)]
 pub struct NacelleInMemoryObserver {
-    events: Arc<Mutex<Vec<NacelleTelemetryEvent>>>,
+    state: Arc<Mutex<InMemoryState>>,
+}
+
+#[derive(Debug)]
+struct InMemoryState {
+    events: VecDeque<NacelleTelemetryEvent>,
+    capacity: NonZeroUsize,
+    dropped_events: u64,
+}
+
+impl Default for NacelleInMemoryObserver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NacelleInMemoryObserver {
+    /// Default number of retained events.
+    pub const DEFAULT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4_096).expect("nonzero");
+
+    /// Create an observer with [`Self::DEFAULT_CAPACITY`].
     pub fn new() -> Self {
-        Self::default()
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
+    /// Create an observer with an explicit maximum number of retained events.
+    pub fn with_capacity(capacity: NonZeroUsize) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(InMemoryState {
+                events: VecDeque::with_capacity(capacity.get()),
+                capacity,
+                dropped_events: 0,
+            })),
+        }
+    }
+
+    /// Return a bounded snapshot of retained events, oldest first.
     pub fn events(&self) -> Vec<NacelleTelemetryEvent> {
-        self.events.lock().expect("telemetry sink poisoned").clone()
+        self.state
+            .lock()
+            .expect("telemetry sink poisoned")
+            .events
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// Return the number of events evicted since this observer was created.
+    pub fn dropped_events(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("telemetry sink poisoned")
+            .dropped_events
     }
 }
 
 impl NacelleTelemetryObserver for NacelleInMemoryObserver {
     fn record(&self, event: NacelleTelemetryEvent) {
-        self.events
-            .lock()
-            .expect("telemetry sink poisoned")
-            .push(event);
+        let mut state = self.state.lock().expect("telemetry sink poisoned");
+        if state.events.len() == state.capacity.get() {
+            state.events.pop_front();
+            state.dropped_events = state.dropped_events.saturating_add(1);
+        }
+        state.events.push_back(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_memory_observer_evicts_oldest_events_at_capacity() {
+        let observer =
+            NacelleInMemoryObserver::with_capacity(NonZeroUsize::new(2).expect("nonzero"));
+        for count in 1..=3 {
+            observer.record(NacelleTelemetryEvent {
+                kind: NacelleTelemetryEventKind::RequestCompleted,
+                transport: None,
+                reason: None,
+                count,
+            });
+        }
+
+        assert_eq!(
+            observer
+                .events()
+                .iter()
+                .map(|event| event.count)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(observer.dropped_events(), 1);
     }
 }

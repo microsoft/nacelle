@@ -129,6 +129,10 @@ cargo run -p nacelle-examples --features tls-self-signed --bin tls_echo -- 127.0
 
 # TCP and HTTP listeners sharing app state and one host
 cargo run -p nacelle-examples --features http --bin dual_echo -- 127.0.0.1:8080 127.0.0.1:8081
+
+# typed admission + tracked runtime control
+cargo run -p nacelle-examples --bin tcp_connection_control -- 127.0.0.1:8080
+cargo run -p nacelle-examples --no-default-features --features http --bin http_connection_control -- 127.0.0.1:8080
 ```
 
 The HTTPS echo example logs a certificate-generation status message, not the
@@ -233,7 +237,9 @@ runtime opt-ins because they add timers to request and transport paths.
 Applications can disable all Nacelle metric emission locally with
 `NacelleTelemetry::default().with_metrics(false)` without replacing the process
 recorder or disabling telemetry observers. Connection, request, runtime, error,
-and phase-duration domains also have independent configuration switches.
+and diagnostic costs remain independently configurable. `NacelleRequestMetrics`
+selects `Off`, `Counters`, or `CountersAndBytes`; `NacelleTelemetryDiagnostics`
+opts into request duration, labelled request in-flight, and TCP phase timing.
 
 OpenSSL builds need native OpenSSL development files unless you enable
 `openssl-vendored`. Vendored OpenSSL also needs Perl on Windows.

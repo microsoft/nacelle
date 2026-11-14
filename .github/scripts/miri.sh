@@ -12,15 +12,20 @@ export MIRIFLAGS="-Zmiri-strict-provenance"
 # in the ordinary test matrix; keep this job focused on memory-safe tests.
 # The telemetry histogram tests enter crossbeam-epoch through metrics-util's
 # dev-only recorder, whose integer pointer casts strict-provenance Miri rejects.
+# Keep their histogram assertions enabled in the ordinary test matrix.
 cargo +"${toolchain}" miri test -p nacelle-core --lib -- \
 	--test-threads=1 \
 	--skip telemetry::tests::metric_schema_uses_singular_names_and_base_units \
-	--skip telemetry::tests::request_completion_can_defer_response_body_metrics
+	--skip telemetry::tests::request_completion_can_defer_response_body_metrics \
+	--skip telemetry::tests::metric_domains_and_diagnostics_emit_only_selected_series \
+	--skip telemetry::tests::tcp_phase_diagnostics_emit_without_other_metric_domains
 cargo +"${toolchain}" miri test -p nacelle --lib app::tests::app_starts_without_listeners -- --test-threads=1
 
 # run with wrapping integer overflow instead of panic
 cargo +"${toolchain}" miri test --release -p nacelle-core --lib -- \
 	--test-threads=1 \
 	--skip telemetry::tests::metric_schema_uses_singular_names_and_base_units \
-	--skip telemetry::tests::request_completion_can_defer_response_body_metrics
+	--skip telemetry::tests::request_completion_can_defer_response_body_metrics \
+	--skip telemetry::tests::metric_domains_and_diagnostics_emit_only_selected_series \
+	--skip telemetry::tests::tcp_phase_diagnostics_emit_without_other_metric_domains
 cargo +"${toolchain}" miri test --release -p nacelle --lib app::tests::app_starts_without_listeners -- --test-threads=1

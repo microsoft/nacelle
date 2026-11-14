@@ -7,10 +7,11 @@ use std::time::Duration;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct NacelleTcpLimits {
-    /// Deadline to decode a message once input is available, and for each
-    /// subsequent request-body read. Defaults to 30 seconds.
+    /// Deadline to decode a message once input is available, and an absolute
+    /// deadline for reading its complete request body. Defaults to 30 seconds.
     ///
-    /// Additional message bytes do not restart the decoding deadline.
+    /// Additional message or body bytes do not restart either deadline.
+    /// The body deadline includes waiting for streaming channel capacity.
     /// Does not limit the idle wait for the first byte of the next message.
     pub read_timeout: Option<Duration>,
     pub write_timeout: Option<Duration>,
@@ -35,7 +36,7 @@ impl Default for NacelleTcpLimits {
 }
 
 impl NacelleTcpLimits {
-    /// Set the active message and per-body-read deadline independently of idle waiting.
+    /// Set the active message and whole-body read deadline independently of idle waiting.
     pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
         self.read_timeout = Some(timeout);
         self

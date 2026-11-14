@@ -584,21 +584,6 @@ where
     let mut response_wire_bytes = 0_usize;
     let mut delivered_wire_bytes = 0_usize;
     loop {
-        match delivery
-            .flush(
-                writer,
-                tcp_limits,
-                telemetry,
-                metrics_context,
-                phase_duration_metrics,
-            )
-            .await
-        {
-            Ok(written) => delivered_wire_bytes = delivered_wire_bytes.saturating_add(written),
-            Err(error) => {
-                return Err(error.with_previous(response_wire_bytes, delivered_wire_bytes));
-            }
-        }
         let Some(chunk) = body.next_chunk().await else {
             break;
         };
@@ -642,6 +627,22 @@ where
             .map_err(|error| error.with_previous(response_wire_bytes, delivered_wire_bytes))?;
         response_wire_bytes = response_wire_bytes.saturating_add(frame_delivery.encoded_bytes);
         delivered_wire_bytes = delivered_wire_bytes.saturating_add(frame_delivery.delivered_bytes);
+        // Frame staging may empty our queue while the writer still buffers bytes.
+        match delivery
+            .flush(
+                writer,
+                tcp_limits,
+                telemetry,
+                metrics_context,
+                phase_duration_metrics,
+            )
+            .await
+        {
+            Ok(written) => delivered_wire_bytes = delivered_wire_bytes.saturating_add(written),
+            Err(error) => {
+                return Err(error.with_cumulative_final_flush(response_wire_bytes));
+            }
+        }
     }
 
     let frame_delivery = delivery

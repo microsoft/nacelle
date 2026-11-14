@@ -426,8 +426,9 @@ information, and frame pointers. Its default `--feature-set minimal` uses
 `--no-default-features`, which disables TLS and the server's mimalloc feature.
 The stress client still uses mimalloc. The stress server's console recorder
 remains active, but the helper keeps body-size recording off by default for
-comparability with earlier profiles. Pass `--byte-metrics` to include the
-server's default byte accounting. Its current console recorder stores bounded
+comparability with earlier profiles. Pass
+`--request-metrics counters-and-bytes` to include the server's default byte
+accounting. Its current console recorder stores bounded
 sharded byte totals, not raw byte-size samples; compare the same recorder revision,
 shard policy, and switches when attributing overhead. Shard selection occurs
 when cached handles register; aggregation occurs during console snapshots.
@@ -685,12 +686,12 @@ Suggested RPS comparison:
 ```
 
 The stress server installs a console recorder backed by `metrics-util` and prints
-a compact metrics snapshot every 5 seconds. Request metrics are grouped under the generic telemetry
-`request_metrics` config; started/completed counters and byte counters are on by
-default, while in-flight and duration metrics remain opt-in. Request duration
-metrics are opt-in as well, which avoids request `Instant` work on core/HTTP
-paths unless duration metrics or HTTP access logs are enabled. Use
-`--no-byte-metrics` when comparing the cost of byte accounting. Use the
+a compact metrics snapshot every 5 seconds. Request metrics use the generic
+telemetry `request_metrics` mode; `counters-and-bytes` is the default,
+`counters` omits body-size writes, and `off` suppresses both request counters and
+byte histograms. Diagnostics remain opt-in, which avoids request `Instant` work
+on core/HTTP paths unless duration metrics or HTTP access logs are enabled. Use
+`--request-metrics counters` when comparing the cost of byte accounting. Use the
 `telemetry_paths` Criterion target for a no-recorder facade baseline; every
 stress-server feature set installs the console recorder.
 
