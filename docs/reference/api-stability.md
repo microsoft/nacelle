@@ -12,7 +12,8 @@ Stable enough for prototype integrations:
 - `nacelle::core::{NacelleLimits, NacelleRuntimeState}`
 - `nacelle::NacelleApp` listener registration and `NacelleApp::run(...)`
 - `nacelle::prelude::*` for common application imports
-- `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig}`
+- `nacelle::core::{NacelleTelemetry, NacelleTelemetryConfig,
+  NacelleRequestMetrics, NacelleTelemetryDiagnostics}`
 - `nacelle::core::NacelleTelemetryObserver` for statically dispatched application telemetry
 - the `phase-timing` feature and its documented low-cardinality phase schema
 - the `error-hints` feature and `NacelleError::hint()` method
@@ -22,6 +23,38 @@ Experimental:
 - Linux thread-per-core execution behind `experimental-thread-per-core`
 - plaintext/OpenSSL detection behind `experimental-openssl-detection`
 - stress tooling config
+
+## TCP body-timeout migration
+
+The `0.4` development line changes TCP request-body timeouts from a fresh
+`NacelleTcpLimits::read_timeout` for each read to one absolute deadline for the
+remaining body. Buffered and streaming bodies share this policy; streaming
+channel waits count toward the deadline. The default remains 30 seconds.
+Regular progress no longer extends body processing: a body taking more than
+30 seconds can now fail with `NacelleTimeoutReason::RequestBodyRead` even if
+every individual read takes less than 30 seconds.
+
+Set `with_read_timeout(...)` to a budget that covers the complete body and
+streaming backpressure for the expected workload. Use `without_read_timeout()`
+only when an unbounded active-read policy is intentional. The body deadline
+is independent of the handler and idle deadlines; disabling handler timeouts
+does not disable body expiry.
+
+## Telemetry configuration migration
+
+The `0.4` development line replaces `NacelleRequestMetricsConfig` and its five
+per-series booleans with `NacelleRequestMetrics::{Off, Counters,
+CountersAndBytes}`. Request duration, labelled request in-flight, and TCP phase
+timing move to `NacelleTelemetryDiagnostics`. Use `with_request_metrics(...)`
+and `with_diagnostics(...)`; the superseded per-switch builder methods are
+removed rather than retained as aliases.
+
+The stress server likewise replaces top-level `byte_metrics` and
+`phase_duration_metrics` with a strict `[telemetry]` table. Its CLI uses
+`--request-metrics`, `--request-duration-metrics`,
+`--request-in-flight-metrics`, and `--tcp-phase-duration-metrics`. Removed TOML
+keys and CLI flags fail as unknown configuration instead of silently falling
+back.
 
 Features prefixed with `experimental-` are default-off and use at your own
 risk. They are not part of the supported `0.3` contract and may change or be

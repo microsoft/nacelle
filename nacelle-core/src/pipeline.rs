@@ -14,7 +14,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
+use crate::request::{
+    NacelleConnectionAccounting, NacelleConnectionMeta, NacelleConnectionTlsMeta,
+};
 use crate::telemetry::NacelleTransport;
 
 /// Immutable transport metadata for one accepted connection.
@@ -25,6 +27,8 @@ pub struct ConnectionInfo {
     pub connection_id: u64,
     /// Transport that accepted the connection.
     pub transport: NacelleTransport,
+    /// Whether this connection consumes runtime connection capacity.
+    pub accounting: NacelleConnectionAccounting,
     /// Configured listener label.
     pub listener: Arc<str>,
     /// Remote socket address when available.
@@ -44,6 +48,7 @@ impl From<&NacelleConnectionMeta> for ConnectionInfo {
         Self {
             connection_id: metadata.connection_id,
             transport: metadata.transport,
+            accounting: metadata.accounting,
             listener: metadata.listener.clone(),
             peer_addr: metadata.peer_addr,
             peer_ip: metadata.peer_ip,
@@ -771,6 +776,7 @@ mod tests {
             ConnectionInfo {
                 connection_id: metadata.connection_id,
                 transport: metadata.transport,
+                accounting: metadata.accounting,
                 listener: metadata.listener.clone(),
                 peer_addr: metadata.peer_addr,
                 peer_ip: metadata.peer_ip,

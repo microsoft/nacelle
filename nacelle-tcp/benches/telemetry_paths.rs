@@ -3,7 +3,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use nacelle_codec::MessageDecoder;
 use nacelle_core::error::NacelleError;
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn};
-use nacelle_core::telemetry::{NacelleTelemetry, NoopObserver};
+use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryDiagnostics, NoopObserver};
 use nacelle_tcp::{
     DecodedRequest, FrameBuffer, Protocol, TcpRequestContext, TcpResponse, TcpServer,
 };
@@ -133,14 +133,25 @@ fn telemetry_paths(c: &mut Criterion) {
     });
     group.bench_function("request_timing_enabled", |b| {
         b.to_async(&runtime).iter(|| async {
-            serve_one_request(NacelleTelemetry::default().with_request_duration_metrics(true))
-                .await;
+            serve_one_request(NacelleTelemetry::default().with_diagnostics(
+                NacelleTelemetryDiagnostics {
+                    request_duration: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                },
+            ))
+            .await;
         });
     });
     #[cfg(feature = "phase-timing")]
     group.bench_function("phase_timing_enabled", |b| {
         b.to_async(&runtime).iter(|| async {
-            serve_one_request(NacelleTelemetry::default().with_phase_duration_metrics(true)).await;
+            serve_one_request(NacelleTelemetry::default().with_diagnostics(
+                NacelleTelemetryDiagnostics {
+                    tcp_phase_duration: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                },
+            ))
+            .await;
         });
     });
     group.finish();

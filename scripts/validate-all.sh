@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+python3 .github/scripts/test-architecture.py
+python3 .github/scripts/check-architecture.py
+python3 .github/scripts/test-public-api.py
 cargo fmt --all -- --check
 cargo test --workspace --exclude nacelle-openssl --all-targets
 cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings

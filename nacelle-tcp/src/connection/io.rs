@@ -66,7 +66,36 @@ where
     result.map_err(MessageReadFailure::from_message_read)
 }
 
-pub(super) async fn read_buf_with_timeout<R, B>(
+pub(super) fn request_body_read_deadline(
+    tcp_limits: &NacelleTcpLimits,
+) -> Option<tokio::time::Instant> {
+    tcp_limits
+        .read_timeout
+        .map(|timeout| tokio::time::Instant::now() + timeout)
+}
+
+pub(super) async fn read_buf_before_deadline<R, B>(
+    reader: &mut R,
+    buf: &mut B,
+    deadline: Option<tokio::time::Instant>,
+) -> Result<usize, NacelleError>
+where
+    R: AsyncRead + Unpin,
+    B: BufMut + Unpin,
+{
+    let future = reader.read_buf(buf);
+    if let Some(deadline) = deadline {
+        tokio::time::timeout_at(deadline, future)
+            .await
+            .map_err(|_| NacelleError::Timeout(REQUEST_BODY_READ_TIMEOUT))?
+            .map_err(NacelleError::from)
+    } else {
+        future.await.map_err(NacelleError::from)
+    }
+}
+
+#[cfg(test)]
+async fn read_buf_with_timeout<R, B>(
     reader: &mut R,
     buf: &mut B,
     tcp_limits: &NacelleTcpLimits,
@@ -75,15 +104,7 @@ where
     R: AsyncRead + Unpin,
     B: BufMut + Unpin,
 {
-    let future = reader.read_buf(buf);
-    if let Some(timeout) = tcp_limits.read_timeout {
-        nacelle_core::runtime::timeout(timeout, future)
-            .await
-            .map_err(|_| NacelleError::Timeout(REQUEST_BODY_READ_TIMEOUT))?
-            .map_err(NacelleError::from)
-    } else {
-        future.await.map_err(NacelleError::from)
-    }
+    read_buf_before_deadline(reader, buf, request_body_read_deadline(tcp_limits)).await
 }
 
 pub(super) async fn write_all_tracked_with_timeout<W>(
@@ -633,6 +654,41 @@ mod tests {
         assert_eq!(result.expect("unbounded body read"), 4);
         assert_eq!(&buffer[..], b"body");
         assert_eq!(started.elapsed(), Duration::from_secs(60));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn body_progress_does_not_restart_the_absolute_deadline() {
+        let (mut client, mut stream) = tokio::io::duplex(64);
+        let mut buffer = BytesMut::with_capacity(64);
+        let limits = NacelleTcpLimits::default().with_read_timeout(Duration::from_secs(30));
+        let deadline = request_body_read_deadline(&limits);
+        let started = tokio::time::Instant::now();
+
+        let read = async {
+            assert_eq!(
+                read_buf_before_deadline(&mut stream, &mut buffer, deadline)
+                    .await
+                    .expect("first body byte"),
+                1
+            );
+            let result = read_buf_before_deadline(&mut stream, &mut buffer, deadline).await;
+            (result, started.elapsed())
+        };
+        let send = async {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            client.write_all(b"a").await.expect("first body byte");
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            client.write_all(b"b").await.expect("late body byte");
+        };
+        let ((result, read_elapsed), ()) = tokio::join!(read, send);
+
+        assert!(matches!(
+            result,
+            Err(NacelleError::Timeout(NacelleTimeoutReason::RequestBodyRead))
+        ));
+        assert_eq!(read_elapsed, Duration::from_secs(30));
+        assert_eq!(started.elapsed(), Duration::from_secs(40));
+        assert_eq!(&buffer[..], b"a");
     }
 
     struct PartialThenPending {

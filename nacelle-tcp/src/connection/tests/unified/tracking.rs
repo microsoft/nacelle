@@ -692,6 +692,121 @@ async fn idle_timeout_error_delivery_is_active_until_cancelled() {
 }
 
 #[test]
+fn connection_close_accounting_is_independent_of_tracking_and_exemption() {
+    use metrics_util::debugging::DebugValue;
+
+    for tracking in [true, false] {
+        for exempt in [true, false] {
+            for completion in ["eof", "drop", "abort"] {
+                let runtime = if tracking {
+                    tracked_runtime(1)
+                } else {
+                    NacelleRuntimeState::default()
+                };
+                let observer = NacelleInMemoryObserver::new();
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                metrics::with_local_recorder(&recorder, || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                        .block_on(async {
+                            let server = TcpServer::<CustomProtocol>::builder()
+                                .protocol(CustomProtocol::default())
+                                .runtime_state(runtime.clone())
+                                .unwrap()
+                                .handler(handler_fn(
+                                    |context: TcpRequestContext<CustomProtocol>| async move {
+                                        Ok(context.complete())
+                                    },
+                                ))
+                                .build()
+                                .unwrap()
+                                .with_telemetry(
+                                    NacelleTelemetry::default().with_observer(observer.clone()),
+                                );
+                            let mut connection = NacelleConnectionMeta::tcp(None, None);
+                            if exempt {
+                                connection = connection.with_accounting(
+                                    nacelle_core::NacelleConnectionAccounting::Exempt,
+                                );
+                            }
+                            let (mut client, stream) = tokio::io::duplex(128);
+                            let mut serving = Box::pin(async move {
+                                server
+                                    .serve_io_with_connection_meta(stream, connection)
+                                    .await
+                            });
+                            pending(serving.as_mut()).await;
+                            assert_eq!(runtime.active_connections(), usize::from(!exempt));
+                            let opened = observer.events();
+                            assert_eq!(
+                                opened
+                                    .iter()
+                                    .filter(|event| event.kind
+                                        == NacelleTelemetryEventKind::ConnectionOpened)
+                                    .count(),
+                                1,
+                            );
+                            match completion {
+                                "eof" => {
+                                    client.shutdown().await.unwrap();
+                                    serving.await.unwrap();
+                                }
+                                "drop" => drop(serving),
+                                "abort" => {
+                                    let task = tokio::spawn(serving);
+                                    task.abort();
+                                    assert!(task.await.unwrap_err().is_cancelled());
+                                }
+                                _ => unreachable!(),
+                            }
+                        });
+                });
+                assert_released(&runtime);
+                let events = observer.events();
+                let closes: Vec<_> = events
+                    .iter()
+                    .filter(|event| event.kind == NacelleTelemetryEventKind::ConnectionClosed)
+                    .collect();
+                assert_eq!(
+                    closes.len(),
+                    1,
+                    "tracking={tracking} exempt={exempt} completion={completion}",
+                );
+                assert_eq!(
+                    closes[0].reason,
+                    Some(if completion == "eof" {
+                        "eof"
+                    } else {
+                        "cancelled"
+                    }),
+                );
+                let snapshot = snapshotter.snapshot().into_vec();
+                for name in ["server.connection.accepted", "server.connection.closed"] {
+                    let values: Vec<_> = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .map(|(_, _, _, value)| value)
+                        .collect();
+                    assert_eq!(values, vec![&DebugValue::Counter(1)]);
+                }
+                let labelled_active: Vec<_> = snapshot
+                    .iter()
+                    .filter(|(key, _, _, _)| {
+                        key.key().name() == "server.connection.active"
+                            && key.key().labels().any(|label| label.key() == "accounting")
+                    })
+                    .map(|(_, _, _, value)| value)
+                    .collect();
+                assert_eq!(labelled_active, vec![&DebugValue::Gauge(0.0.into())]);
+            }
+        }
+    }
+}
+
+#[test]
 fn administrative_close_metrics_have_one_owner_and_respect_switches() {
     use metrics_util::debugging::DebugValue;
     for (metrics, connections) in [(false, true), (true, false), (true, true)] {

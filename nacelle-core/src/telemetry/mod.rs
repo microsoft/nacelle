@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::request::NacelleConnectionAccounting;
+
 mod sink;
 pub use sink::{
     CompositeObserver, NacelleInMemoryObserver, NacelleTelemetryEvent, NacelleTelemetryEventKind,
@@ -39,14 +41,14 @@ pub struct NacelleTelemetryConfig {
     pub metrics: bool,
     /// Connection lifecycle counters and gauges.
     pub connection_metrics: bool,
-    /// Request counters, gauges, byte counts, and duration histograms.
-    pub request_metrics: NacelleRequestMetricsConfig,
+    /// Request counters and optional byte histograms.
+    pub request_metrics: NacelleRequestMetrics,
     /// Runtime permit, shutdown, and abort metrics.
     pub runtime_metrics: bool,
     /// Rejection, timeout, request-failure, and operation-error counters.
     pub error_metrics: bool,
-    /// TCP phase histograms when the `phase-timing` feature is also enabled.
-    pub phase_duration_metrics: bool,
+    /// Explicit opt-ins for diagnostics that add hot-path work.
+    pub diagnostics: NacelleTelemetryDiagnostics,
 }
 
 impl Default for NacelleTelemetryConfig {
@@ -54,40 +56,48 @@ impl Default for NacelleTelemetryConfig {
         Self {
             metrics: true,
             connection_metrics: true,
-            request_metrics: NacelleRequestMetricsConfig::default(),
+            request_metrics: NacelleRequestMetrics::default(),
             runtime_metrics: true,
             error_metrics: true,
-            phase_duration_metrics: false,
+            diagnostics: NacelleTelemetryDiagnostics::default(),
         }
     }
 }
 
-/// Independent request metric switches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NacelleRequestMetricsConfig {
-    pub started: bool,
-    pub completed: bool,
-    pub in_flight: bool,
-    pub duration_ms: bool,
-    pub byte_counts: bool,
+/// Metric detail emitted for successfully admitted requests.
+///
+/// Error metrics remain independently controlled by
+/// [`NacelleTelemetryConfig::error_metrics`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NacelleRequestMetrics {
+    /// Suppress request counters and byte histograms.
+    Off,
+    /// Emit request started and completed counters.
+    Counters,
+    /// Emit request counters plus request and response body byte histograms.
+    #[default]
+    CountersAndBytes,
 }
 
-impl Default for NacelleRequestMetricsConfig {
-    fn default() -> Self {
-        Self {
-            started: true,
-            completed: true,
-            in_flight: false,
-            duration_ms: false,
-            byte_counts: true,
-        }
+impl NacelleRequestMetrics {
+    const fn counters_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    const fn bytes_enabled(self) -> bool {
+        matches!(self, Self::CountersAndBytes)
     }
 }
 
-impl NacelleRequestMetricsConfig {
-    fn enabled(self) -> bool {
-        self.started || self.completed || self.in_flight || self.duration_ms || self.byte_counts
-    }
+/// Opt-in diagnostics that add timers, gauges, or extra metric writes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct NacelleTelemetryDiagnostics {
+    /// Emit request duration histograms in seconds.
+    pub request_duration: bool,
+    /// Emit the labelled per-request in-flight gauge.
+    pub request_in_flight: bool,
+    /// Emit TCP phase duration histograms when the `phase-timing` feature is enabled.
+    pub tcp_phase_duration: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +106,7 @@ pub struct NacelleMetricsContext {
     pub listener: Arc<str>,
     pub protocol: &'static str,
     pub tls: &'static str,
+    pub accounting: NacelleConnectionAccounting,
     connection_attributes: Arc<[metrics::Label]>,
     request_attributes: Arc<[metrics::Label]>,
     connection_accepted: OnceLock<metrics::Counter>,
@@ -121,10 +132,27 @@ impl NacelleMetricsContext {
         protocol: &'static str,
         tls: &'static str,
     ) -> Self {
+        Self::new_with_accounting(
+            transport,
+            listener,
+            protocol,
+            tls,
+            NacelleConnectionAccounting::Metered,
+        )
+    }
+
+    pub fn new_with_accounting(
+        transport: NacelleTransport,
+        listener: Arc<str>,
+        protocol: &'static str,
+        tls: &'static str,
+        accounting: NacelleConnectionAccounting,
+    ) -> Self {
         let connection_attributes: Arc<[metrics::Label]> = Arc::from([
             metrics::Label::new("listener", listener.to_string()),
             metrics::Label::from_static_parts("transport", transport.as_str()),
             metrics::Label::from_static_parts("tls", tls),
+            metrics::Label::from_static_parts("accounting", accounting.as_str()),
         ]);
         let request_attributes: Arc<[metrics::Label]> = attributes_with_label(
             connection_attributes.as_ref(),
@@ -136,6 +164,7 @@ impl NacelleMetricsContext {
             listener,
             protocol,
             tls,
+            accounting,
             connection_accepted: OnceLock::new(),
             connection_active: OnceLock::new(),
             request_started: OnceLock::new(),
@@ -332,8 +361,15 @@ where
         }
     }
 
-    pub fn with_request_metrics(mut self, request_metrics: NacelleRequestMetricsConfig) -> Self {
+    /// Select request counter and byte-histogram emission.
+    pub fn with_request_metrics(mut self, request_metrics: NacelleRequestMetrics) -> Self {
         self.config.request_metrics = request_metrics;
+        self
+    }
+
+    /// Configure opt-in request and TCP diagnostics.
+    pub fn with_diagnostics(mut self, diagnostics: NacelleTelemetryDiagnostics) -> Self {
+        self.config.diagnostics = diagnostics;
         self
     }
 
@@ -358,36 +394,6 @@ where
     /// Enable or disable rejection, timeout, failure, and operation-error metrics.
     pub fn with_error_metrics(mut self, enabled: bool) -> Self {
         self.config.error_metrics = enabled;
-        self
-    }
-
-    pub fn with_request_started_metrics(mut self, enabled: bool) -> Self {
-        self.config.request_metrics.started = enabled;
-        self
-    }
-
-    pub fn with_request_completed_metrics(mut self, enabled: bool) -> Self {
-        self.config.request_metrics.completed = enabled;
-        self
-    }
-
-    pub fn with_request_in_flight_metrics(mut self, enabled: bool) -> Self {
-        self.config.request_metrics.in_flight = enabled;
-        self
-    }
-
-    pub fn with_request_duration_metrics(mut self, enabled: bool) -> Self {
-        self.config.request_metrics.duration_ms = enabled;
-        self
-    }
-
-    pub fn with_byte_count_metrics(mut self, enabled: bool) -> Self {
-        self.config.request_metrics.byte_counts = enabled;
-        self
-    }
-
-    pub fn with_phase_duration_metrics(mut self, enabled: bool) -> Self {
-        self.config.phase_duration_metrics = enabled;
         self
     }
 
@@ -419,15 +425,29 @@ where
     }
 
     pub fn request_metrics_enabled(&self) -> bool {
-        self.config.metrics && self.config.request_metrics.enabled()
+        self.config.metrics
+            && (self.config.request_metrics.counters_enabled()
+                || self.config.request_metrics.bytes_enabled()
+                || self.config.diagnostics.request_in_flight
+                || self.config.diagnostics.request_duration)
     }
 
-    pub fn request_duration_metrics_enabled(&self) -> bool {
-        self.config.metrics && self.config.request_metrics.duration_ms
+    pub const fn request_byte_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.request_metrics.bytes_enabled()
     }
 
-    pub fn phase_duration_metrics_enabled(&self) -> bool {
-        self.config.metrics && cfg!(feature = "phase-timing") && self.config.phase_duration_metrics
+    pub const fn request_duration_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.diagnostics.request_duration
+    }
+
+    pub const fn request_in_flight_metrics_enabled(&self) -> bool {
+        self.config.metrics && self.config.diagnostics.request_in_flight
+    }
+
+    pub const fn phase_duration_metrics_enabled(&self) -> bool {
+        self.config.metrics
+            && cfg!(feature = "phase-timing")
+            && self.config.diagnostics.tcp_phase_duration
     }
 
     pub const fn request_events_enabled(&self) -> bool {
@@ -588,10 +608,10 @@ where
         if !self.config.metrics {
             return;
         }
-        if self.config.request_metrics.started {
+        if self.config.request_metrics.counters_enabled() {
             context.request_started().increment(1);
         }
-        if self.config.request_metrics.in_flight {
+        if self.config.diagnostics.request_in_flight {
             context.request_in_flight().increment(1.0);
         }
     }
@@ -608,21 +628,19 @@ where
             return;
         }
         let request_metrics = self.config.request_metrics;
-        if request_metrics.completed {
+        if request_metrics.counters_enabled() {
             context.request_completed(status).increment(1);
         }
-        if request_metrics.duration_ms {
+        if self.config.diagnostics.request_duration {
             context
                 .request_duration(status)
                 .record(elapsed.as_secs_f64());
         }
-        if request_metrics.byte_counts {
+        if request_metrics.bytes_enabled() {
             context.request_bytes(status).record(request_bytes as f64);
-        }
-        if request_metrics.byte_counts {
             context.response_bytes(status).record(response_bytes as f64);
         }
-        if request_metrics.in_flight {
+        if self.config.diagnostics.request_in_flight {
             context.request_in_flight().decrement(1.0);
         }
     }
@@ -694,7 +712,7 @@ where
         });
         let request_metrics = self.config.request_metrics;
         let emit_metrics = emit_metrics && self.config.metrics;
-        if emit_metrics && request_metrics.completed {
+        if emit_metrics && request_metrics.counters_enabled() {
             metrics::counter!(
                 "server.request.completed",
                 "transport" => transport.as_str(),
@@ -702,7 +720,7 @@ where
             )
             .increment(1);
         }
-        if emit_metrics && request_metrics.duration_ms {
+        if emit_metrics && self.config.diagnostics.request_duration {
             metrics::histogram!(
                 "server.request.duration",
                 "transport" => transport.as_str(),
@@ -710,7 +728,7 @@ where
             )
             .record(elapsed.as_secs_f64());
         }
-        if emit_metrics && request_metrics.byte_counts {
+        if emit_metrics && request_metrics.bytes_enabled() {
             metrics::histogram!(
                 "server.request.body.size",
                 "transport" => transport.as_str(),
@@ -790,7 +808,7 @@ where
                 .increment(1);
             }
         }
-        if emit_request_metrics && self.config.metrics && self.config.request_metrics.duration_ms {
+        if emit_request_metrics && self.config.metrics && self.config.diagnostics.request_duration {
             metrics::histogram!(
                 "server.request.duration",
                 "transport" => transport.as_str(),
@@ -914,7 +932,7 @@ where
             reason: None,
             count: bytes as u64,
         });
-        if self.config.metrics && self.config.request_metrics.byte_counts {
+        if self.request_byte_metrics_enabled() {
             metrics::histogram!(
                 "server.response.body.size",
                 "transport" => transport.as_str()
@@ -923,8 +941,24 @@ where
         }
     }
 
+    /// Install this telemetry instance's runtime-metric policy on shared state.
+    ///
+    /// Builder-time registrations may replace an earlier policy. The policy is
+    /// sealed on first runtime use; later conflicting registrations leave it
+    /// intact.
+    /// Use [`Self::try_register_runtime_state`] when the caller needs to detect
+    /// a conflict.
     pub fn register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) {
-        state.set_metrics_enabled(self.runtime_metrics_enabled());
+        let _ = self.try_register_runtime_state(state);
+    }
+
+    /// Try to install this telemetry instance's runtime-metric policy.
+    ///
+    /// Before first runtime use, this installs or updates the policy and returns
+    /// `true`. Afterwards, repeating the sealed policy is idempotent and returns
+    /// `true`, while a conflicting policy is rejected and returns `false`.
+    pub fn try_register_runtime_state(&self, state: crate::limits::NacelleRuntimeState) -> bool {
+        state.install_metrics_enabled(self.runtime_metrics_enabled())
     }
 
     fn record(&self, event: NacelleTelemetryEvent) {
@@ -1045,32 +1079,34 @@ mod tests {
     fn request_duration_metrics_are_opt_in() {
         let telemetry = NacelleTelemetry::default();
 
-        assert!(telemetry.config().request_metrics.started);
-        assert!(telemetry.config().request_metrics.completed);
-        assert!(!telemetry.config().request_metrics.in_flight);
-        assert!(!telemetry.config().request_metrics.duration_ms);
-        assert!(telemetry.config().request_metrics.byte_counts);
+        assert_eq!(
+            telemetry.config().request_metrics,
+            NacelleRequestMetrics::CountersAndBytes
+        );
+        assert_eq!(
+            telemetry.config().diagnostics,
+            NacelleTelemetryDiagnostics::default()
+        );
         assert!(telemetry.config().metrics);
         assert!(telemetry.config().connection_metrics);
         assert!(telemetry.config().runtime_metrics);
         assert!(telemetry.config().error_metrics);
-        assert!(!telemetry.config().phase_duration_metrics);
         assert!(!telemetry.request_duration_metrics_enabled());
 
         let telemetry = telemetry
-            .with_request_started_metrics(false)
-            .with_request_completed_metrics(false)
-            .with_request_duration_metrics(true)
-            .with_byte_count_metrics(false)
-            .with_request_in_flight_metrics(true)
-            .with_phase_duration_metrics(true);
+            .with_request_metrics(NacelleRequestMetrics::Counters)
+            .with_diagnostics(NacelleTelemetryDiagnostics {
+                request_duration: true,
+                request_in_flight: true,
+                tcp_phase_duration: true,
+            });
 
-        assert!(!telemetry.config().request_metrics.started);
-        assert!(!telemetry.config().request_metrics.completed);
-        assert!(telemetry.config().request_metrics.in_flight);
-        assert!(telemetry.config().request_metrics.duration_ms);
-        assert!(!telemetry.config().request_metrics.byte_counts);
-        assert!(telemetry.config().phase_duration_metrics);
+        assert_eq!(
+            telemetry.config().request_metrics,
+            NacelleRequestMetrics::Counters
+        );
+        assert!(!telemetry.request_byte_metrics_enabled());
+        assert!(telemetry.request_in_flight_metrics_enabled());
         assert!(telemetry.request_duration_metrics_enabled());
         assert_eq!(
             telemetry.phase_duration_metrics_enabled(),
@@ -1080,10 +1116,13 @@ mod tests {
 
     #[test]
     fn request_duration_metrics_require_runtime_activation() {
-        let duration_disabled = NacelleTelemetry::default().with_request_duration_metrics(false);
+        let duration_disabled = NacelleTelemetry::default();
         assert!(!duration_disabled.request_duration_metrics_enabled());
 
-        let enabled = NacelleTelemetry::default().with_request_duration_metrics(true);
+        let enabled = NacelleTelemetry::default().with_diagnostics(NacelleTelemetryDiagnostics {
+            request_duration: true,
+            ..NacelleTelemetryDiagnostics::default()
+        });
         assert!(enabled.request_duration_metrics_enabled());
     }
 
@@ -1093,7 +1132,11 @@ mod tests {
         let snapshotter = recorder.snapshotter();
 
         metrics::with_local_recorder(&recorder, || {
-            let telemetry = NacelleTelemetry::default().with_request_duration_metrics(true);
+            let telemetry =
+                NacelleTelemetry::default().with_diagnostics(NacelleTelemetryDiagnostics {
+                    request_duration: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                });
             let context = NacelleMetricsContext::new(
                 NacelleTransport::new("tcp"),
                 Arc::from("test"),
@@ -1188,12 +1231,49 @@ mod tests {
             assert_eq!(
                 labels,
                 vec![
+                    ("accounting", "metered"),
                     ("listener", "test"),
                     ("protocol", "test"),
                     ("status", "ok"),
                     ("tls", "none"),
                     ("transport", "tcp"),
                 ]
+            );
+        }
+    }
+
+    #[test]
+    fn connection_metrics_distinguish_exempt_accounting() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+
+        metrics::with_local_recorder(&recorder, || {
+            let telemetry = NacelleTelemetry::default();
+            let context = NacelleMetricsContext::new_with_accounting(
+                NacelleTransport::new("http"),
+                Arc::from("health"),
+                "http1",
+                "none",
+                NacelleConnectionAccounting::Exempt,
+            );
+            telemetry.connection_accepted(&context);
+            telemetry.connection_closed(NacelleTransport::new("http"), Some(&context), "eof");
+        });
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        for metric in [
+            "server.connection.accepted",
+            "server.connection.active",
+            "server.connection.closed",
+        ] {
+            let key = snapshot
+                .iter()
+                .find_map(|(key, _, _, _)| (key.key().name() == metric).then_some(key.key()))
+                .unwrap_or_else(|| panic!("missing metric {metric}"));
+            assert!(
+                key.labels()
+                    .any(|label| label.key() == "accounting" && label.value() == "exempt"),
+                "missing exempt accounting label on {metric}"
             );
         }
     }
@@ -1292,7 +1372,10 @@ mod tests {
     fn global_metric_switch_preserves_domains_and_observers() {
         let observer = NacelleInMemoryObserver::new();
         let telemetry = NacelleTelemetry::default()
-            .with_request_duration_metrics(true)
+            .with_diagnostics(NacelleTelemetryDiagnostics {
+                request_duration: true,
+                ..NacelleTelemetryDiagnostics::default()
+            })
             .with_metrics(false)
             .with_observer(observer.clone());
 
@@ -1302,7 +1385,7 @@ mod tests {
         assert!(!telemetry.request_duration_metrics_enabled());
         assert!(!telemetry.runtime_metrics_enabled());
         assert!(!telemetry.error_metrics_enabled());
-        assert!(telemetry.config().request_metrics.duration_ms);
+        assert!(telemetry.config().diagnostics.request_duration);
 
         telemetry.timeout(NacelleTransport::new("tcp"), "test");
         assert_eq!(observer.events().len(), 1);
@@ -1312,6 +1395,19 @@ mod tests {
         assert!(telemetry.request_duration_metrics_enabled());
         assert!(telemetry.runtime_metrics_enabled());
         assert!(telemetry.error_metrics_enabled());
+    }
+
+    #[test]
+    fn shared_runtime_metric_policy_seals_on_first_use() {
+        let state = crate::limits::NacelleRuntimeState::default();
+        let enabled = NacelleTelemetry::default();
+        let disabled = NacelleTelemetry::default().with_runtime_metrics(false);
+
+        assert!(enabled.try_register_runtime_state(state.clone()));
+        assert!(disabled.try_register_runtime_state(state.clone()));
+        drop(state.acquire_request().expect("request capacity"));
+        assert!(disabled.try_register_runtime_state(state.clone()));
+        assert!(!enabled.try_register_runtime_state(state));
     }
 
     #[test]
@@ -1353,5 +1449,112 @@ mod tests {
 
         assert!(snapshotter.snapshot().into_vec().is_empty());
         assert_eq!(observer.events().len(), 6);
+    }
+
+    #[test]
+    fn metric_domains_and_diagnostics_emit_only_selected_series() {
+        let base = || {
+            NacelleTelemetry::default()
+                .with_connection_metrics(false)
+                .with_runtime_metrics(false)
+                .with_error_metrics(false)
+                .with_request_metrics(NacelleRequestMetrics::Off)
+        };
+        let cases = [
+            (
+                "error only",
+                base().with_error_metrics(true),
+                &["server.request.rejected"][..],
+            ),
+            (
+                "runtime only",
+                base().with_runtime_metrics(true),
+                &["server.shutdown_events"][..],
+            ),
+            (
+                "counters without bytes",
+                base().with_request_metrics(NacelleRequestMetrics::Counters),
+                &["server.request.started", "server.request.completed"][..],
+            ),
+            (
+                "request duration only",
+                base().with_diagnostics(NacelleTelemetryDiagnostics {
+                    request_duration: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                }),
+                &["server.request.duration"][..],
+            ),
+            (
+                "request in-flight only",
+                base().with_diagnostics(NacelleTelemetryDiagnostics {
+                    request_in_flight: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                }),
+                &["server.request.active"][..],
+            ),
+        ];
+
+        for (case, telemetry, expected) in cases {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            metrics::with_local_recorder(&recorder, || {
+                let context = NacelleMetricsContext::new(
+                    NacelleTransport::new("tcp"),
+                    Arc::from("test"),
+                    "test",
+                    "none",
+                );
+                telemetry.connection_opened(NacelleTransport::new("tcp"));
+                telemetry.connection_accepted(&context);
+                telemetry.request_rejected(NacelleTransport::new("tcp"), "requests");
+                telemetry.request_started_with_context(&context);
+                telemetry.request_finished_with_context(
+                    &context,
+                    "ok",
+                    3,
+                    5,
+                    Duration::from_millis(1),
+                );
+                telemetry.shutdown_requested();
+            });
+
+            let actual: HashSet<_> = snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .map(|(key, _, _, _)| key.key().name().to_owned())
+                .collect();
+            let expected: HashSet<_> = expected.iter().map(|name| (*name).to_owned()).collect();
+            assert_eq!(actual, expected, "{case}");
+        }
+    }
+
+    #[cfg(feature = "phase-timing")]
+    #[test]
+    fn tcp_phase_diagnostics_emit_without_other_metric_domains() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            let telemetry = NacelleTelemetry::default()
+                .with_connection_metrics(false)
+                .with_runtime_metrics(false)
+                .with_error_metrics(false)
+                .with_request_metrics(NacelleRequestMetrics::Off)
+                .with_diagnostics(NacelleTelemetryDiagnostics {
+                    tcp_phase_duration: true,
+                    ..NacelleTelemetryDiagnostics::default()
+                });
+            let context = NacelleMetricsContext::new(
+                NacelleTransport::new("tcp"),
+                Arc::from("test"),
+                "test",
+                "none",
+            );
+            telemetry.phase_duration(&context, "decode", Duration::from_millis(1));
+        });
+
+        let snapshot = snapshotter.snapshot().into_vec();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].0.key().name(), "server.phase.duration_ms");
     }
 }

@@ -6,8 +6,10 @@ response_buffer_capacity = 16384
 request_body_chunk_size = 16384
 request_body_channel_capacity = 8
 low_memory = false
-byte_metrics = true
 tls_self_signed = false
+
+[telemetry]
+request_metrics = "counters-and-bytes"
 
 [connection_limits]
 max_connections = 16384

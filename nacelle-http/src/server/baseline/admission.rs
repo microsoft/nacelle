@@ -77,9 +77,7 @@ fn admission_error_metrics_and_observers_have_independent_exact_ownership() {
                         .with_error_metrics(errors)
                         .with_connection_metrics(false)
                         .with_runtime_metrics(false)
-                        .with_request_started_metrics(false)
-                        .with_request_completed_metrics(false)
-                        .with_byte_count_metrics(false)
+                        .with_request_metrics(nacelle_core::NacelleRequestMetrics::Off)
                         .with_observer(observer.clone());
                     let server = Arc::new(server(rule, Arc::default()).with_telemetry(telemetry));
                     let (io, _) = ObservedIo::new(
@@ -200,7 +198,14 @@ where
 {
     let metadata = NacelleConnectionMeta::http(None);
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
-    run_http_connection(server, std::future::ready(Ok((io, metadata))), registration)
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
+    run_http_connection(
+        server,
+        std::future::ready(Ok((io, metadata))),
+        registration,
+        metrics_context,
+    )
 }
 
 #[tokio::test]
@@ -618,9 +623,16 @@ async fn local_policy_and_permit_can_borrow_rc_state_across_await() {
     let metadata = NacelleConnectionMeta::http(None);
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
     let (io, _) = ObservedIo::new("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    run_local_http_connection(server, std::future::ready(Ok((io, metadata))), registration)
-        .await
-        .unwrap();
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
+    run_local_http_connection(
+        server,
+        std::future::ready(Ok((io, metadata))),
+        registration,
+        metrics_context,
+    )
+    .await
+    .unwrap();
     assert_eq!(calls.get(), 1);
     assert_eq!(Rc::strong_count(&calls), 1);
 }

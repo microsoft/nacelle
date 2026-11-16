@@ -52,6 +52,16 @@ rate accounting, respectively. Unlimited connections still consume permits and
 update the existing gauges. Unix sockets have no invented peer IP: they consume
 total capacity but bypass IP-based concurrency and rate checks.
 
+Connections are metered by default. For a dedicated internal listener, such as
+an HTTP health endpoint that must remain reachable during overload,
+`with_connection_accounting(NacelleConnectionAccounting::Exempt)` bypasses the
+total, per-peer, open-rate, and administrative connection registry. Direct TCP
+serving can select the same behavior with
+`NacelleConnectionMeta::with_accounting(...)`. Exemption does not bypass request,
+streaming, body, timeout, or application-admission limits. HTTP path-based
+request exemption is a separate request-accounting concern because the path is
+not known when the connection is accepted.
+
 Lowering below occupancy does not evict connections. Admissions already racing
 an update may finish with the threshold observed by that check; later checks
 read the new value. The order remains total capacity, optional peer concurrency,
@@ -247,6 +257,9 @@ future, but Nacelle does not promise fairness across listeners or workers.
 
 Application permits remain held through body resolution and response
 production. They do not extend runtime request metrics to remote delivery.
+The unlabelled runtime permit gauges belong to the independent runtime metric
+domain; changing request metric mode or application admission does not move or
+duplicate those gauge release boundaries.
 Silent TCP completion releases after body resolution; HTTP response bodies own
 their permits after the service future returns. EOF, response error, early
 drop, task cancellation, and suppressed HEAD/empty bodies release ownership.
@@ -279,8 +292,11 @@ listeners unless another layer enforces an equivalent deadline.
 TCP idle and read deadlines are independent. The default 120-second idle deadline
 bounds waiting for the first byte of a message with an empty input buffer. Once
 bytes are available, the 30-second read deadline bounds decoding that message
-without resetting on additional bytes. Each subsequent request-body read also
-uses the read deadline. Idle time does not include active messages, bodies,
+without resetting on additional bytes. Request-body processing starts a separate
+absolute deadline using the same timeout, covering all remaining body reads and
+streaming channel waits. Body progress does not restart this deadline. Expiry
+cancels a still-running handler even when handler timeouts are disabled or the
+body channel is full. Idle time does not include active messages, bodies,
 handlers, or response delivery.
 
 In 0.3.2, this replaces the earlier read-or-idle fallback: silent connections now

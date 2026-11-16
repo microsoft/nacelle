@@ -124,9 +124,14 @@ the first byte of a message with an empty input buffer, including the first
 message on a connection. `read_timeout` defaults to 30 seconds and bounds
 completion of a decoded message once bytes are available. Buffered partial
 messages enter the read phase immediately; additional bytes do not restart its
-deadline. Subsequent request-body reads each use `read_timeout`, never
-`idle_timeout`. Idle expiry reports `NacelleTimeoutReason::Idle`; message and
-body read expiry report `TcpRead` and `RequestBodyRead`, respectively.
+deadline. Request-body processing starts a separate absolute `read_timeout`
+deadline covering all remaining body reads and streaming channel waits; body
+progress does not restart it. Expiry cancels a still-running handler even with
+handler timeouts disabled or a full body channel. Body failures reach the
+request driver without waiting to enqueue an error into that channel.
+`idle_timeout` never applies to body reads. Idle expiry reports
+`NacelleTimeoutReason::Idle`; message and body read expiry report `TcpRead` and
+`RequestBodyRead`, respectively.
 
 Neither timeout is a fallback for the other. Idle time excludes handler execution
 and response delivery. Shutdown uses its own deadline so finalization policy can
@@ -137,6 +142,15 @@ write, keep-alive, and max connection age behavior on `HyperServer`. Its
 `without_*_timeout()` and `without_max_connection_age()` builders disable those
 optional deadlines; `NacelleLimits::without_handler_timeout()` disables the
 core handler deadline.
+
+Telemetry defaults preserve connection, runtime, error, request counter, and
+request/response byte series. Select `NacelleRequestMetrics::Counters` to omit
+byte histograms or `Off` to omit request counters and bytes; errors remain an
+independent domain. Request duration, labelled request in-flight, and TCP phase
+timing are separate opt-ins in `NacelleTelemetryDiagnostics`. The global
+`with_metrics(false)` gate suppresses every metric domain without suppressing
+observers or erasing the configured modes. Install the process recorder before
+constructing telemetry or servers so cached handles bind to it.
 
 Dangerous configurations:
 

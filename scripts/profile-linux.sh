@@ -11,7 +11,7 @@ DISABLE_TIMEOUTS="false"
 DISABLE_HANDLER_TIMEOUT="false"
 DISABLE_TCP_TIMEOUTS="false"
 RESPONSE_WRITE_MODE="immediate"
-BYTE_METRICS="false"
+REQUEST_METRICS="counters"
 LOW_MEMORY="false"
 TLS_INSECURE="false"
 CONNECTIONS="256"
@@ -41,7 +41,7 @@ Options:
   --disable-handler-timeout
   --disable-tcp-timeouts
   --response-write-mode immediate|coalesce-buffered
-  --byte-metrics
+  --request-metrics off|counters|counters-and-bytes
   --low-memory
   --tls-insecure
   --connections N
@@ -71,7 +71,7 @@ while [[ $# -gt 0 ]]; do
         --disable-handler-timeout) DISABLE_HANDLER_TIMEOUT="true"; shift ;;
         --disable-tcp-timeouts) DISABLE_TCP_TIMEOUTS="true"; shift ;;
         --response-write-mode) RESPONSE_WRITE_MODE="$2"; shift 2 ;;
-        --byte-metrics) BYTE_METRICS="true"; shift ;;
+        --request-metrics) REQUEST_METRICS="$2"; shift 2 ;;
         --low-memory) LOW_MEMORY="true"; shift ;;
         --tls-insecure) TLS_INSECURE="true"; shift ;;
         --connections) CONNECTIONS="$2"; shift 2 ;;
@@ -207,7 +207,7 @@ fi
     echo "disable_handler_timeout=$EFFECTIVE_DISABLE_HANDLER_TIMEOUT"
     echo "disable_tcp_timeouts=$EFFECTIVE_DISABLE_TCP_TIMEOUTS"
     echo "response_write_mode=$RESPONSE_WRITE_MODE"
-    echo "byte_metrics=$BYTE_METRICS"
+    echo "request_metrics=$REQUEST_METRICS"
     echo "low_memory=$LOW_MEMORY"
     echo "tls_insecure=$TLS_INSECURE"
     echo "connections=$CONNECTIONS"
@@ -238,11 +238,7 @@ SERVER_ARGS=(
     --handler-mode "$HANDLER_MODE"
     --response-write-mode "$RESPONSE_WRITE_MODE"
 )
-if [[ "$BYTE_METRICS" == "true" ]]; then
-    SERVER_ARGS+=(--byte-metrics)
-else
-    SERVER_ARGS+=(--no-byte-metrics)
-fi
+SERVER_ARGS+=(--request-metrics "$REQUEST_METRICS")
 if [[ "$LOW_MEMORY" == "true" ]]; then
     SERVER_ARGS+=(--low-memory)
 fi

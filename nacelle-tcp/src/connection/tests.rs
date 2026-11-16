@@ -15,8 +15,8 @@ use nacelle_core::limits::{NacelleLimits, NacelleRuntimeState};
 use nacelle_core::pipeline::{ConnectionInfo, handler_fn, local_handler_fn};
 use nacelle_core::request::{NacelleBody, NacelleConnectionMeta};
 use nacelle_core::telemetry::{
-    NacelleInMemoryObserver, NacelleRequestMetricsConfig, NacelleTelemetry,
-    NacelleTelemetryEventKind, NacelleTelemetryObserver,
+    NacelleInMemoryObserver, NacelleRequestMetrics, NacelleTelemetry, NacelleTelemetryEventKind,
+    NacelleTelemetryObserver,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -488,13 +488,7 @@ fn request_failure_metrics_do_not_require_an_observer() {
                     Err(NacelleError::Timeout(NacelleTimeoutReason::Handler))
                 }),
                 NacelleTcpConfig::default(),
-                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetricsConfig {
-                    started: false,
-                    completed: false,
-                    in_flight: false,
-                    duration_ms: false,
-                    byte_counts: false,
-                }),
+                NacelleTelemetry::default().with_request_metrics(NacelleRequestMetrics::Off),
                 NacelleRuntimeState::default(),
                 NacelleConnectionMeta::tcp(None, None),
             ));
@@ -1365,64 +1359,71 @@ async fn multi_chunk_response_progresses_with_tiny_socket_capacity() {
     assert!(result.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn first_streaming_response_chunk_is_written_before_body_eof() {
-    let (mut client, server_io) = tokio::io::duplex(1);
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let release_rx = Arc::new(std::sync::Mutex::new(Some(release_rx)));
-    let server_task = tokio::spawn(serve_stream_with_connection_meta(
-        server_io,
-        Arc::new(PhaseProtocol {
-            authenticated: false,
-            request_wire_bytes: None,
-            encoder_writes_then_errors: false,
-        }),
-        handler_fn(move |context: TcpRequestContext<PhaseProtocol>| {
-            let release_rx = release_rx
-                .lock()
-                .expect("release receiver lock poisoned")
-                .take()
-                .expect("test handles one request");
-            async move {
-                let (body_tx, body) = NacelleBody::channel(1);
-                body_tx
-                    .send(Ok(Bytes::from_static(b"first")))
-                    .await
-                    .expect("first chunk should queue");
-                tokio::spawn(async move {
-                    let _ = release_rx.await;
-                    drop(body_tx);
-                });
-                context.respond(TcpResponse::new(body)).await
-            }
-        }),
-        NacelleTcpConfig::default()
-            .with_response_write_policy(ResponseWritePolicy::CoalesceBuffered),
-        NacelleTelemetry::default(),
-        NacelleRuntimeState::default(),
-        NacelleConnectionMeta::tcp(None, None),
-    ));
+    for policy in [
+        ResponseWritePolicy::Immediate,
+        ResponseWritePolicy::FlushAtBytes(4),
+        ResponseWritePolicy::CoalesceBuffered,
+    ] {
+        let (mut client, server_io) = tokio::io::duplex(1);
+        let (reader, writer) = tokio::io::split(server_io);
+        let server_io = tokio::io::join(reader, tokio::io::BufWriter::with_capacity(1024, writer));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let release_rx = Arc::new(std::sync::Mutex::new(Some(release_rx)));
+        let server_task = tokio::spawn(serve_stream_with_connection_meta(
+            server_io,
+            Arc::new(PhaseProtocol {
+                authenticated: false,
+                request_wire_bytes: None,
+                encoder_writes_then_errors: false,
+            }),
+            handler_fn(move |context: TcpRequestContext<PhaseProtocol>| {
+                let release_rx = release_rx
+                    .lock()
+                    .expect("release receiver lock poisoned")
+                    .take()
+                    .expect("test handles one request");
+                async move {
+                    let (body_tx, body) = NacelleBody::channel(1);
+                    body_tx
+                        .send(Ok(Bytes::from_static(b"first")))
+                        .await
+                        .expect("first chunk should queue");
+                    tokio::spawn(async move {
+                        let _ = release_rx.await;
+                        drop(body_tx);
+                    });
+                    context.respond(TcpResponse::new(body)).await
+                }
+            }),
+            NacelleTcpConfig::default().with_response_write_policy(policy),
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        ));
 
-    client.write_all(&[0]).await.expect("request should write");
-    let mut first = [0_u8; 5];
-    tokio::time::timeout(Duration::from_millis(250), client.read_exact(&mut first))
-        .await
-        .expect("first chunk should arrive before body EOF")
-        .expect("first chunk should read");
-    assert_eq!(&first, b"first");
-    release_tx
-        .send(())
-        .expect("response producer should be waiting");
-    client
-        .shutdown()
-        .await
-        .expect("client should close write half");
+        client.write_all(&[0]).await.expect("request should write");
+        let mut first = [0_u8; 5];
+        tokio::time::timeout(Duration::from_millis(250), client.read_exact(&mut first))
+            .await
+            .expect("first chunk should arrive before body EOF")
+            .expect("first chunk should read");
+        assert_eq!(&first, b"first");
+        release_tx
+            .send(())
+            .expect("response producer should be waiting");
+        client
+            .shutdown()
+            .await
+            .expect("client should close write half");
 
-    let result = tokio::time::timeout(Duration::from_millis(250), server_task)
-        .await
-        .expect("server should finish after body EOF")
-        .expect("server task should join");
-    assert!(result.is_ok());
+        let result = tokio::time::timeout(Duration::from_millis(250), server_task)
+            .await
+            .expect("server should finish after body EOF")
+            .expect("server task should join");
+        assert!(result.is_ok());
+    }
 }
 
 #[tokio::test]
@@ -3172,9 +3173,10 @@ impl AsyncWrite for RequestThenPendingWriteIo {
     }
 }
 
-/// Reads one valid request byte, accepts every write, then fails every flush.
+/// Reads one valid request byte and fails flushing after accepting a write.
 struct RequestThenFlushFailIo {
     request_read: bool,
+    written: bool,
 }
 
 impl AsyncRead for RequestThenFlushFailIo {
@@ -3193,14 +3195,18 @@ impl AsyncRead for RequestThenFlushFailIo {
 
 impl AsyncWrite for RequestThenFlushFailIo {
     fn poll_write(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        self.written = true;
         Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        if !self.written {
+            return Poll::Ready(Ok(()));
+        }
         Poll::Ready(Err(std::io::Error::new(
             std::io::ErrorKind::BrokenPipe,
             "test response flush failure",
@@ -3513,6 +3519,7 @@ async fn completion_item_reports_socket_flush_failure_phase() {
     let server_task = tokio::spawn(serve_stream_with_connection_meta(
         RequestThenFlushFailIo {
             request_read: false,
+            written: false,
         },
         Arc::new(PhaseProtocol {
             authenticated: true,
@@ -3563,6 +3570,64 @@ async fn completion_item_reports_socket_flush_failure_phase() {
             written_wire_bytes: 2,
         }]
     );
+}
+
+#[tokio::test]
+async fn completion_item_reports_streaming_flush_failure_bytes() {
+    for policy in [
+        ResponseWritePolicy::Immediate,
+        ResponseWritePolicy::FlushAtBytes(1),
+        ResponseWritePolicy::CoalesceBuffered,
+    ] {
+        let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let result = serve_stream_with_connection_meta(
+            RequestThenFlushFailIo {
+                request_read: false,
+                written: false,
+            },
+            Arc::new(PhaseProtocol {
+                authenticated: true,
+                request_wire_bytes: None,
+                encoder_writes_then_errors: false,
+            }),
+            handler_fn({
+                let outcomes = outcomes.clone();
+                move |context: TcpRequestContext<PhaseProtocol>| {
+                    let outcomes = outcomes.clone();
+                    async move {
+                        let (sender, body) = NacelleBody::channel(1);
+                        sender.send(Ok(Bytes::from_static(b"ok"))).await.unwrap();
+                        drop(sender);
+                        context
+                            .respond(TcpResponse::new(body))
+                            .await
+                            .map(|completion| {
+                                completion.map(|response| {
+                                    response.with_completion_item(move |outcome| {
+                                        outcomes.lock().unwrap().push(capture_outcome(outcome));
+                                    })
+                                })
+                            })
+                    }
+                }
+            }),
+            NacelleTcpConfig::default().with_response_write_policy(policy),
+            NacelleTelemetry::default(),
+            NacelleRuntimeState::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .await;
+
+        assert!(matches!(result, Err(NacelleError::Io(_))));
+        assert_eq!(
+            *outcomes.lock().unwrap(),
+            vec![CapturedOutcome::Failed {
+                phase: ResponseDeliveryPhase::SocketFlush,
+                encoded_wire_bytes: 2,
+                written_wire_bytes: 2,
+            }],
+        );
+    }
 }
 
 /// Records an ordered marker whenever a `RequestCompleted` event is observed.

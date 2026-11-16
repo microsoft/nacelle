@@ -281,24 +281,11 @@ fn format_bytes(bytes: u64) -> String {
 // Metrics console export
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
-struct StressByteMetrics {
-    byte_counts: bool,
-}
-
-impl From<&shared::ServerConfig> for StressByteMetrics {
-    fn from(config: &shared::ServerConfig) -> Self {
-        Self {
-            byte_counts: config.byte_metrics,
-        }
-    }
-}
-
 #[derive(Debug)]
 struct StressMetricsConsole {
     snapshotter: Snapshotter,
     byte_totals: ByteTotals,
-    byte_metrics: StressByteMetrics,
+    request_metrics: nacelle::core::NacelleRequestMetrics,
     active_connections: i64,
     active_connection_delta: i64,
     active_requests: i64,
@@ -318,7 +305,7 @@ impl StressMetricsConsole {
         Ok(Self {
             snapshotter,
             byte_totals,
-            byte_metrics: StressByteMetrics::from(config),
+            request_metrics: config.request_metrics,
             active_connections: 0,
             active_connection_delta: 0,
             active_requests: 0,
@@ -478,18 +465,21 @@ async fn run_metrics_console(
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    print_metrics_snapshot(console.snapshot(), console.byte_metrics);
+                    print_metrics_snapshot(console.snapshot(), console.request_metrics);
                     break;
                 }
             }
             _ = interval.tick() => {
-                print_metrics_snapshot(console.snapshot(), console.byte_metrics);
+                print_metrics_snapshot(console.snapshot(), console.request_metrics);
             }
         }
     }
 }
 
-fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressByteMetrics) {
+fn print_metrics_snapshot(
+    snapshot: StressMetricsSnapshot,
+    request_metrics: nacelle::core::NacelleRequestMetrics,
+) {
     let interval_secs = METRICS_EXPORT_INTERVAL.as_secs_f64();
     println!("nacelle-stress-server metrics window={interval_secs:.1}s");
     println!(
@@ -514,7 +504,10 @@ fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressB
         snapshot.operation_errors,
         snapshot.resource_limit_rejections,
     );
-    if byte_metrics.byte_counts {
+    if matches!(
+        request_metrics,
+        nacelle::core::NacelleRequestMetrics::CountersAndBytes
+    ) {
         println!(
             "  bytes        request={} ({:.2} MiB/s) response={} ({:.2} MiB/s)",
             format_bytes(snapshot.request_bytes),
@@ -523,7 +516,7 @@ fn print_metrics_snapshot(snapshot: StressMetricsSnapshot, byte_metrics: StressB
             bytes_to_mib(snapshot.response_bytes) / interval_secs,
         );
     } else {
-        println!("  bytes        byte_metrics=off");
+        println!("  bytes        request_metrics=no-bytes");
     }
     println!(
         "  runtime      streaming_tasks_active={}",
@@ -602,8 +595,8 @@ async fn run(config: Arc<ServerConfig>) -> Result<(), Box<dyn std::error::Error 
     let metrics_console = StressMetricsConsole::install(&config)?;
 
     let telemetry = NacelleTelemetry::default()
-        .with_byte_count_metrics(config.byte_metrics)
-        .with_phase_duration_metrics(config.phase_duration_metrics);
+        .with_request_metrics(config.request_metrics)
+        .with_diagnostics(config.telemetry_diagnostics);
     let runtime_state = build_runtime_state(&config)?;
     let server = if config.worker_local_response {
         None

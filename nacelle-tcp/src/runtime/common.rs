@@ -175,14 +175,17 @@ where
         "tcp",
         server.telemetry().runtime_metrics_enabled(),
     );
-    loop {
+    let listener_result = loop {
         // Reap finished connection tasks without competing with `accept()`.
         reap_finished_connections(&mut connections, transport);
         tokio::select! {
             biased;
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => break Ok(()),
             accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
+                let (stream, peer_addr) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => break Err(error.into()),
+                };
                 let connection = NacelleConnectionMeta::tcp(Some(peer_addr), local_addr)
                     .with_listener(server.listener_label());
                 let registration = match server.runtime_state().register_connection(&connection) {
@@ -196,7 +199,9 @@ where
                     }
                 };
                 let owned = (stream, registration);
-                prepare_stream(&owned.0)?;
+                if let Err(error) = prepare_stream(&owned.0) {
+                    break Err(error);
+                }
                 let (stream, registration) = owned;
                 let activity = registration.activity();
                 let task = serve_connection(server.clone(), stream, connection, activity);
@@ -206,7 +211,7 @@ where
                 log_connection_result(joined, transport);
             }
         }
-    }
+    };
     server.telemetry().shutdown_event(
         NacelleTelemetryEventKind::ListenerStoppedAccepting,
         transport,
@@ -218,5 +223,5 @@ where
         server.telemetry().clone(),
     )
     .await;
-    Ok(())
+    listener_result
 }

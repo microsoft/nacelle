@@ -26,8 +26,15 @@ where
     let id = metadata.connection_id;
     io.drop_state = Some(server.runtime.runtime_state.clone());
     let registration = register_http_connection(&server.runtime.runtime_state, &metadata).unwrap();
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
     (
-        run_http_connection(server, std::future::ready(Ok((io, metadata))), registration),
+        run_http_connection(
+            server,
+            std::future::ready(Ok((io, metadata.clone()))),
+            registration,
+            metrics_context,
+        ),
         id,
     )
 }
@@ -492,6 +499,15 @@ fn tracking_close_ownership_preserves_http_metric_gates_and_labels() {
                         .with_metrics(metrics)
                         .with_connection_metrics(connections)
                         .with_observer(observer.clone());
+                    assert_eq!(
+                        http_connection_metrics_context(
+                            &NacelleConnectionMeta::http(None),
+                            "none",
+                            &telemetry,
+                        )
+                        .is_some(),
+                        metrics && connections,
+                    );
                     let server = Arc::new(
                         HyperServer::new(handler_fn(
                             |_context: HttpRequestContext<()>| async move { panic!("no request") },
@@ -526,11 +542,30 @@ fn tracking_close_ownership_preserves_http_metric_gates_and_labels() {
                 vec![("transport", "http")]
             );
         }
-        assert!(
-            snapshot
-                .iter()
-                .all(|(key, _, _, _)| key.key().name() != "server.connection.closed")
-        );
+        let closed: Vec<_> = snapshot
+            .iter()
+            .filter(|(key, _, _, _)| key.key().name() == "server.connection.closed")
+            .collect();
+        assert_eq!(closed.len(), usize::from(metrics && connections));
+        if let Some((key, _, _, value)) = closed.first() {
+            assert_eq!(value, &DebugValue::Counter(1));
+            let mut labels: Vec<_> = key
+                .key()
+                .labels()
+                .map(|label| (label.key(), label.value()))
+                .collect();
+            labels.sort_unstable();
+            assert_eq!(
+                labels,
+                vec![
+                    ("accounting", "metered"),
+                    ("close_reason", "administrative_close"),
+                    ("listener", "direct"),
+                    ("tls", "none"),
+                    ("transport", "http"),
+                ]
+            );
+        }
         assert!(
             snapshot
                 .iter()
@@ -590,8 +625,14 @@ async fn local_non_send_handler_and_permit_remain_owned_through_retirement() {
     let registration = register_http_connection(&state, &metadata).unwrap();
     let (mut io, observed) = ObservedIo::new("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
     io.drop_state = Some(state.clone());
-    let future =
-        run_local_http_connection(server, std::future::ready(Ok((io, metadata))), registration);
+    let metrics_context =
+        http_connection_metrics_context(&metadata, "none", &server.runtime.telemetry);
+    let future = run_local_http_connection(
+        server,
+        std::future::ready(Ok((io, metadata))),
+        registration,
+        metrics_context,
+    );
     tokio::pin!(future);
     assert_pending(future.as_mut());
     assert_eq!(Rc::strong_count(&permit), 3);
@@ -635,6 +676,8 @@ async fn tls_setup_is_registered_and_bounded_by_administrative_deadline() {
         let registration = register_http_connection(&state, &metadata).unwrap();
         let generated = NacelleTlsConfig::self_signed(["localhost"]).unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(generated.tls_config.server_config());
+        let metrics_context =
+            http_connection_metrics_context(&metadata, "rustls", &server.runtime.telemetry);
         let setup = accept_http_tls(
             stream,
             metadata,
@@ -642,7 +685,7 @@ async fn tls_setup_is_registered_and_bounded_by_administrative_deadline() {
             Duration::from_secs(10),
             server.runtime.telemetry.clone(),
         );
-        let future = run_http_connection(server, setup, registration);
+        let future = run_http_connection(server, setup, registration, metrics_context);
         tokio::pin!(future);
         assert_pending(future.as_mut());
         let NacelleConnectionLookup::Found(snapshot) = state.control().connection(id) else {

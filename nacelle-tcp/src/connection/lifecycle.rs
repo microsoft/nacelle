@@ -56,7 +56,7 @@ impl Activity for NacelleConnectionActivity {
 }
 
 pub(super) struct CloseGuard<'a, Observer: NacelleTelemetryObserver> {
-    activity: &'a NacelleConnectionActivity,
+    activity: Option<&'a NacelleConnectionActivity>,
     telemetry: &'a NacelleTelemetry<Observer>,
     metrics: Option<&'a NacelleMetricsContext>,
     transport: NacelleTransport,
@@ -65,7 +65,7 @@ pub(super) struct CloseGuard<'a, Observer: NacelleTelemetryObserver> {
 
 impl<'a, Observer: NacelleTelemetryObserver> CloseGuard<'a, Observer> {
     pub(super) fn new(
-        activity: &'a NacelleConnectionActivity,
+        activity: Option<&'a NacelleConnectionActivity>,
         telemetry: &'a NacelleTelemetry<Observer>,
         metrics: Option<&'a NacelleMetricsContext>,
         transport: NacelleTransport,
@@ -84,10 +84,12 @@ impl<'a, Observer: NacelleTelemetryObserver> CloseGuard<'a, Observer> {
         self.telemetry.connection_closed(
             self.transport,
             self.metrics,
-            self.activity.close_reason().map_or_else(
-                || super::metrics::tcp_close_reason(result),
-                nacelle_core::NacelleConnectionCloseReason::as_str,
-            ),
+            self.activity
+                .and_then(NacelleConnectionActivity::close_reason)
+                .map_or_else(
+                    || super::metrics::tcp_close_reason(result),
+                    nacelle_core::NacelleConnectionCloseReason::as_str,
+                ),
         );
     }
 }
@@ -98,10 +100,12 @@ impl<Observer: NacelleTelemetryObserver> Drop for CloseGuard<'_, Observer> {
             self.telemetry.connection_closed(
                 self.transport,
                 self.metrics,
-                self.activity.close_reason().map_or(
-                    "cancelled",
-                    nacelle_core::NacelleConnectionCloseReason::as_str,
-                ),
+                self.activity
+                    .and_then(NacelleConnectionActivity::close_reason)
+                    .map_or(
+                        "cancelled",
+                        nacelle_core::NacelleConnectionCloseReason::as_str,
+                    ),
             );
         }
     }
