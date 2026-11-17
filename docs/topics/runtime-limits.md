@@ -121,8 +121,8 @@ The global budget remains disabled until configured. Do not substitute
 
 For applications using the earlier 0.4 RC API, rename
 `set_connection_open_rate(...)` to `set_peer_connection_open_rate(...)` and
-enable `peer-limits`. The corresponding configuration-error variant is now
-`NacelleConfigurationError::PeerConnectionOpenRate`. Per-peer concurrency and
+enable `peer-limits`. Invalid global and peer rates both return
+`NacelleConfigurationError::ConnectionOpenRate`. Per-peer concurrency and
 HTTP request-rate APIs also require this feature. Their behavior is unchanged
 when enabled; compiling the feature does not enable any rate threshold.
 

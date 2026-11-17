@@ -555,7 +555,7 @@ impl NacelleRuntimeControl {
     /// Rejects `Some(usize::MAX)`; use `None` to disable the budget.
     pub fn set_global_connection_open_rate(&self, rate: Option<usize>) -> Result<(), NacelleError> {
         if rate == Some(usize::MAX) {
-            return Err(NacelleConfigurationError::GlobalConnectionOpenRate.into());
+            return Err(NacelleConfigurationError::ConnectionOpenRate.into());
         }
         self.publish(rate, ConnectionLimitKind::GlobalRate)
     }
@@ -570,7 +570,7 @@ impl NacelleRuntimeControl {
     #[cfg(feature = "peer-limits")]
     pub fn set_peer_connection_open_rate(&self, rate: Option<usize>) -> Result<(), NacelleError> {
         if rate.is_some_and(|rate| rate == usize::MAX || rate > u32::MAX as usize) {
-            return Err(NacelleConfigurationError::PeerConnectionOpenRate.into());
+            return Err(NacelleConfigurationError::ConnectionOpenRate.into());
         }
         self.publish(rate, ConnectionLimitKind::PeerRate)
     }
@@ -1471,7 +1471,7 @@ mod tests {
         assert!(matches!(
             control.set_global_connection_open_rate(Some(usize::MAX)),
             Err(NacelleError::Configuration(
-                NacelleConfigurationError::GlobalConnectionOpenRate
+                NacelleConfigurationError::ConnectionOpenRate
             ))
         ));
         assert_eq!(control.snapshot().max_connections_per_second, Some(0));
@@ -1969,11 +1969,20 @@ mod tests {
             ))
         ));
         assert_eq!(state.active_connections(), 0);
-        assert!(
-            control
-                .set_peer_connection_open_rate(Some(usize::MAX))
-                .is_err()
-        );
+        assert!(matches!(
+            control.set_peer_connection_open_rate(Some(usize::MAX)),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::ConnectionOpenRate
+            ))
+        ));
+        if let Some(too_large) = (u32::MAX as usize).checked_add(1) {
+            assert!(matches!(
+                control.set_peer_connection_open_rate(Some(too_large)),
+                Err(NacelleError::Configuration(
+                    NacelleConfigurationError::ConnectionOpenRate
+                ))
+            ));
+        }
         assert_eq!(
             control.snapshot().max_connection_opens_per_peer_per_second,
             Some(0)

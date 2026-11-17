@@ -10,11 +10,9 @@ pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 pub enum NacelleConfigurationError {
     /// Use `None`, not the reserved `usize::MAX`, for unlimited connections.
     ConnectionLimit,
-    /// The rate does not fit the limiter's finite counter representation.
-    PeerConnectionOpenRate,
-    /// Use `None`, not the reserved `usize::MAX`, for a disabled global rate.
-    GlobalConnectionOpenRate,
-    /// Every enabled rate limiter needs nonzero reserved table capacity.
+    /// Rates must be below `usize::MAX`; per-peer rates must also fit `u32`.
+    ConnectionOpenRate,
+    /// Every enabled per-peer rate limiter needs nonzero reserved table capacity.
     ConnectionRateTableCapacity,
     /// Partition count must be nonzero and match the configured workers.
     PartitionCount,
@@ -34,9 +32,8 @@ impl Display for NacelleConfigurationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::ConnectionLimit => "finite connection limit must be below usize::MAX; use None for unlimited",
-            Self::PeerConnectionOpenRate => "per-peer connection-open rate must fit u32 and be below usize::MAX",
-            Self::GlobalConnectionOpenRate => "global connection-open rate must be below usize::MAX; use None to disable",
-            Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
+            Self::ConnectionOpenRate => "connection-open rate must be below usize::MAX; per-peer rates must also fit u32; use None to disable",
+            Self::ConnectionRateTableCapacity => "per-peer rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
             Self::AdmissionLimits => "admission requires a positive finite timeout and waiter capacity",
@@ -67,7 +64,6 @@ pub enum NacelleResourceLimitReason {
     ConnectionRegistry,
     /// A caller supplied an ID already registered in this control scope.
     DuplicateConnectionId,
-    /// Peer-rate table capacity is too small for worker partitioning.
     /// Concurrent in-flight request capacity.
     InFlightRequests,
     /// Concurrent application admission invocation capacity.

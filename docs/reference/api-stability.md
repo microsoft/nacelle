@@ -108,9 +108,10 @@ Without it, the corresponding settings, APIs, and tracking state are not
 compiled. Global connection controls remain available with no extra feature.
 
 The earlier 0.4 RC setter `set_connection_open_rate` is renamed
-`set_peer_connection_open_rate`, and its configuration-error variant is renamed
-from `ConnectionOpenRate` to `PeerConnectionOpenRate`. The setter still limits
-each IP independently. Use `set_global_connection_open_rate` for a budget
+`set_peer_connection_open_rate`. The setter still limits each IP independently.
+Both peer and global rate validation use `NacelleConfigurationError::ConnectionOpenRate`;
+global rates must be below `usize::MAX`, and peer rates must also fit `u32`.
+Use `set_global_connection_open_rate` for a budget
 across metered listeners sharing runtime state. See
 [runtime limits](../topics/runtime-limits.md#live-connection-control).
 
