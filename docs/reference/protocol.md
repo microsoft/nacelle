@@ -73,6 +73,13 @@ awaits completion before decoding the next message, so one connection cannot
 overlap serial handler calls. The same serial context permits either a response
 or explicit silent completion.
 
+Serial server constructors adapt ordinary handlers automatically. For the free
+`connection::serve_serial_stream` and `connection::serve_serial_stream_with_admission`
+helpers, wrap an ordinary `SerialTcpHandler` with the public
+`Arc::new(SerialHandlerAdapter(handler))`. Worker-local serial helpers accept
+`Rc::new(SerialHandlerAdapter(handler))` around a `LocalSerialTcpHandler`.
+The adapter is re-exported through `nacelle::tcp` and `nacelle_tcp`.
+
 `TcpServer` and `SerialTcpServer` accept owned or borrowed read/write halves
 through `serve_halves` and `serve_halves_with_connection_meta`. For plaintext
 TCP, `TcpStream::split()` supplies specialized borrowed halves without the

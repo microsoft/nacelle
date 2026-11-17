@@ -17,7 +17,7 @@ pub mod server;
 
 #[doc(hidden)]
 pub use admission::{LocalSerialTcpService, LocalTcpService, SerialTcpService, TcpService};
-pub use admission::{SerialTcpAdmissionContext, TcpAdmissionContext};
+pub use admission::{SerialHandlerAdapter, SerialTcpAdmissionContext, TcpAdmissionContext};
 pub use config::{
     NacelleTcpConfig, ResponseWritePolicy, TcpHeadReadLimits, TcpHeadReadLimitsError,
     TcpRequestBodyMode,
