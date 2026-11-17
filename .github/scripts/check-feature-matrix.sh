@@ -45,3 +45,5 @@ cargo "${command}" -p nacelle-examples \
     --no-default-features \
     --features bench,http,openssl,peer-limits,tcp \
     "${cargo_args[@]}"
+
+bash .github/scripts/check-peer-limit-unification.sh "${command}" "${cargo_args[@]}"

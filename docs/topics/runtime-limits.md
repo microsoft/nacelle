@@ -164,6 +164,9 @@ enabling peer rates requires at least one reserved entry per worker. No peer
 table is allocated until enable, and the process budget is not multiplied by
 worker count. Global rate limits do not allocate peer tables.
 
+Peer budgets remain partitioned when `peer-limits` is enabled through a direct
+dependency on `nacelle-core` or a transport crate rather than through the facade.
+
 Administrative fan-out and aggregate snapshots are serialized; admission on
 different workers does not switch instantaneously. Use the aggregate handle,
 not independent updates through `state_for(...).control()`. Each worker keeps

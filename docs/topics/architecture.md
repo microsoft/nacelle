@@ -116,6 +116,8 @@ does not configure the caller-owned shared Tokio runtime.
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
 request, streaming, and per-peer capacities in configured worker order.
+Startup-budget partitioning lives in core so peer feature gates follow Cargo
+dependency unification rather than the facade's feature selection.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
 must not scale with worker count. `LocalTcpRuntimeConfig::with_state(...)` and

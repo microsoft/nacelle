@@ -172,9 +172,9 @@ impl ThreadPerCoreLimits {
                 NacelleResourceLimitReason::WorkerCount,
             ));
         }
-        let partitions: Vec<_> = (0..worker_count)
-            .map(|worker| partition_limits(&limits, worker_count, worker))
-            .collect();
+        let partitions = (0..worker_count)
+            .map(|worker| limits.partition(worker_count, worker))
+            .collect::<Result<Vec<_>, _>>()?;
         let (states, control) = NacelleRuntimeState::partitioned(partitions)?;
         Ok(Self {
             accounting: Accounting::Worker { states, control },
@@ -213,32 +213,6 @@ impl ThreadPerCoreLimits {
             }
         }
     }
-}
-
-fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> NacelleLimits {
-    let mut partition = limits.clone();
-    partition.max_in_flight_requests =
-        partition_capacity(limits.max_in_flight_requests, workers, worker);
-    partition.max_streaming_tasks = partition_capacity(limits.max_streaming_tasks, workers, worker);
-    #[cfg(feature = "peer-limits")]
-    {
-        partition.max_connections_per_peer = limits
-            .max_connections_per_peer
-            .map(|limit| partition_capacity(limit, workers, worker));
-        partition.connection_rate_limit_table_capacity =
-            partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
-    }
-    partition.connection_tracking = limits.connection_tracking.map(|tracking| {
-        tracking
-            .partition(workers, worker)
-            .expect("validated worker partition")
-    });
-    partition
-}
-
-fn partition_capacity(total: usize, workers: usize, worker: usize) -> usize {
-    let base = total / workers;
-    base + usize::from(worker < total % workers)
 }
 
 impl ThreadPerCoreConfig {

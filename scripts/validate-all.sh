@@ -41,6 +41,7 @@ cargo test -p nacelle --no-default-features --features tcp,rustls --all-targets
 cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets
 cargo clippy -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets -- -D warnings
+bash .github/scripts/check-peer-limit-unification.sh test
 cargo test -p nacelle --no-default-features --features experimental-openssl-detection --all-targets
 cargo clippy -p nacelle --no-default-features --features experimental-openssl-detection --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features experimental-thread-per-core,experimental-openssl-detection --all-targets

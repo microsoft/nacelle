@@ -109,6 +109,43 @@ impl NacelleLimits {
         self.handler_timeout = None;
         self
     }
+
+    /// Divide startup budgets in partition order, preserving zero shares.
+    ///
+    /// Body limits and timeout policy are copied unchanged. Peer budgets follow
+    /// this crate's feature selection, including Cargo dependency unification.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty partition set or an out-of-range index.
+    #[doc(hidden)]
+    pub fn partition(
+        &self,
+        partitions: usize,
+        index: usize,
+    ) -> Result<Self, NacelleConfigurationError> {
+        if partitions == 0 || index >= partitions {
+            return Err(NacelleConfigurationError::PartitionCount);
+        }
+        let mut partition = self.clone();
+        partition.max_in_flight_requests =
+            partition_capacity(self.max_in_flight_requests, partitions, index);
+        partition.max_streaming_tasks =
+            partition_capacity(self.max_streaming_tasks, partitions, index);
+        #[cfg(feature = "peer-limits")]
+        {
+            partition.max_connections_per_peer = self
+                .max_connections_per_peer
+                .map(|limit| partition_capacity(limit, partitions, index));
+            partition.connection_rate_limit_table_capacity =
+                partition_capacity(self.connection_rate_limit_table_capacity, partitions, index);
+        }
+        partition.connection_tracking = self
+            .connection_tracking
+            .map(|tracking| tracking.partition(partitions, index))
+            .transpose()?;
+        Ok(partition)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1251,6 +1288,36 @@ impl NacelleRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_partitions_preserve_policy_and_zero_shares() {
+        let limits = NacelleLimits::default()
+            .with_max_in_flight_requests(3)
+            .with_max_streaming_tasks(1)
+            .with_connection_tracking(NacelleConnectionTracking::new(1).unwrap())
+            .with_max_request_body_bytes(7)
+            .with_max_response_body_bytes(11)
+            .with_handler_timeout(Duration::from_secs(13));
+        for (index, requests, streaming, tracked) in [(0, 2, 1, 1), (1, 1, 0, 0)] {
+            let partition = limits.partition(2, index).unwrap();
+            assert_eq!(partition.max_in_flight_requests, requests);
+            assert_eq!(partition.max_streaming_tasks, streaming);
+            assert_eq!(partition.connection_tracking.unwrap().capacity(), tracked);
+            assert_eq!(partition.max_request_body_bytes, 7);
+            assert_eq!(partition.max_response_body_bytes, 11);
+            assert_eq!(partition.handler_timeout, Some(Duration::from_secs(13)));
+        }
+    }
+
+    #[test]
+    fn startup_partitions_reject_invalid_bounds() {
+        for (partitions, index) in [(0, 0), (2, 2)] {
+            assert!(matches!(
+                NacelleLimits::default().partition(partitions, index),
+                Err(NacelleConfigurationError::PartitionCount)
+            ));
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn startup_connection_limits_share_live_capacity_and_rate_history() {
