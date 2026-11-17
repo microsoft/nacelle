@@ -1,4 +1,6 @@
 use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use nacelle_core::request::{NacelleConnectionMeta, NacelleConnectionTlsMeta};
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
@@ -11,6 +13,7 @@ use nacelle_core::{NacelleConfigurationError, NacelleError, NacelleRuntimeState}
 /// and optional tracking, and is bound to the exact runtime state that created
 /// it. Clones of that state may consume it; other states and worker partitions
 /// may not. Dropping it releases capacity but does not refund rate budget.
+/// Serving keeps the controlled future pinned inline without boxing it.
 ///
 /// Use [`Self::setup`] for cancellable setup, then pass the token to
 /// [`super::serve_stream_with_admission`], [`super::serve_serial_stream_with_admission`],
@@ -100,12 +103,37 @@ impl TcpConnectionAdmission {
         let same_runtime = self.runtime_state.shares_state_with(&runtime_state);
         let future = work(self.connection, self.registration.activity(), runtime_state);
         let controlled = self.registration.run(future);
-        async move {
-            if !same_runtime {
-                drop(controlled);
-                return Err(NacelleConfigurationError::ConnectionAdmissionRuntime.into());
-            }
-            controlled.await
+        AdmittedConnection {
+            controlled: Some(controlled),
+            same_runtime,
         }
+    }
+}
+
+pin_project_lite::pin_project! {
+    // Keep one in-place copy instead of captured and awaiting copies.
+    struct AdmittedConnection<F> {
+        #[pin]
+        controlled: Option<F>,
+        same_runtime: bool,
+    }
+}
+
+impl<F: Future<Output = Result<(), NacelleError>>> Future for AdmittedConnection<F> {
+    type Output = Result<(), NacelleError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        if !*this.same_runtime {
+            this.controlled.set(None);
+            return Poll::Ready(Err(
+                NacelleConfigurationError::ConnectionAdmissionRuntime.into()
+            ));
+        }
+        this.controlled
+            .as_mut()
+            .as_pin_mut()
+            .expect("admitted connection future")
+            .poll(cx)
     }
 }

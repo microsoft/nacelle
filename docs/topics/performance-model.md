@@ -180,6 +180,15 @@ The default successful TCP and HTTP pipelines use concrete protocol, handler,
 responder, body, and telemetry observer types. Nacelle does not box handler
 futures or dynamically dispatch those contracts.
 
+Owned TCP admission handoff also keeps one controlled serving future pinned
+inline. Its runtime-identity check adds no boxed future or heap allocation;
+transport buffers and I/O adaptation retain their existing allocation behavior.
+Concrete serving-future sizes still depend on protocol connection state,
+handler types, features, compiler, and build profile. Use the
+[future-size check](../how-to/compare-performance.md#check-serving-future-sizes)
+to compare representative types without treating frame size as a throughput
+measurement.
+
 Retained costs are scoped by ownership:
 
 - TCP connection buffers and decoder state are created per connection and reused

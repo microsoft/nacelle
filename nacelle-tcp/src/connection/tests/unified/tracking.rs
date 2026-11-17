@@ -132,6 +132,54 @@ async fn owned_admission_supports_borrowed_serial_serving() {
 }
 
 #[tokio::test]
+async fn owned_admission_serving_cancellation_drops_io_before_capacity() {
+    for administrative in [false, true] {
+        for polled in [false, true] {
+            let runtime = tracked_runtime(1);
+            let server =
+                TcpServer::<CustomProtocol>::builder()
+                    .protocol(CustomProtocol::default())
+                    .runtime_state(runtime.clone())
+                    .unwrap()
+                    .handler(handler_fn(
+                        |context: TcpRequestContext<CustomProtocol>| async move {
+                            Ok(context.complete())
+                        },
+                    ))
+                    .build()
+                    .unwrap();
+            let connection = NacelleConnectionMeta::tcp(None, None);
+            let id = connection.connection_id;
+            let admission = server.admit_connection(connection).unwrap();
+            let probe = Arc::new(Probe::default());
+            let (_client, stream) = tokio::io::duplex(128);
+            let mut stream = io(stream, probe.clone());
+            stream.drop_state = Some(runtime.clone());
+            {
+                let future = server.serve_io_with_admission(stream, admission);
+                tokio::pin!(future);
+                if polled {
+                    pending(future.as_mut()).await;
+                }
+                if administrative {
+                    assert_eq!(
+                        runtime.control().close_connection(id),
+                        NacelleCloseOutcome::Selected,
+                    );
+                    assert!(matches!(
+                        future.await,
+                        Err(NacelleError::ConnectionTerminated(_))
+                    ));
+                }
+            }
+            assert_eq!(probe.connections_at_drop.load(Ordering::SeqCst), 1);
+            assert_released(&runtime);
+            assert!(runtime.control().connections(1).unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
 async fn owned_admission_setup_cancellation_drops_io_before_capacity() {
     for polled in [false, true] {
         let runtime = tracked_runtime(1);

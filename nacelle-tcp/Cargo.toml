@@ -30,6 +30,7 @@ nacelle-core = { workspace = true }
 nacelle-openssl = { workspace = true, optional = true }
 nacelle-rustls = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
+pin-project-lite = { workspace = true }
 rustls = { workspace = true, optional = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }

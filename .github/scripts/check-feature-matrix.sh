@@ -39,6 +39,10 @@ cargo "${command}" -p nacelle \
 
 cargo "${command}" -p nacelle-examples \
     --no-default-features \
+    --features bench,http,tcp,tls-self-signed \
+    "${cargo_args[@]}"
+cargo "${command}" -p nacelle-examples \
+    --no-default-features \
     --features bench,http,peer-limits,tcp,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-examples \

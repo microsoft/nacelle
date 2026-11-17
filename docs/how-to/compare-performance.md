@@ -45,6 +45,26 @@ explicit variable under test.
 The default shared 64-byte fixture template is static; use a custom response
 size when isolating owned-template contention, and record `--response-bytes`.
 
+## Check serving future sizes
+
+The compiler-pressure example reports unpolled future sizes for ordinary
+serving, owned-admission handoff, and surrounding runtime entry points. Serial
+handoff coverage includes the direct helper and a protocol with 6 KiB of inline
+connection state. Its regression test retains a 16 KiB ceiling for these
+representative types:
+
+```bash
+cargo run -p nacelle-examples --no-default-features --features bench,http,peer-limits,tcp,tls-self-signed --bin compiler-pressure
+cargo test -p nacelle-examples --no-default-features --features bench,http,peer-limits,tcp,tls-self-signed --bin compiler-pressure -- --nocapture
+```
+
+Compare the same toolchain, target, feature set, compiler flags, and profile.
+Start with the unoptimized dev/test builds used during development and Clippy;
+repeat without `peer-limits` for the default-off configuration. These sizes
+describe concrete future storage, not peak thread-stack use, heap allocation
+counts, or throughput. A downstream protocol or handler can require a different
+amount of inline state.
+
 ## Two distinct TCP workloads
 
 Build both stress tools before measuring. For one persistent connection with
