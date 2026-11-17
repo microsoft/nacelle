@@ -1367,6 +1367,29 @@ mod tests {
     fn worker_limits_require_one_rate_limit_slot_per_worker() {
         let limits = NacelleLimits::default().with_connection_rate_limit_table_capacity(1);
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("disabled rate");
+        policy
+            .control()
+            .set_global_connection_open_rate(Some(1))
+            .expect("global rate needs no peer slots");
+        let first = policy
+            .state_for(Worker {
+                index: 0,
+                core_id: 0,
+            })
+            .expect("first worker");
+        let second = policy
+            .state_for(Worker {
+                index: 1,
+                core_id: 1,
+            })
+            .expect("second worker");
+        drop(first.acquire_connection().expect("first rate share"));
+        assert!(matches!(
+            second.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
         assert!(matches!(
             policy.control().set_connection_open_rate(Some(1)),
             Err(NacelleError::Configuration(
@@ -1395,6 +1418,17 @@ mod tests {
             .expect("second");
         let permit = first.acquire_connection().expect("shared capacity");
         assert!(second.acquire_connection().is_err());
+        control.set_max_connections(None).expect("unlimited total");
+        control
+            .set_global_connection_open_rate(Some(1))
+            .expect("shared global rate");
+        drop(first.acquire_connection().expect("shared rate budget"));
+        assert!(matches!(
+            second.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
         control.set_max_connections(Some(0)).expect("pause");
         drop(permit);
         assert!(second.acquire_connection().is_err());

@@ -2052,49 +2052,77 @@ mod tests {
 
     #[tokio::test]
     async fn live_control_pauses_and_resumes_the_installed_http_listener() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener");
-        let addr = listener.local_addr().expect("address");
-        let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
-            context
-                .respond(HttpResponse::bytes(StatusCode::OK, "resumed"))
+        for global_rate in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
-        }));
-        let control = server.runtime_control();
-        control.set_max_connections(Some(0)).expect("pause");
-        let shutdown = nacelle_core::NacelleShutdown::new();
-        let token = shutdown.token();
-        let task =
-            tokio::spawn(async move { server.serve_listener_with_shutdown(listener, token).await });
-        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
-        let mut byte = [0];
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte))
+                .expect("listener");
+            let addr = listener.local_addr().expect("address");
+            let observer = nacelle_core::NacelleInMemoryObserver::new();
+            let server =
+                HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
+                    context
+                        .respond(HttpResponse::bytes(StatusCode::OK, "resumed"))
+                        .await
+                }))
+                .with_telemetry(NacelleTelemetry::default().with_observer(observer.clone()));
+            let control = server.runtime_control();
+            if global_rate {
+                control
+                    .set_global_connection_open_rate(Some(0))
+                    .expect("pause global rate");
+            } else {
+                control.set_max_connections(Some(0)).expect("pause");
+            }
+            let shutdown = nacelle_core::NacelleShutdown::new();
+            let token = shutdown.token();
+            let task =
+                tokio::spawn(
+                    async move { server.serve_listener_with_shutdown(listener, token).await },
+                );
+            let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte))
+                    .await
+                    .expect("rejection")
+                    .expect("EOF"),
+                0
+            );
+            assert!(observer.events().iter().any(|event| {
+                event.kind == NacelleTelemetryEventKind::ConnectionRejected
+                    && event.reason
+                        == Some(if global_rate {
+                            "connection_rate"
+                        } else {
+                            "connections"
+                        })
+            }));
+            if global_rate {
+                control
+                    .set_global_connection_open_rate(None)
+                    .expect("disable global rate");
+            } else {
+                control.set_max_connections(None).expect("resume");
+            }
+            let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            client
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 .await
-                .expect("rejection")
-                .expect("EOF"),
-            0
-        );
-        control.set_max_connections(None).expect("resume");
-        let mut client = tokio::net::TcpStream::connect(addr).await.expect("connect");
-        client
-            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .await
-            .expect("request");
-        let mut response = Vec::new();
-        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
-            .await
-            .expect("response deadline")
-            .expect("response");
-        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
-        assert!(
-            response
-                .windows(b"resumed".len())
-                .any(|chunk| chunk == b"resumed")
-        );
-        shutdown.shutdown();
-        task.await.expect("task").expect("shutdown");
+                .expect("request");
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+                .await
+                .expect("response deadline")
+                .expect("response");
+            assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+            assert!(
+                response
+                    .windows(b"resumed".len())
+                    .any(|chunk| chunk == b"resumed")
+            );
+            shutdown.shutdown();
+            task.await.expect("task").expect("shutdown");
+        }
     }
 
     #[cfg(feature = "tls-self-signed")]
@@ -2478,6 +2506,10 @@ mod tests {
             .control()
             .set_max_connections(Some(0))
             .expect("zero connection capacity");
+        runtime_state
+            .control()
+            .set_global_connection_open_rate(Some(0))
+            .expect("zero global rate");
         let server = HyperServer::new(handler_fn(|context: HttpRequestContext<()>| async move {
             context
                 .respond(HttpResponse::bytes(StatusCode::OK, "healthy"))

@@ -28,6 +28,15 @@ cargo bench -p nacelle-examples --features "bench tcp"
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop overhead. Watch it closely after changes to `NacelleRuntimeState`.
 
+Global connection rate limiting is disabled by default. Disabled admission reads
+its atomic threshold but does not read a clock or lock a window. Enabling
+`set_global_connection_open_rate(...)` adds a clock read and a synchronized
+constant-size window on metered connection admission, not on each request.
+Shared-state mode serializes those window updates across listeners and workers;
+partitioned worker mode uses independent windows and fixed quota shares. Keep
+both global and per-peer rate settings identical when comparing connection-churn
+profiles. These costs are not a measured throughput comparison.
+
 ## Concurrent requests without pipelining
 
 Use pipeline depth 1 when evaluating request/response services. A connection

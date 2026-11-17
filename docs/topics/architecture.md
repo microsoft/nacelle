@@ -175,11 +175,15 @@ their separate existing completion boundaries.
 streaming-task limits are non-blocking atomic bounded counters.
 
 `NacelleLimits` stores startup-only configuration. `NacelleRuntimeControl`
-publishes total connection and per-peer connection-open rate thresholds through
-atomics on those same states. Default request handling does not read the live
-connection fields. Administrative updates neither reset counters nor revoke
-permits; rate-table initialization is lazy, bounded, and completed before enable.
-Optional per-peer concurrency retains its sharded locks.
+publishes total connection, global connection admission rate, and per-peer
+connection-open rate thresholds through atomics on those same states. The
+optional global rate checks all metered transports before total and peer limits
+or setup; later rejections do not refund its fixed-window budget. Default request
+handling does not read the live connection fields. Administrative updates
+neither reset counters nor revoke permits; rate-state initialization is lazy,
+bounded, and completed before enable. The global limiter uses one synchronized
+window per state, independent of bounded peer tables. Optional per-peer
+concurrency retains its sharded locks.
 
 App, host, and direct-server handles remain attached to installed state.
 Replacing shared builder state is a configuration error. Global worker

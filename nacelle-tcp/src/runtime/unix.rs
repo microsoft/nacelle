@@ -605,6 +605,105 @@ mod tests {
 
     struct TestHandler;
 
+    #[tokio::test]
+    async fn global_connection_rate_is_shared_by_tcp_and_unix_listeners() {
+        let socket = std::env::temp_dir().join(format!(
+            "nacelle-global-rate-{}-{}.sock",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
+        ));
+        let unix_listener = UnixListener::bind(&socket).expect("Unix listener");
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("TCP listener");
+        let tcp_addr = tcp_listener.local_addr().expect("TCP address");
+        let state = nacelle_core::NacelleRuntimeState::default();
+        let control = state.control();
+        control
+            .set_global_connection_open_rate(Some(1))
+            .expect("global rate");
+        let observer = nacelle_core::NacelleInMemoryObserver::new();
+        let server = Arc::new(
+            TcpServer::<TestProtocol>::builder()
+                .protocol(TestProtocol)
+                .runtime_state(state.clone())
+                .expect("runtime state")
+                .handler(nacelle_core::pipeline::handler_fn(
+                    |context: crate::TcpRequestContext<TestProtocol>| async move {
+                        context.respond(TcpResponse::bytes("ok")).await
+                    },
+                ))
+                .build()
+                .expect("server")
+                .with_telemetry(
+                    nacelle_core::NacelleTelemetry::default().with_observer(observer.clone()),
+                ),
+        );
+        let shutdown = nacelle_core::NacelleShutdown::new();
+        let tcp_task = tokio::spawn(
+            super::super::tcp::serve_tcp_listener_with_shutdown_deadline(
+                server.clone(),
+                tcp_listener,
+                shutdown.token(),
+                NacelleDrainDeadline::new(Duration::from_secs(1)),
+            ),
+        );
+        let unix_task = tokio::spawn(serve_unix_listener_with_shutdown_deadline(
+            server,
+            unix_listener,
+            Some(socket.clone()),
+            shutdown.token(),
+            NacelleDrainDeadline::new(Duration::from_secs(1)),
+        ));
+        let mut tcp = tokio::net::TcpStream::connect(tcp_addr)
+            .await
+            .expect("TCP client");
+        tcp.write_all(b"x").await.expect("TCP request");
+        let mut response = [0; 2];
+        tokio::time::timeout(Duration::from_secs(1), tcp.read_exact(&mut response))
+            .await
+            .expect("TCP response deadline")
+            .expect("TCP response");
+        assert_eq!(&response, b"ok");
+
+        let mut rejected = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("Unix client");
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rejected.read(&mut byte))
+                .await
+                .expect("rejection deadline")
+                .expect("Unix EOF"),
+            0,
+        );
+        assert!(observer.events().iter().any(|event| {
+            event.kind == NacelleTelemetryEventKind::ConnectionRejected
+                && event.transport == Some(NacelleTransport::new("unix_socket"))
+                && event.reason == Some("connection_rate")
+        }));
+        assert_eq!(state.active_connections(), 1);
+        control
+            .set_global_connection_open_rate(None)
+            .expect("disable global rate");
+        let mut unix = tokio::net::UnixStream::connect(&socket)
+            .await
+            .expect("Unix client");
+        unix.write_all(b"x").await.expect("Unix request");
+        tokio::time::timeout(Duration::from_secs(1), unix.read_exact(&mut response))
+            .await
+            .expect("Unix response deadline")
+            .expect("Unix response");
+        assert_eq!(&response, b"ok");
+
+        drop((tcp, unix, rejected));
+        shutdown.shutdown();
+        tcp_task.await.expect("TCP task").expect("TCP shutdown");
+        unix_task.await.expect("Unix task").expect("Unix shutdown");
+        assert_eq!(state.active_connections(), 0);
+        std::fs::remove_file(socket).expect("remove Unix socket");
+    }
+
     impl crate::SerialTcpHandler<TestProtocol> for TestHandler {
         async fn call<'connection>(
             &'connection self,

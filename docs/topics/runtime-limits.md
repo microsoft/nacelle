@@ -6,6 +6,7 @@ make overload predictable rather than perfectly invisible.
 Key budgets include:
 
 - active connections
+- optional global connection admission attempts per second
 - in-flight requests
 - streaming body tasks
 - optional per-peer connections
@@ -24,7 +25,7 @@ a concurrency decision.
 
 `NacelleLimits` contains startup-only request, streaming, body, handler-timeout,
 per-peer concurrency, and rate-table capacity settings.
-`NacelleRuntimeControl` changes two connection thresholds on the installed
+`NacelleRuntimeControl` changes three connection thresholds on the installed
 state without restarting listeners or resetting counters.
 
 ```rust
@@ -37,25 +38,34 @@ let state = NacelleRuntimeState::new(
 let app = NacelleApp::new().with_runtime_state(state)?;
 let control = app.runtime_control(); // Retain before moving the app into run().
 control.set_max_connections(Some(8_000))?;
+control.set_global_connection_open_rate(Some(1_000))?;
 control.set_connection_open_rate(Some(100))?;
 // Register listeners on app, then run it. The same handle remains live.
 control.set_max_connections(Some(0))?; // Pause new connections, not existing work.
 control.set_max_connections(None)?;   // Unlimited total connections.
-control.set_connection_open_rate(None)?; // Disable new rate accounting.
+control.set_global_connection_open_rate(None)?; // Disable the global budget.
+control.set_connection_open_rate(None)?; // Disable the per-peer budget.
 let observed = control.snapshot();
 ```
 
-The default total is `Some(16_384)` and the default rate is `None`.
-`Some(0)` rejects all new connections for a total cap, or all IP-based
-admissions for a rate cap. `None` means unlimited total connections or disabled
-rate accounting, respectively. Unlimited connections still consume permits and
-update the existing gauges. Unix sockets have no invented peer IP: they consume
-total capacity but bypass IP-based concurrency and rate checks.
+The default total is `Some(16_384)` and both rates default to `None`.
+`set_global_connection_open_rate` limits admission attempts across all listeners
+sharing the state, including Unix sockets. `set_connection_open_rate` retains
+its per-peer meaning. Configure either rate independently or enable both; no
+extra Cargo feature is required. `control.snapshot().max_connections_per_second`
+observes the global rate, while `max_connection_opens_per_peer_per_second`
+observes the peer rate.
+
+`Some(0)` rejects all metered admissions for the total or global rate cap, or all
+IP-based admissions for the peer rate cap. `None` disables the respective
+ceiling. Unlimited connections still consume permits and update the existing
+gauges. Unix sockets have no invented peer IP: they consume total capacity and
+global rate budget but bypass IP-based concurrency and rate checks.
 
 Connections are metered by default. For a dedicated internal listener, such as
 an HTTP health endpoint that must remain reachable during overload,
 `with_connection_accounting(NacelleConnectionAccounting::Exempt)` bypasses the
-total, per-peer, open-rate, and administrative connection registry. Direct TCP
+total, global rate, per-peer, and administrative connection registry checks. Direct TCP
 serving can select the same behavior with
 `NacelleConnectionMeta::with_accounting(...)`. Exemption does not bypass request,
 streaming, body, timeout, or application-admission limits. HTTP path-based
@@ -64,17 +74,36 @@ not known when the connection is accepted.
 
 Lowering below occupancy does not evict connections. Admissions already racing
 an update may finish with the threshold observed by that check; later checks
-read the new value. The order remains total capacity, optional peer concurrency,
-then optional peer rate. Earlier rejection does not consume rate budget, and
-rate rejection releases previously acquired capacity.
+read the new value. The order is optional global rate, total capacity, optional
+peer concurrency, then optional peer rate. Global rate budget is not refunded
+after a later rejection, transport setup failure, disconnect, or permit drop.
+Earlier rejection does not consume peer rate budget, and peer rate rejection
+releases previously acquired capacity.
 
-First rate enable allocates the bounded table on the administrative path before
-publishing the rate. Changing or disabling the rate retains entries and their
+The global limiter uses fixed one-second windows anchored at first enable.
+Changing or disabling it retains its window and count; admissions while disabled
+are not counted. Re-enabling within the same window does not grant a fresh
+budget. Fixed windows can admit bursts across a boundary and are not a sliding
+one-second guarantee. Disabled global rate admission does not read the clock or
+lock a window. An enabled global rate uses one constant-size synchronized window
+per state and needs no peer-table capacity. Exhaustion reports
+`NacelleResourceLimitReason::ConnectionRate` with telemetry reason
+`connection_rate`. Listener rejection closes the accepted socket before setup,
+including TLS; it is not an HTTP `429` response.
+
+First peer rate enable allocates the bounded table on the administrative path
+before publishing the rate. Changing or disabling it retains entries and their
 fixed-window clocks. Opens while disabled are not counted retroactively.
-Table capacity cannot change at runtime. Zero startup capacity prevents rate
-enable. Finite total caps must be below `usize::MAX`; finite rates must also fit
-`u32`. Invalid updates return `NacelleError::Configuration` without changing the
-threshold.
+Table capacity cannot change at runtime. Zero startup capacity prevents peer
+rate enable, not global rate enable. Finite total caps and global rates must be
+below `usize::MAX`; peer rates must also fit `u32`. Invalid updates return
+`NacelleError::Configuration` without changing the threshold.
+
+For applications migrating from 0.3.3, replace
+`NacelleLimits::with_max_connections_per_second(n)` with
+`control.set_global_connection_open_rate(Some(n))?` on the installed 0.4 state.
+The global budget remains disabled until configured. Do not substitute
+`set_connection_open_rate`: a per-peer budget is not a global budget.
 
 `state.control()`, app/host `runtime_control()`, and direct-server
 `runtime_control()` address their installed state. Use the app/host handle when
@@ -106,10 +135,13 @@ aggregate handle through the resulting config's `runtime_control()`.
 Aggregate finite values are process totals, divided by quotient and remainder
 in configured worker order. A total below the worker count leaves zero shares,
 which reject rather than becoming unlimited. Spare capacity is not borrowed
-between workers. Rate-table capacity is also divided at startup, even while
-rates are disabled; enabling requires at least one reserved entry per worker.
-No table is allocated until enable, and the process budget is not multiplied by
-worker count.
+between workers. This includes global connection admission rates: each worker
+has its own fixed window, and unused quota is not borrowed. Disabling a global
+rate disables it on every worker, including zero-share workers. Peer rate-table
+capacity is also divided at startup, even while peer rates are disabled;
+enabling peer rates requires at least one reserved entry per worker. No peer
+table is allocated until enable, and the process budget is not multiplied by
+worker count. Global rate limits do not allocate peer tables.
 
 Administrative fan-out and aggregate snapshots are serialized; admission on
 different workers does not switch instantaneously. Use the aggregate handle,

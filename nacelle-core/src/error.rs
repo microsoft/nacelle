@@ -12,6 +12,8 @@ pub enum NacelleConfigurationError {
     ConnectionLimit,
     /// The rate does not fit the limiter's finite counter representation.
     ConnectionOpenRate,
+    /// Use `None`, not the reserved `usize::MAX`, for a disabled global rate.
+    GlobalConnectionOpenRate,
     /// Every enabled rate limiter needs nonzero reserved table capacity.
     ConnectionRateTableCapacity,
     /// Partition count must be nonzero and match the configured workers.
@@ -33,6 +35,7 @@ impl Display for NacelleConfigurationError {
         f.write_str(match self {
             Self::ConnectionLimit => "finite connection limit must be below usize::MAX; use None for unlimited",
             Self::ConnectionOpenRate => "connection-open rate must fit u32 and be below usize::MAX",
+            Self::GlobalConnectionOpenRate => "global connection-open rate must be below usize::MAX; use None to disable",
             Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
@@ -58,6 +61,8 @@ impl From<NacelleConfigurationError> for NacelleError {
 pub enum NacelleResourceLimitReason {
     /// Process-wide concurrent connection capacity.
     Connections,
+    /// Global connection admission attempts per second.
+    ConnectionRate,
     /// Bounded connection registry capacity, including setup and closing.
     ConnectionRegistry,
     /// A caller supplied an ID already registered in this control scope.
@@ -110,6 +115,7 @@ impl NacelleResourceLimitReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Connections => "connections",
+            Self::ConnectionRate => "connection_rate",
             Self::ConnectionRegistry => "connection_registry",
             Self::DuplicateConnectionId => "duplicate_connection_id",
             Self::InFlightRequests => "in_flight_requests",
@@ -268,6 +274,9 @@ impl NacelleError {
             }
             Self::ResourceLimit(NacelleResourceLimitReason::Connections) => Some(
                 "update NacelleRuntimeControl::set_max_connections or reduce concurrent clients",
+            ),
+            Self::ResourceLimit(NacelleResourceLimitReason::ConnectionRate) => Some(
+                "update NacelleRuntimeControl::set_global_connection_open_rate or slow connection admission attempts",
             ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRate) => Some(
                 "update NacelleRuntimeControl::set_connection_open_rate or slow reconnect churn",

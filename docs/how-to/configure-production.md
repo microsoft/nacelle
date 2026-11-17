@@ -8,13 +8,17 @@ and transport timeouts are bounded by default.
 
 `state.control().set_max_connections(None)?` disables that state's connection
 admission ceiling. Active connections are still counted for telemetry, and any
-configured per-peer connection or connection-open rate limits still apply. Use
+configured global rate or per-peer limits still apply. Use
 this only when another layer enforces an appropriate connection and memory
 boundary.
 
-Set finite live thresholds with `set_max_connections(Some(n))` and
-`set_connection_open_rate(Some(n))`. Zero rejects new admissions without evicting
-existing connections. Obtain the app/host handle before serving and retain it
+Set finite live thresholds with `set_max_connections(Some(n))` for concurrent
+connections, `set_global_connection_open_rate(Some(n))` for global admission
+attempts per second, and `set_connection_open_rate(Some(n))` for opens per peer
+per second. Both rate controls default to disabled and can be used independently.
+Global rates include Unix sockets; peer rates require an IP. Zero rejects new
+admissions without evicting existing connections; `None` disables that control.
+Obtain the app/host handle before serving and retain it
 for updates; see [runtime control](../topics/runtime-limits.md#live-connection-control)
 for startup configuration, update errors, and aggregate worker scope.
 

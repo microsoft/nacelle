@@ -8,14 +8,17 @@ and transport timeouts are bounded by default.
 
 `state.control().set_max_connections(None)?` disables that state's connection
 admission ceiling. Active connections are still counted for telemetry, and any
-configured per-peer connection or connection-open rate limits still apply. Use
+configured global rate or per-peer limits still apply. Use
 this only when another layer enforces an appropriate connection and memory
 boundary.
 
 Connection thresholds are live: `set_max_connections(Some(n))` sets the total,
-and `set_connection_open_rate(Some(n))` sets opens per peer per second.
+`set_global_connection_open_rate(Some(n))` sets global admission attempts per
+second, and `set_connection_open_rate(Some(n))` sets opens per peer per second.
 Zero rejects new admissions; `None` disables the respective ceiling.
-Defaults remain 16,384 connections and rate limiting disabled. Startup-only
+Defaults remain 16,384 connections and both rate limits disabled. Global rates
+also cover Unix sockets and count attempts rejected by later limits or setup;
+per-peer rates do not cover Unix sockets. Startup-only
 limits stay in `NacelleLimits`. See [runtime control](../topics/runtime-limits.md#live-connection-control)
 for installed handles, retained rate history, update errors, and worker scope.
 
