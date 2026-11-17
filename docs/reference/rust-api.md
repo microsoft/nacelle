@@ -137,6 +137,9 @@ Start with these public entry points:
   constructor before obtaining its `runtime_control()` handle. Worker mode
   controls aggregate process totals while retaining worker-local counters.
 - `nacelle::core::NacelleRuntimeControl` for live connection thresholds.
+  `NacelleRuntimeState::new_with_connection_limits(startup, thresholds)?`
+  applies initial thresholds through the same validated controls before
+  installing the state.
   `set_global_connection_open_rate(...)` sets admission attempts per second
   across metered listeners sharing the state, including Unix sockets;
   `set_peer_connection_open_rate(...)` limits each IP and requires `peer-limits`.

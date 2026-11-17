@@ -172,6 +172,32 @@ not necessarily the entire process if the caller constructed separate states.
 
 ## Startup configuration
 
+### Initial connection thresholds
+
+`NacelleRuntimeState::new_with_connection_limits(startup, thresholds)?` configures
+initial live thresholds before installing the state in an app, host, or server.
+It uses the live setters' validation and state rather than a second admission
+policy:
+
+```rust
+use nacelle::core::{NacelleConnectionLimits, NacelleLimits, NacelleRuntimeState};
+
+let state = NacelleRuntimeState::new_with_connection_limits(
+    NacelleLimits::default(),
+    NacelleConnectionLimits {
+        max_connections_per_second: Some(1_000),
+        ..Default::default()
+    },
+)?;
+```
+
+This example retains the default 16,384 concurrent-connection cap. The
+`max_connection_opens_per_peer_per_second` field is available with `peer-limits`.
+`None`, zero, numeric bounds, and peer-table requirements match the live
+controls. Rate windows start during construction; subsequent live updates
+retain their history. Invalid configuration returns no partially configured
+state. `NacelleRuntimeState::new(startup)` retains its existing defaults.
+
 ### Application-owned transport setup
 
 TCP and Unix applications that perform their own TLS or transport setup can

@@ -635,6 +635,26 @@ impl NacelleRuntimeState {
         Self::with_registry(limits, tracking)
     }
 
+    /// Create a state with validated initial live connection thresholds.
+    ///
+    /// Uses the same setters, numeric bounds, disabled/zero semantics, and rate
+    /// state as [`NacelleRuntimeControl`]. Rate windows start during construction.
+    /// Invalid configuration returns an error without exporting a partial state.
+    pub fn new_with_connection_limits(
+        limits: NacelleLimits,
+        connection_limits: NacelleConnectionLimits,
+    ) -> Result<Self, NacelleError> {
+        let state = Self::new(limits);
+        let control = state.control();
+        control.set_max_connections(connection_limits.max_connections)?;
+        control.set_global_connection_open_rate(connection_limits.max_connections_per_second)?;
+        #[cfg(feature = "peer-limits")]
+        control.set_peer_connection_open_rate(
+            connection_limits.max_connection_opens_per_peer_per_second,
+        )?;
+        Ok(state)
+    }
+
     fn with_registry(limits: NacelleLimits, tracking: Option<RegistryPartition>) -> Self {
         Self {
             inner: Arc::new(NacelleRuntimeStateInner {
@@ -1231,6 +1251,141 @@ impl NacelleRuntimeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn startup_connection_limits_share_live_capacity_and_rate_history() {
+        let state = NacelleRuntimeState::new_with_connection_limits(
+            NacelleLimits::default(),
+            NacelleConnectionLimits {
+                max_connections: Some(1),
+                max_connections_per_second: Some(2),
+                #[cfg(feature = "peer-limits")]
+                max_connection_opens_per_peer_per_second: None,
+            },
+        )
+        .unwrap();
+        let first = state.acquire_connection().unwrap();
+        assert!(matches!(
+            state.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::Connections
+            ))
+        ));
+        let control = state.control();
+        control.set_max_connections(Some(2)).unwrap();
+        assert!(matches!(
+            state.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let second = state.acquire_connection().unwrap();
+        assert_eq!(state.active_connections(), 2);
+        drop((first, second));
+        assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
+    fn startup_connection_limits_reject_reserved_values() {
+        for (thresholds, expected) in [
+            (
+                NacelleConnectionLimits {
+                    max_connections: Some(usize::MAX),
+                    ..Default::default()
+                },
+                NacelleConfigurationError::ConnectionLimit,
+            ),
+            (
+                NacelleConnectionLimits {
+                    max_connections_per_second: Some(usize::MAX),
+                    ..Default::default()
+                },
+                NacelleConfigurationError::ConnectionOpenRate,
+            ),
+        ] {
+            assert!(matches!(
+                NacelleRuntimeState::new_with_connection_limits(NacelleLimits::default(), thresholds),
+                Err(NacelleError::Configuration(actual)) if actual == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn startup_connection_limits_preserve_zero_and_disabled_controls() {
+        for (concurrent, rate, rejected) in [
+            (Some(0), None, Some(NacelleResourceLimitReason::Connections)),
+            (
+                None,
+                Some(0),
+                Some(NacelleResourceLimitReason::ConnectionRate),
+            ),
+            (None, None, None),
+        ] {
+            let state = NacelleRuntimeState::new_with_connection_limits(
+                NacelleLimits::default(),
+                NacelleConnectionLimits {
+                    max_connections: concurrent,
+                    max_connections_per_second: rate,
+                    #[cfg(feature = "peer-limits")]
+                    max_connection_opens_per_peer_per_second: None,
+                },
+            )
+            .unwrap();
+            match rejected {
+                Some(expected) => assert!(matches!(
+                    state.acquire_connection(),
+                    Err(NacelleError::ResourceLimit(actual)) if actual == expected
+                )),
+                None => {
+                    let permit = state.acquire_connection().unwrap();
+                    assert_eq!(state.active_connections(), 1);
+                    drop(permit);
+                }
+            }
+            assert_eq!(state.active_connections(), 0);
+        }
+    }
+
+    #[cfg(feature = "peer-limits")]
+    #[test]
+    fn startup_connection_limits_validate_and_apply_peer_rates() {
+        let mut thresholds = NacelleConnectionLimits {
+            max_connection_opens_per_peer_per_second: Some(1),
+            ..Default::default()
+        };
+        assert!(matches!(
+            NacelleRuntimeState::new_with_connection_limits(
+                NacelleLimits::default().with_connection_rate_limit_table_capacity(0),
+                thresholds,
+            ),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::ConnectionRateTableCapacity
+            ))
+        ));
+        thresholds.max_connection_opens_per_peer_per_second = Some(usize::MAX);
+        assert!(matches!(
+            NacelleRuntimeState::new_with_connection_limits(NacelleLimits::default(), thresholds),
+            Err(NacelleError::Configuration(
+                NacelleConfigurationError::ConnectionOpenRate
+            ))
+        ));
+        thresholds.max_connection_opens_per_peer_per_second = Some(1);
+        let state =
+            NacelleRuntimeState::new_with_connection_limits(NacelleLimits::default(), thresholds)
+                .unwrap();
+        let peer = "127.0.0.1".parse().unwrap();
+        drop(state.acquire_connection_for_peer(peer).unwrap());
+        assert!(matches!(
+            state.acquire_connection_for_peer(peer),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::PeerConnectionRate
+            ))
+        ));
+        state.control().set_peer_connection_open_rate(None).unwrap();
+        drop(state.acquire_connection_for_peer(peer).unwrap());
+        assert_eq!(state.active_connections(), 0);
+    }
 
     #[test]
     fn borrowed_and_owned_permits_share_limits_and_release_gauges() {
