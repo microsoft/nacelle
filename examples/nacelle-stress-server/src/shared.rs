@@ -593,6 +593,9 @@ pub fn build_runtime_state(config: &ServerConfig) -> Result<NacelleRuntimeState,
     runtime_state
         .control()
         .set_max_connections(config.connection_limits.max_connections)?;
+    runtime_state
+        .control()
+        .set_global_connection_open_rate(config.connection_limits.max_connections_per_second)?;
     #[cfg(feature = "peer-limits")]
     runtime_state.control().set_peer_connection_open_rate(
         config
