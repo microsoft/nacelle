@@ -198,7 +198,11 @@ budget on each worker. See [runtime control](runtime-limits.md#live-connection-c
 for update and installation contracts.
 
 Optional TCP/Unix/HTTP connection tracking adds a bounded core registry of metadata
-and administrative signals. The transport owns setup, activity classification, and
+and administrative signals. TCP's opt-in owned admission token reuses that
+registration across application-owned setup and direct serving, validates
+runtime identity, and never reacquires connection capacity or rate budget.
+Core controlled setup drops owned work before releasing its registration.
+The transport owns setup, activity classification, and
 I/O teardown; existing listener `JoinSet`s still own tasks. The registry never
 owns sockets or worker-local state. Partitioned states share duplicate-ID
 detection while enforcing worker-local capacities and reclaim targets.

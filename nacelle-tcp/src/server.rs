@@ -5,7 +5,8 @@ use std::sync::Arc;
 use crate::admission::{LocalTcpAdmitted, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
 use crate::connection::{
-    serve_connection_with_connection_meta_and_tcp_state, serve_stream_admitted,
+    TcpConnectionAdmission, serve_connection_with_connection_meta_and_tcp_state,
+    serve_stream_admitted, serve_stream_with_admission,
     serve_stream_with_connection_meta_and_tcp_state,
 };
 use crate::limits::NacelleTcpLimits;
@@ -32,9 +33,9 @@ pub struct Present;
 /// lifetime of their futures. Cancelling those futures drops owned I/O without
 /// guaranteeing graceful socket shutdown.
 ///
-/// Each direct serving method acquires one connection permit, then enforces
-/// process-wide limits from [`NacelleRuntimeState`] and transport limits from
-/// [`NacelleTcpLimits`].
+/// Direct serving acquires connection admission automatically unless passed an
+/// owned [`TcpConnectionAdmission`]. Both paths enforce runtime limits from
+/// [`NacelleRuntimeState`] and transport limits from [`NacelleTcpLimits`].
 ///
 /// # Errors
 ///
@@ -530,6 +531,39 @@ where
             connection.with_listener(self.listener.clone()),
         )
         .await
+    }
+
+    /// Reserve connection admission before application-owned transport setup.
+    pub fn admit_connection(
+        &self,
+        connection: NacelleConnectionMeta,
+    ) -> Result<TcpConnectionAdmission, NacelleError> {
+        TcpConnectionAdmission::new(
+            &self.runtime_state,
+            &self.telemetry,
+            connection.with_listener(self.listener.clone()),
+        )
+    }
+
+    /// Transfer an admission into serving without another permit or rate charge.
+    pub fn serve_io_with_admission<IO>(
+        &self,
+        io: IO,
+        admission: TcpConnectionAdmission,
+    ) -> impl std::future::Future<Output = Result<(), NacelleError>>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        serve_stream_with_admission(
+            io,
+            self.protocol.clone(),
+            self.handler.clone(),
+            self.config.clone(),
+            self.telemetry.clone(),
+            self.runtime_state.clone(),
+            self.tcp_limits,
+            admission,
+        )
     }
 
     pub(crate) async fn serve_io_admitted<IO>(

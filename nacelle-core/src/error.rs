@@ -18,6 +18,8 @@ pub enum NacelleConfigurationError {
     PartitionCount,
     /// A builder cannot replace state already shared with handles or listeners.
     RuntimeStateInUse,
+    /// Connection admission cannot be transferred to another runtime state.
+    ConnectionAdmissionRuntime,
     /// Admission requires finite nonzero waiter capacity and a valid deadline.
     AdmissionLimits,
     /// Admission requires configured transport head-read bounds.
@@ -36,6 +38,7 @@ impl Display for NacelleConfigurationError {
             Self::ConnectionRateTableCapacity => "per-peer rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
+            Self::ConnectionAdmissionRuntime => "connection admission belongs to a different runtime state",
             Self::AdmissionLimits => "admission requires a positive finite timeout and waiter capacity",
             Self::AdmissionReadBounds => "request admission requires bounded head reads",
             Self::ConnectionTrackingCapacity => "connection tracking requires a positive finite capacity",

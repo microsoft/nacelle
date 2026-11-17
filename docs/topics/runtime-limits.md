@@ -172,6 +172,14 @@ not necessarily the entire process if the caller constructed separate states.
 
 ## Startup configuration
 
+### Application-owned transport setup
+
+TCP and Unix applications that perform their own TLS or transport setup can
+reserve an owned `TcpConnectionAdmission` before setup and transfer it into
+shared or serial serving. The same runtime admission, rate budgets, connection
+gauges, and optional tracking apply exactly once. Automatic admission remains
+the default. See [the ownership and cancellation contract](../reference/protocol.md#admission-before-transport-setup).
+
 ### Tracked connections
 
 Tracking is off by default. Enable a finite registry before installing runtime

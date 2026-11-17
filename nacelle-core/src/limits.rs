@@ -731,6 +731,12 @@ impl NacelleRuntimeState {
         }
     }
 
+    /// Check the identity of states used for an owned transport handoff.
+    #[doc(hidden)]
+    pub fn shares_state_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Replace an unshared builder state, or reinstall the identical state.
     ///
     /// A live handle, server clone, listener, or permit prevents replacement.

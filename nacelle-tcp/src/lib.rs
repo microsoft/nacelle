@@ -22,7 +22,7 @@ pub use config::{
     NacelleTcpConfig, ResponseWritePolicy, TcpHeadReadLimits, TcpHeadReadLimitsError,
     TcpRequestBodyMode,
 };
-pub use connection::{serve_connection, serve_stream};
+pub use connection::{TcpConnectionAdmission, serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;
 #[cfg(feature = "experimental-openssl-detection")]
 pub use options::NacelleTlsDetectionOptions;

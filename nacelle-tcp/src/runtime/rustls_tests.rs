@@ -133,6 +133,82 @@ impl Protocol for TestProtocol {
 }
 
 #[tokio::test]
+async fn owned_admission_precedes_application_owned_rustls_setup() {
+    let runtime = tracked_runtime(1);
+    runtime.control().set_max_connections(Some(1)).unwrap();
+    runtime
+        .control()
+        .set_global_connection_open_rate(Some(1))
+        .unwrap();
+    #[cfg(feature = "peer-limits")]
+    runtime
+        .control()
+        .set_peer_connection_open_rate(Some(1))
+        .unwrap();
+    let generated = nacelle_rustls::NacelleTlsConfig::self_signed(["localhost"]).unwrap();
+    let certificate = test_certificate(generated.certificate_pem.as_bytes());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(certificate).unwrap();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ));
+    let acceptor = tokio_rustls::TlsAcceptor::from(generated.tls_config.server_config());
+    let server = TcpServer::<TestProtocol>::builder()
+        .protocol(TestProtocol)
+        .runtime_state(runtime.clone())
+        .unwrap()
+        .handler(handler_fn(
+            |context: TcpRequestContext<TestProtocol>| async move {
+                context.respond(TcpResponse::bytes("ok")).await
+            },
+        ))
+        .build()
+        .unwrap();
+    let connection =
+        nacelle_core::NacelleConnectionMeta::tcp(Some("127.0.0.1:1234".parse().unwrap()), None);
+    let admission = server.admit_connection(connection).unwrap();
+    assert_eq!(runtime.active_connections(), 1);
+    assert!(matches!(
+        server.admit_connection(nacelle_core::NacelleConnectionMeta::tcp(None, None)),
+        Err(NacelleError::ResourceLimit(
+            nacelle_core::NacelleResourceLimitReason::ConnectionRate
+        ))
+    ));
+    let (client_io, server_io) = tokio::io::duplex(8192);
+    let serve = async move {
+        let (stream, admission) = admission
+            .setup(async move { acceptor.accept(server_io).await.map_err(NacelleError::from) })
+            .await?;
+        let tls = nacelle_rustls::connection_tls_meta(stream.get_ref().1);
+        server
+            .serve_io_with_admission(stream, admission.with_tls(tls))
+            .await
+    };
+    let client = async {
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut stream = connector.connect(name, client_io).await.unwrap();
+        stream.write_all(&[1]).await.unwrap();
+        let mut response = [0; 2];
+        stream.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"ok");
+        let snapshot = runtime.control().connections(1).unwrap().pop().unwrap();
+        assert_eq!(snapshot.connection.tls.unwrap().provider, "rustls");
+        stream.shutdown().await.unwrap();
+        stream
+    };
+    let (served, _client) = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(serve, client)
+    })
+    .await
+    .expect("application-owned TLS setup completes");
+    served.unwrap();
+    assert_eq!(runtime.active_connections(), 0);
+    assert!(runtime.control().connections(1).unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn tcp_tls_self_signed_server_accepts_request() {
     let runtime = tracked_runtime(8);
     let generated =

@@ -628,6 +628,22 @@ impl NacelleConnectionRegistration {
     where
         F: Future<Output = Result<(), NacelleError>>,
     {
+        let controlled = self.run_setup(future);
+        async move {
+            let ((), registration) = controlled.await?;
+            drop(registration);
+            Ok(())
+        }
+    }
+
+    /// Run controlled setup, retaining registration only after successful setup.
+    ///
+    /// Work and its output are dropped before capacity on error or cancellation.
+    #[allow(clippy::future_not_send)]
+    pub fn run_setup<F, T>(self, future: F) -> impl Future<Output = Result<(T, Self), NacelleError>>
+    where
+        F: Future<Output = Result<T, NacelleError>>,
+    {
         let activity = self.activity();
         RegisteredConnection {
             work: Some(future),
@@ -653,12 +669,12 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl<F, C> Future for RegisteredConnection<F, C>
+impl<F, C, T> Future for RegisteredConnection<F, C>
 where
-    F: Future<Output = Result<(), NacelleError>>,
+    F: Future<Output = Result<T, NacelleError>>,
     C: Future<Output = NacelleConnectionCloseReason>,
 {
-    type Output = Result<(), NacelleError>;
+    type Output = Result<(T, NacelleConnectionRegistration), NacelleError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -696,8 +712,8 @@ where
         }
         this.work.set(None);
         this.close.set(None);
-        this.registration.take();
-        Poll::Ready(result)
+        let registration = this.registration.take().expect("connection registration");
+        Poll::Ready(result.map(|value| (value, registration)))
     }
 }
 

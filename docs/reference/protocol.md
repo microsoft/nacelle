@@ -81,6 +81,48 @@ ordered connection-state access. Capacity and tracking end when serving complete
 or is cancelled. After cancelling borrowed serving, discard or finalize the
 owner's stream rather than resuming its partially consumed protocol.
 
+## Admission before transport setup
+
+Ordinary direct-serving methods reserve connection admission automatically.
+Applications that own TLS or other transport setup can reserve first through
+`TcpServer::admit_connection(metadata)` or
+`SerialTcpServer::admit_connection(metadata)`. Free serving helpers can use
+`TcpConnectionAdmission::new(&runtime, &telemetry, metadata)` instead.
+
+The opaque, non-cloneable token holds concurrent capacity and optional tracking
+across setup and serving. It charges global and peer admission rates once and
+never refunds rate budget. Its connection identity, peer, listener, and accounting
+mode cannot change; `with_tls(...)` can attach negotiated TLS metadata.
+
+For Rustls with a direct `nacelle-rustls` dependency:
+
+```rust
+let admission = server.admit_connection(connection)?;
+let (tls_stream, admission) = admission.setup(async move {
+    tls_acceptor.accept(stream).await.map_err(NacelleError::from)
+}).await?;
+let tls_metadata = nacelle_rustls::connection_tls_meta(tls_stream.get_ref().1);
+let admission = admission.with_tls(tls_metadata);
+server.serve_io_with_admission(tls_stream, admission).await?;
+```
+
+`setup(...)` owns the setup future. Failure, cancellation, or administrative close
+drops owned setup work before releasing capacity and registry storage. Success
+returns the setup output and the same token; tracking remains in `Setup` until
+the serving driver establishes the connection. Applications still configure
+their own setup/handshake deadlines. Setup does not emit serving-open events;
+connection gauges and tracking already include the reservation.
+
+`serve_io_with_admission` consumes the token without another permit or rate
+charge. `SerialTcpServer` accepts borrowed `&mut` I/O in this method. The free
+`connection::serve_stream_with_admission` and
+`connection::serve_serial_stream_with_admission` helpers expose the same transfer.
+The exact originating runtime state, or its clone, must serve the token;
+another state or worker partition returns
+`NacelleConfigurationError::ConnectionAdmissionRuntime` before protocol or I/O
+work. This is ownership transfer, not an accounting exemption. Discard or
+finalize borrowed I/O after cancellation rather than resuming the protocol.
+
 ## Admission before body work
 
 Implement `nacelle::core::Admission<TcpAdmissionContext<'_, P, AppState>>`
