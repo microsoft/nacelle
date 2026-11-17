@@ -74,9 +74,10 @@ cycle before the complete pair becomes active.
 
 ## Resource And Timeout Model
 
-The checked-in profile sets explicit total connections, per-peer connections,
-in-flight requests, body sizes, and handler timeout. Use a process or container
-memory limit for a hard deployment boundary.
+The checked-in profile sets explicit total connections, in-flight requests,
+body sizes, and handler timeout. Build with `--features peer-limits` before
+uncommenting `max_connections_per_peer`; otherwise that key is rejected.
+Use a process or container memory limit for a hard deployment boundary.
 
 This proxy fully buffers each inbound request and complete upstream response.
 The connection and in-flight limits therefore need to be sized together with

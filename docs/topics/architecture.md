@@ -116,6 +116,8 @@ does not configure the caller-owned shared Tokio runtime.
 Thread-per-core resource accounting is selected statically at startup. Global
 mode shares all existing counters. Worker mode partitions finite connection,
 request, streaming, and per-peer capacities in configured worker order.
+Startup-budget partitioning lives in core so peer feature gates follow Cargo
+dependency unification rather than the facade's feature selection.
 Worker factories execute once per worker. Process-wide client pools, backend
 limits, and other external resource budgets must be shared explicitly when they
 must not scale with worker count. `LocalTcpRuntimeConfig::with_state(...)` and
@@ -175,11 +177,18 @@ their separate existing completion boundaries.
 streaming-task limits are non-blocking atomic bounded counters.
 
 `NacelleLimits` stores startup-only configuration. `NacelleRuntimeControl`
-publishes total connection and per-peer connection-open rate thresholds through
-atomics on those same states. Default request handling does not read the live
-connection fields. Administrative updates neither reset counters nor revoke
-permits; rate-table initialization is lazy, bounded, and completed before enable.
-Optional per-peer concurrency retains its sharded locks.
+publishes total connection, global connection admission rate, and per-peer
+connection-open rate thresholds through atomics on those same states. The
+optional global rate checks all metered transports before total and peer limits
+or setup; later rejections do not refund its fixed-window budget. Default request
+handling does not read the live connection fields. Administrative updates
+neither reset counters nor revoke permits; rate-state initialization is lazy,
+bounded, and completed before enable. The global limiter uses one synchronized
+window per state, independent of bounded peer tables. Optional per-peer
+concurrency retains its sharded locks. The default-off `peer-limits` feature
+compiles in peer concurrency maps, connection-open rate tables, HTTP request-rate
+tables, and their configuration APIs. Global controls, connection metadata,
+trusted-proxy resolution, and access logging do not require it.
 
 App, host, and direct-server handles remain attached to installed state.
 Replacing shared builder state is a configuration error. Global worker
@@ -191,7 +200,11 @@ budget on each worker. See [runtime control](runtime-limits.md#live-connection-c
 for update and installation contracts.
 
 Optional TCP/Unix/HTTP connection tracking adds a bounded core registry of metadata
-and administrative signals. The transport owns setup, activity classification, and
+and administrative signals. TCP's opt-in owned admission token reuses that
+registration across application-owned setup and direct serving, validates
+runtime identity, and never reacquires connection capacity or rate budget.
+Core controlled setup drops owned work before releasing its registration.
+The transport owns setup, activity classification, and
 I/O teardown; existing listener `JoinSet`s still own tasks. The registry never
 owns sockets or worker-local state. Partitioned states share duplicate-ID
 detection while enforcing worker-local capacities and reclaim targets.

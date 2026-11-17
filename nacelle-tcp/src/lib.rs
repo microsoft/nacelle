@@ -17,12 +17,12 @@ pub mod server;
 
 #[doc(hidden)]
 pub use admission::{LocalSerialTcpService, LocalTcpService, SerialTcpService, TcpService};
-pub use admission::{SerialTcpAdmissionContext, TcpAdmissionContext};
+pub use admission::{SerialHandlerAdapter, SerialTcpAdmissionContext, TcpAdmissionContext};
 pub use config::{
     NacelleTcpConfig, ResponseWritePolicy, TcpHeadReadLimits, TcpHeadReadLimitsError,
     TcpRequestBodyMode,
 };
-pub use connection::{serve_connection, serve_stream};
+pub use connection::{TcpConnectionAdmission, serve_connection, serve_stream};
 pub use limits::NacelleTcpLimits;
 #[cfg(feature = "experimental-openssl-detection")]
 pub use options::NacelleTlsDetectionOptions;

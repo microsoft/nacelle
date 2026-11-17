@@ -1278,6 +1278,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn runtime_gauges_balance_peer_rejection_and_permit_drop() {
         for (release, expected) in [(false, 1.0), (true, 0.0)] {
@@ -1312,6 +1313,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn live_rate_rejection_rolls_back_peer_capacity_and_gauge() {
         let recorder = DebuggingRecorder::new();
@@ -1321,7 +1323,9 @@ mod tests {
                 crate::NacelleLimits::default().with_max_connections_per_peer(1),
             );
             let control = state.control();
-            control.set_connection_open_rate(Some(0)).expect("pause");
+            control
+                .set_peer_connection_open_rate(Some(0))
+                .expect("pause");
             let peer = "127.0.0.1".parse().expect("peer");
             assert!(matches!(
                 state.acquire_connection_for_peer(peer),
@@ -1330,7 +1334,9 @@ mod tests {
                 ))
             ));
             assert_eq!(state.active_connections(), 0);
-            control.set_connection_open_rate(None).expect("disable");
+            control
+                .set_peer_connection_open_rate(None)
+                .expect("disable");
             drop(
                 state
                     .acquire_connection_for_peer(peer)

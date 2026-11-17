@@ -5,8 +5,14 @@ python3 .github/scripts/test-architecture.py
 python3 .github/scripts/check-architecture.py
 python3 .github/scripts/test-public-api.py
 cargo fmt --all -- --check
+rustfmt --edition 2024 --check .github/fixtures/peer-limit-unification.rs
 cargo test --workspace --exclude nacelle-openssl --all-targets
 cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings
+cargo test -p nacelle-core --features peer-limits --all-targets
+cargo test -p nacelle-tcp --features peer-limits,tls-self-signed --all-targets
+cargo test -p nacelle-http --features peer-limits,tls-self-signed --all-targets
+cargo test -p nacelle --no-default-features --features http,peer-limits,tcp --all-targets
+cargo test -p nacelle-stress-server -p nacelle-proxy --features peer-limits --all-targets
 cargo test -p nacelle-core --features openssl --all-targets
 cargo clippy -p nacelle-core --features openssl --all-targets -- -D warnings
 cargo test -p nacelle-rustls --all-features --all-targets
@@ -36,6 +42,7 @@ cargo test -p nacelle --no-default-features --features tcp,rustls --all-targets
 cargo clippy -p nacelle --no-default-features --features tcp --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets
 cargo clippy -p nacelle --no-default-features --features experimental-thread-per-core,tcp --all-targets -- -D warnings
+bash .github/scripts/check-peer-limit-unification.sh test
 cargo test -p nacelle --no-default-features --features experimental-openssl-detection --all-targets
 cargo clippy -p nacelle --no-default-features --features experimental-openssl-detection --all-targets -- -D warnings
 cargo test -p nacelle --no-default-features --features experimental-thread-per-core,experimental-openssl-detection --all-targets

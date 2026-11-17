@@ -628,6 +628,30 @@ impl NacelleConnectionRegistration {
     where
         F: Future<Output = Result<(), NacelleError>>,
     {
+        self.run_with_completion(future, |(), registration| drop(registration))
+    }
+
+    /// Run controlled setup, retaining registration only after successful setup.
+    ///
+    /// Work and its output are dropped before capacity on error or cancellation.
+    #[allow(clippy::future_not_send)]
+    pub fn run_setup<F, T>(self, future: F) -> impl Future<Output = Result<(T, Self), NacelleError>>
+    where
+        F: Future<Output = Result<T, NacelleError>>,
+    {
+        self.run_with_completion(future, |value, registration| (value, registration))
+    }
+
+    #[allow(clippy::future_not_send)]
+    fn run_with_completion<F, T, U, M>(
+        self,
+        future: F,
+        complete: M,
+    ) -> impl Future<Output = Result<U, NacelleError>>
+    where
+        F: Future<Output = Result<T, NacelleError>>,
+        M: Fn(T, Self) -> U,
+    {
         let activity = self.activity();
         RegisteredConnection {
             work: Some(future),
@@ -638,27 +662,30 @@ impl NacelleConnectionRegistration {
                 }
             }),
             registration: Some(self),
+            complete,
         }
     }
 }
 
 pin_project_lite::pin_project! {
     // Field order also releases I/O before capacity when dropped unpolled.
-    struct RegisteredConnection<F, C> {
+    struct RegisteredConnection<F, C, M> {
         #[pin]
         work: Option<F>,
         #[pin]
         close: Option<C>,
         registration: Option<NacelleConnectionRegistration>,
+        complete: M,
     }
 }
 
-impl<F, C> Future for RegisteredConnection<F, C>
+impl<F, C, M, T, U> Future for RegisteredConnection<F, C, M>
 where
-    F: Future<Output = Result<(), NacelleError>>,
+    F: Future<Output = Result<T, NacelleError>>,
     C: Future<Output = NacelleConnectionCloseReason>,
+    M: Fn(T, NacelleConnectionRegistration) -> U,
 {
-    type Output = Result<(), NacelleError>;
+    type Output = Result<U, NacelleError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -696,8 +723,8 @@ where
         }
         this.work.set(None);
         this.close.set(None);
-        this.registration.take();
-        Poll::Ready(result)
+        let registration = this.registration.take().expect("connection registration");
+        Poll::Ready(result.map(|value| (this.complete)(value, registration)))
     }
 }
 

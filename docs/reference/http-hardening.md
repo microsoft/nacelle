@@ -26,7 +26,19 @@ Defaults:
 - optional trusted proxy forwarded address handling through `with_trusted_proxy_ips`
 - optional security headers through `with_security_header(...)` or `with_default_security_headers()`
 - optional per-peer connection caps through `NacelleLimits::with_max_connections_per_peer`
-- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_connection_open_rate`
+- optional live global connection admission rates through `NacelleRuntimeControl::set_global_connection_open_rate`
+- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_peer_connection_open_rate`
+
+Per-peer concurrent connections, connection-open rates, and HTTP request rates
+require the default-off `peer-limits` Cargo feature. Their settings and tracking
+state are compiled out without it. Trusted-proxy address resolution, metadata,
+access logging, and global connection controls remain available.
+
+Global connection rates count attempts before concurrent and peer checks or TLS
+setup, without refunds after a later rejection. Exhaustion closes the accepted
+socket and emits `connection_rate`; it does not produce an HTTP `429`. Both
+connection rate controls are disabled by default and can be enabled independently.
+See [runtime limits](../topics/runtime-limits.md#live-connection-control).
 
 Rejected requests receive deterministic HTTP responses where the request parser has already accepted the request: `405`, `414`, `421`, `429`, or `431`. Rejections emit low-cardinality telemetry reasons such as `host`, `method_not_allowed`, `uri_too_long`, `header_count`, `header_bytes`, `peer_rate`, and `peer_rate_table_full`.
 

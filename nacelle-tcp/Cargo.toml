@@ -15,6 +15,7 @@ categories = ["asynchronous", "network-programming"]
 default = []
 buffer-rotation = ["nacelle-codec/buffer-rotation"]
 compact-connections = []
+peer-limits = ["nacelle-core/peer-limits"]
 experimental-openssl-detection = ["openssl"]
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 openssl = ["dep:nacelle-openssl", "dep:openssl", "dep:tokio-openssl"]
@@ -29,6 +30,7 @@ nacelle-core = { workspace = true }
 nacelle-openssl = { workspace = true, optional = true }
 nacelle-rustls = { workspace = true, optional = true }
 openssl = { workspace = true, optional = true }
+pin-project-lite = { workspace = true }
 rustls = { workspace = true, optional = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
@@ -52,4 +54,4 @@ harness = false
 
 [package.metadata.docs.rs]
 all-features = false
-features = ["buffer-rotation", "compact-connections", "phase-timing", "rustls", "tls-self-signed"]
+features = ["buffer-rotation", "compact-connections", "peer-limits", "phase-timing", "rustls", "tls-self-signed"]

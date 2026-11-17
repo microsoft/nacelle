@@ -10,7 +10,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::admission::{LocalTcpAdmitted, SerialHandlerAdapter, SharedTcpAdmitted, TcpAdmitted};
 use crate::config::NacelleTcpConfig;
 use crate::connection::{
-    serve_local_serial_stream, serve_serial_halves_admitted, serve_serial_stream_admitted,
+    TcpConnectionAdmission, serve_local_serial_stream, serve_serial_halves_admitted,
+    serve_serial_stream_admitted, serve_serial_stream_with_admission,
 };
 use crate::limits::NacelleTcpLimits;
 use crate::protocol::{LocalAppStateHandler, Protocol, SharedAppStateHandler};
@@ -24,8 +25,9 @@ use nacelle_core::AdmissionConfig;
 /// owning the supplied I/O value. Cancelling the future drops that I/O without
 /// guaranteeing graceful socket shutdown.
 ///
-/// Direct serving acquires one connection permit and enforces
-/// [`NacelleRuntimeState`] plus [`NacelleTcpLimits`].
+/// Direct serving acquires connection admission automatically unless passed an
+/// owned [`TcpConnectionAdmission`]. Both paths enforce [`NacelleRuntimeState`]
+/// plus [`NacelleTcpLimits`].
 ///
 /// # Errors
 ///
@@ -297,6 +299,44 @@ where
         registration
             .run(self.serve_io_admitted(io, connection, activity))
             .await
+    }
+
+    /// Reserve connection admission before application-owned transport setup.
+    pub fn admit_connection(
+        &self,
+        connection: NacelleConnectionMeta,
+    ) -> Result<TcpConnectionAdmission, NacelleError> {
+        TcpConnectionAdmission::new(
+            &self.runtime_state,
+            &self.telemetry,
+            connection.with_listener(self.listener.clone()),
+        )
+    }
+
+    /// Transfer an admission into borrowed serial serving without charging again.
+    ///
+    /// Borrowed I/O must not resume this protocol after serving is cancelled.
+    pub fn serve_io_with_admission<'a, IO>(
+        &self,
+        io: &'a mut IO,
+        admission: TcpConnectionAdmission,
+    ) -> impl std::future::Future<Output = Result<(), NacelleError>> + 'a
+    where
+        P: 'a,
+        H: 'a,
+        Observer: 'a,
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'a,
+    {
+        serve_serial_stream_with_admission(
+            io,
+            self.protocol.clone(),
+            self.handler.clone(),
+            self.config.clone(),
+            self.telemetry.clone(),
+            self.runtime_state.clone(),
+            self.tcp_limits,
+            admission,
+        )
     }
 
     pub(crate) async fn serve_io_admitted<IO>(

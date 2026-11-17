@@ -935,6 +935,7 @@ dependencies = [
  "nacelle-openssl",
  "nacelle-rustls",
  "openssl",
+ "pin-project-lite",
  "rustls",
  "socket2",
  "tokio",

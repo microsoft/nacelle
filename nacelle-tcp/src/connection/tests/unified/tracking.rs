@@ -29,6 +29,277 @@ async fn pending<F: Future>(mut future: Pin<&mut F>) {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn owned_admission_handoff_keeps_capacity_metadata_and_single_rate_charge() {
+    let runtime = tracked_runtime(1);
+    let control = runtime.control();
+    control.set_max_connections(Some(1)).unwrap();
+    control.set_global_connection_open_rate(Some(1)).unwrap();
+    #[cfg(feature = "peer-limits")]
+    control.set_peer_connection_open_rate(Some(1)).unwrap();
+    let observer = NacelleInMemoryObserver::new();
+    let server = TcpServer::<CustomProtocol>::builder()
+        .protocol(CustomProtocol::default())
+        .runtime_state(runtime.clone())
+        .unwrap()
+        .handler(handler_fn(
+            |context: TcpRequestContext<CustomProtocol>| async move { Ok(context.complete()) },
+        ))
+        .build()
+        .unwrap()
+        .with_telemetry(NacelleTelemetry::default().with_observer(observer.clone()));
+    let connection = NacelleConnectionMeta::tcp(Some("127.0.0.1:1234".parse().unwrap()), None);
+    let id = connection.connection_id;
+    let admission = server.admit_connection(connection).unwrap();
+    assert_eq!(runtime.active_connections(), 1);
+    assert_eq!(state(&control, id), NacelleConnectionActivityState::Setup);
+    assert!(matches!(
+        server.admit_connection(NacelleConnectionMeta::tcp(None, None)),
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::ConnectionRate
+        ))
+    ));
+
+    let (mut client, stream) = tokio::io::duplex(128);
+    let (stream, admission) = admission.setup(async { Ok(stream) }).await.unwrap();
+    let admission = admission.with_tls(nacelle_core::NacelleConnectionTlsMeta::new("application"));
+    let future = server.serve_io_with_admission(stream, admission);
+    tokio::pin!(future);
+    client.write_all(b"A\0").await.unwrap();
+    pending(future.as_mut()).await;
+    assert_eq!(runtime.active_connections(), 1);
+    let snapshot = control.connections(1).unwrap().pop().unwrap();
+    assert_eq!(snapshot.connection.connection_id, id);
+    assert_eq!(snapshot.connection.tls.unwrap().provider, "application");
+    client.shutdown().await.unwrap();
+    future.await.unwrap();
+    assert_released(&runtime);
+    assert!(control.connections(1).unwrap().is_empty());
+    for kind in [
+        NacelleTelemetryEventKind::ConnectionOpened,
+        NacelleTelemetryEventKind::ConnectionClosed,
+    ] {
+        assert_eq!(
+            observer
+                .events()
+                .iter()
+                .filter(|event| event.kind == kind)
+                .count(),
+            1
+        );
+    }
+    assert!(matches!(
+        server.admit_connection(NacelleConnectionMeta::tcp(None, None)),
+        Err(NacelleError::ResourceLimit(
+            NacelleResourceLimitReason::ConnectionRate
+        ))
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_admission_supports_borrowed_serial_serving() {
+    let runtime = tracked_runtime(1);
+    runtime.control().set_max_connections(Some(1)).unwrap();
+    runtime
+        .control()
+        .set_global_connection_open_rate(Some(1))
+        .unwrap();
+    let server = SerialTcpServer::new(SerialCounterProtocol, SerialCounterHandler)
+        .with_runtime_state(runtime.clone())
+        .unwrap();
+    let admission = server
+        .admit_connection(NacelleConnectionMeta::tcp(None, None))
+        .unwrap();
+    let (mut client, mut stream) = tokio::io::duplex(128);
+    client.write_all(&[0]).await.unwrap();
+    let client = async move {
+        let mut response = [0];
+        client.read_exact(&mut response).await.unwrap();
+        client.shutdown().await.unwrap();
+        response
+    };
+    let (response, served) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(
+            client,
+            server.serve_io_with_admission(&mut stream, admission)
+        )
+    })
+    .await
+    .expect("serial handoff completes");
+    assert_eq!(response, *b"0");
+    served.unwrap();
+    assert_released(&runtime);
+}
+
+#[tokio::test]
+async fn owned_admission_serving_cancellation_drops_io_before_capacity() {
+    for administrative in [false, true] {
+        for polled in [false, true] {
+            let runtime = tracked_runtime(1);
+            let server =
+                TcpServer::<CustomProtocol>::builder()
+                    .protocol(CustomProtocol::default())
+                    .runtime_state(runtime.clone())
+                    .unwrap()
+                    .handler(handler_fn(
+                        |context: TcpRequestContext<CustomProtocol>| async move {
+                            Ok(context.complete())
+                        },
+                    ))
+                    .build()
+                    .unwrap();
+            let connection = NacelleConnectionMeta::tcp(None, None);
+            let id = connection.connection_id;
+            let admission = server.admit_connection(connection).unwrap();
+            let probe = Arc::new(Probe::default());
+            let (_client, stream) = tokio::io::duplex(128);
+            let mut stream = io(stream, probe.clone());
+            stream.drop_state = Some(runtime.clone());
+            {
+                let future = server.serve_io_with_admission(stream, admission);
+                tokio::pin!(future);
+                if polled {
+                    pending(future.as_mut()).await;
+                }
+                if administrative {
+                    assert_eq!(
+                        runtime.control().close_connection(id),
+                        NacelleCloseOutcome::Selected,
+                    );
+                    assert!(matches!(
+                        future.await,
+                        Err(NacelleError::ConnectionTerminated(_))
+                    ));
+                }
+            }
+            assert_eq!(probe.connections_at_drop.load(Ordering::SeqCst), 1);
+            assert_released(&runtime);
+            assert!(runtime.control().connections(1).unwrap().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn owned_admission_setup_cancellation_drops_io_before_capacity() {
+    for polled in [false, true] {
+        let runtime = tracked_runtime(1);
+        let admission = crate::TcpConnectionAdmission::new(
+            &runtime,
+            &NacelleTelemetry::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .unwrap();
+        let probe = Arc::new(Probe::default());
+        let (_client, stream) = tokio::io::duplex(128);
+        let mut stream = io(stream, probe.clone());
+        stream.drop_state = Some(runtime.clone());
+        let mut future = Box::pin(admission.setup(async move {
+            let _stream = stream;
+            std::future::pending::<Result<(), NacelleError>>().await
+        }));
+        if polled {
+            pending(future.as_mut()).await;
+        }
+        drop(future);
+        assert_eq!(probe.connections_at_drop.load(Ordering::SeqCst), 1);
+        assert_released(&runtime);
+        assert!(runtime.control().connections(1).unwrap().is_empty());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_admission_setup_failure_or_close_releases_without_rate_refund() {
+    for failure in [false, true] {
+        let runtime = tracked_runtime(1);
+        let control = runtime.control();
+        control.set_global_connection_open_rate(Some(1)).unwrap();
+        let connection = NacelleConnectionMeta::tcp(None, None);
+        let id = connection.connection_id;
+        let admission =
+            crate::TcpConnectionAdmission::new(&runtime, &NacelleTelemetry::default(), connection)
+                .unwrap();
+        let probe = Arc::new(Probe::default());
+        let (_client, stream) = tokio::io::duplex(128);
+        let mut stream = io(stream, probe.clone());
+        stream.drop_state = Some(runtime.clone());
+        let future = admission.setup(async move {
+            let _stream = stream;
+            if failure {
+                Err(NacelleError::from(std::io::Error::other("setup failed")))
+            } else {
+                std::future::pending::<Result<(), NacelleError>>().await
+            }
+        });
+        if !failure {
+            assert_eq!(control.close_connection(id), NacelleCloseOutcome::Selected);
+        }
+        assert!(matches!(
+            future.await,
+            Err(NacelleError::Io(_)) | Err(NacelleError::ConnectionTerminated(_))
+        ));
+        assert_eq!(probe.connections_at_drop.load(Ordering::SeqCst), 1);
+        assert_released(&runtime);
+        assert!(control.connections(1).unwrap().is_empty());
+        assert!(matches!(
+            crate::TcpConnectionAdmission::new(
+                &runtime,
+                &NacelleTelemetry::default(),
+                NacelleConnectionMeta::tcp(None, None),
+            ),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn owned_admission_rejects_another_runtime_before_io_and_releases_origin() {
+    for already_closed in [false, true] {
+        let origin = tracked_runtime(1);
+        let target = tracked_runtime(1);
+        let admission = crate::TcpConnectionAdmission::new(
+            &origin,
+            &NacelleTelemetry::default(),
+            NacelleConnectionMeta::tcp(None, None),
+        )
+        .unwrap();
+        if already_closed {
+            assert_eq!(
+                origin
+                    .control()
+                    .close_connection(admission.connection().connection_id),
+                NacelleCloseOutcome::Selected,
+            );
+        }
+        let server = TcpServer::<CustomProtocol>::builder()
+            .protocol(CustomProtocol::default())
+            .runtime_state(target.clone())
+            .unwrap()
+            .handler(handler_fn(
+                |context: TcpRequestContext<CustomProtocol>| async move { Ok(context.complete()) },
+            ))
+            .build()
+            .unwrap();
+        let probe = Arc::new(Probe::default());
+        let (mut client, stream) = tokio::io::duplex(128);
+        client.write_all(b"A\0").await.unwrap();
+        let mut stream = io(stream, probe.clone());
+        stream.drop_state = Some(origin.clone());
+        assert!(matches!(
+            server.serve_io_with_admission(stream, admission).await,
+            Err(NacelleError::Configuration(
+                nacelle_core::NacelleConfigurationError::ConnectionAdmissionRuntime
+            ))
+        ));
+        assert_eq!(probe.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.connections_at_drop.load(Ordering::SeqCst), 1);
+        assert_released(&origin);
+        assert_released(&target);
+        assert!(origin.control().connections(1).unwrap().is_empty());
+    }
+}
+
 #[derive(Default)]
 struct Probe {
     connections_at_drop: AtomicUsize,

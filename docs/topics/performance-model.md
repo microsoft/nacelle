@@ -28,6 +28,21 @@ cargo bench -p nacelle-examples --features "bench tcp"
 The `runtime_limits` benchmark group covers connection/request permit
 acquire/drop overhead. Watch it closely after changes to `NacelleRuntimeState`.
 
+Global connection rate limiting is disabled by default. Disabled admission reads
+its atomic threshold but does not read a clock or lock a window. Enabling
+`set_global_connection_open_rate(...)` adds a clock read and a synchronized
+constant-size window on metered connection admission, not on each request.
+Shared-state mode serializes those window updates across listeners and workers;
+partitioned worker mode uses independent windows and fixed quota shares. Keep
+both global and per-peer rate settings identical when comparing connection-churn
+profiles. These costs are not a measured throughput comparison.
+
+The default-off `peer-limits` feature compiles in per-peer concurrency and rate
+tracking. Keep its selection fixed between revisions; leaving thresholds
+disabled in a peer-enabled build is not the same build configuration as
+compiling the tracking out. Add `peer-limits` to the benchmark feature list to
+include peer admission and distinct-peer rate-table cases.
+
 ## Concurrent requests without pipelining
 
 Use pipeline depth 1 when evaluating request/response services. A connection
@@ -164,6 +179,15 @@ not generalize these plain HTTP profiles to HTTPS or worker-local topology.
 The default successful TCP and HTTP pipelines use concrete protocol, handler,
 responder, body, and telemetry observer types. Nacelle does not box handler
 futures or dynamically dispatch those contracts.
+
+Owned TCP admission handoff also keeps one controlled serving future pinned
+inline. Its runtime-identity check adds no boxed future or heap allocation;
+transport buffers and I/O adaptation retain their existing allocation behavior.
+Concrete serving-future sizes still depend on protocol connection state,
+handler types, features, compiler, and build profile. Use the
+[future-size check](../how-to/compare-performance.md#check-serving-future-sizes)
+to compare representative types without treating frame size as a throughput
+measurement.
 
 Retained costs are scoped by ownership:
 

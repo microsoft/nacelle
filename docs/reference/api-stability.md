@@ -100,6 +100,21 @@ there is no compatibility adapter.
 
 Before `1.0`, minor releases may change defaults or builder methods when production safety requires it. After `1.0`, public API changes should follow semver, with migration notes for config/default changes.
 
+## Peer limit migration
+
+The `peer-limits` Cargo feature is default-off. Enable it to retain per-peer
+concurrent connection limits, connection-open rates, and HTTP request rates.
+Without it, the corresponding settings, APIs, and tracking state are not
+compiled. Global connection controls remain available with no extra feature.
+
+The earlier 0.4 RC setter `set_connection_open_rate` is renamed
+`set_peer_connection_open_rate`. The setter still limits each IP independently.
+Both peer and global rate validation use `NacelleConfigurationError::ConnectionOpenRate`;
+global rates must be below `usize::MAX`, and peer rates must also fit `u32`.
+Use `set_global_connection_open_rate` for a budget
+across metered listeners sharing runtime state. See
+[runtime limits](../topics/runtime-limits.md#live-connection-control).
+
 ## Experimental memory removal
 
 The `0.4` development line removes `experimental-memory` and its runtime memory

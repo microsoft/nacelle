@@ -49,8 +49,13 @@ impl<H, A> TcpAdmitted<H, A> {
     }
 }
 
-/// Default serial dispatch, installed by serial server constructors.
-#[doc(hidden)]
+/// Adapt an ordinary serial handler for the free direct-serving helpers.
+///
+/// Pass `Arc::new(SerialHandlerAdapter(handler))` to
+/// [`crate::connection::serve_serial_stream`] or
+/// [`crate::connection::serve_serial_stream_with_admission`]. The worker-local
+/// helper accepts the same adapter in an `Rc`. Serial server constructors
+/// install this adapter automatically.
 pub struct SerialHandlerAdapter<H>(pub H);
 
 impl<P, H, AppState> SerialTcpHandler<P, AppState> for SerialHandlerAdapter<H>

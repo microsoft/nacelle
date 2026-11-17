@@ -10,14 +10,16 @@ pub type BoxError = Box<dyn StdError + Send + Sync + 'static>;
 pub enum NacelleConfigurationError {
     /// Use `None`, not the reserved `usize::MAX`, for unlimited connections.
     ConnectionLimit,
-    /// The rate does not fit the limiter's finite counter representation.
+    /// Rates must be below `usize::MAX`; per-peer rates must also fit `u32`.
     ConnectionOpenRate,
-    /// Every enabled rate limiter needs nonzero reserved table capacity.
+    /// Every enabled per-peer rate limiter needs nonzero reserved table capacity.
     ConnectionRateTableCapacity,
     /// Partition count must be nonzero and match the configured workers.
     PartitionCount,
     /// A builder cannot replace state already shared with handles or listeners.
     RuntimeStateInUse,
+    /// Connection admission cannot be transferred to another runtime state.
+    ConnectionAdmissionRuntime,
     /// Admission requires finite nonzero waiter capacity and a valid deadline.
     AdmissionLimits,
     /// Admission requires configured transport head-read bounds.
@@ -32,10 +34,11 @@ impl Display for NacelleConfigurationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::ConnectionLimit => "finite connection limit must be below usize::MAX; use None for unlimited",
-            Self::ConnectionOpenRate => "connection-open rate must fit u32 and be below usize::MAX",
-            Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
+            Self::ConnectionOpenRate => "connection-open rate must be below usize::MAX; per-peer rates must also fit u32; use None to disable",
+            Self::ConnectionRateTableCapacity => "per-peer rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
             Self::RuntimeStateInUse => "runtime state is already shared; configure it before exporting handles or installing listeners",
+            Self::ConnectionAdmissionRuntime => "connection admission belongs to a different runtime state",
             Self::AdmissionLimits => "admission requires a positive finite timeout and waiter capacity",
             Self::AdmissionReadBounds => "request admission requires bounded head reads",
             Self::ConnectionTrackingCapacity => "connection tracking requires a positive finite capacity",
@@ -58,11 +61,12 @@ impl From<NacelleConfigurationError> for NacelleError {
 pub enum NacelleResourceLimitReason {
     /// Process-wide concurrent connection capacity.
     Connections,
+    /// Global connection admission attempts per second.
+    ConnectionRate,
     /// Bounded connection registry capacity, including setup and closing.
     ConnectionRegistry,
     /// A caller supplied an ID already registered in this control scope.
     DuplicateConnectionId,
-    /// Peer-rate table capacity is too small for worker partitioning.
     /// Concurrent in-flight request capacity.
     InFlightRequests,
     /// Concurrent application admission invocation capacity.
@@ -110,6 +114,7 @@ impl NacelleResourceLimitReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Connections => "connections",
+            Self::ConnectionRate => "connection_rate",
             Self::ConnectionRegistry => "connection_registry",
             Self::DuplicateConnectionId => "duplicate_connection_id",
             Self::InFlightRequests => "in_flight_requests",
@@ -269,8 +274,11 @@ impl NacelleError {
             Self::ResourceLimit(NacelleResourceLimitReason::Connections) => Some(
                 "update NacelleRuntimeControl::set_max_connections or reduce concurrent clients",
             ),
+            Self::ResourceLimit(NacelleResourceLimitReason::ConnectionRate) => Some(
+                "update NacelleRuntimeControl::set_global_connection_open_rate or slow connection admission attempts",
+            ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRate) => Some(
-                "update NacelleRuntimeControl::set_connection_open_rate or slow reconnect churn",
+                "update NacelleRuntimeControl::set_peer_connection_open_rate or slow reconnect churn",
             ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTable)
             | Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTableFull) => Some(

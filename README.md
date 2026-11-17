@@ -201,6 +201,7 @@ nacelle = { version = "0.3", default-features = false, features = ["tcp", "opens
 | `tcp` | Custom TCP protocol transport over TCP and Unix sockets. Enabled by default. |
 | `error-hints` | Expose actionable operator guidance through `NacelleError::hint()` without changing `Display`. |
 | `http` | Hyper HTTP/1 server transport. |
+| `peer-limits` | Per-peer concurrent connections, connection-open rates, and HTTP request rates. Disabled by default; global limits remain available without it. |
 | `rustls` | Rustls-backed TLS for HTTP and TCP. |
 | `openssl` | OpenSSL-backed TLS for TCP. |
 | `openssl-vendored` | Build OpenSSL from source when native OpenSSL is unavailable. |
@@ -361,7 +362,7 @@ mdbook build
 Generate Rust API docs:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,peer-limits,phase-timing,rustls,tcp,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 

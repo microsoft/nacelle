@@ -1887,6 +1887,69 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn public_serial_adapter_supports_automatic_and_owned_direct_admission() {
+    for preadmitted in [false, true] {
+        let runtime = NacelleRuntimeState::default();
+        runtime.control().set_max_connections(Some(1)).unwrap();
+        runtime
+            .control()
+            .set_global_connection_open_rate(Some(1))
+            .unwrap();
+        let (mut client, mut io) = tokio::io::duplex(128);
+        let handler = Arc::new(crate::SerialHandlerAdapter(SerialCounterHandler));
+        let serve = async {
+            let connection = NacelleConnectionMeta::tcp(None, None);
+            if preadmitted {
+                let admission = crate::TcpConnectionAdmission::new(
+                    &runtime,
+                    &NacelleTelemetry::default(),
+                    connection,
+                )
+                .unwrap();
+                super::serve_serial_stream_with_admission(
+                    &mut io,
+                    Arc::new(SerialCounterProtocol),
+                    handler,
+                    NacelleTcpConfig::default(),
+                    NacelleTelemetry::default(),
+                    runtime.clone(),
+                    crate::NacelleTcpLimits::default(),
+                    admission,
+                )
+                .await
+            } else {
+                serve_serial_stream(
+                    &mut io,
+                    Arc::new(SerialCounterProtocol),
+                    handler,
+                    NacelleTcpConfig::default(),
+                    NacelleTelemetry::default(),
+                    runtime.clone(),
+                    crate::NacelleTcpLimits::default(),
+                    connection,
+                )
+                .await
+            }
+        };
+        let client = async move {
+            client.write_all(&[0, 0]).await.unwrap();
+            let mut response = [0; 2];
+            client.read_exact(&mut response).await.unwrap();
+            client.shutdown().await.unwrap();
+            response
+        };
+        let (served, response) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(serve, client)
+        })
+        .await
+        .expect("direct serial serving completes");
+        served.unwrap();
+        assert_eq!(&response, b"01");
+        assert_eq!(runtime.active_connections(), 0);
+    }
+}
+
 #[tokio::test]
 async fn borrowed_tcp_halves_match_owned_io_roundtrip_and_metadata() {
     for borrowed in [false, true] {

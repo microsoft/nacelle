@@ -14,6 +14,7 @@ autobins = false
 default = ["tcp"]
 tcp = ["nacelle/tcp"]
 http = ["nacelle/http", "dep:http"]
+peer-limits = ["nacelle/peer-limits"]
 tls-self-signed = ["nacelle/tls-self-signed"]
 openssl = ["tcp", "nacelle/openssl"]
 bench = []

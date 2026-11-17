@@ -172,9 +172,9 @@ impl ThreadPerCoreLimits {
                 NacelleResourceLimitReason::WorkerCount,
             ));
         }
-        let partitions: Vec<_> = (0..worker_count)
-            .map(|worker| partition_limits(&limits, worker_count, worker))
-            .collect();
+        let partitions = (0..worker_count)
+            .map(|worker| limits.partition(worker_count, worker))
+            .collect::<Result<Vec<_>, _>>()?;
         let (states, control) = NacelleRuntimeState::partitioned(partitions)?;
         Ok(Self {
             accounting: Accounting::Worker { states, control },
@@ -213,29 +213,6 @@ impl ThreadPerCoreLimits {
             }
         }
     }
-}
-
-fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> NacelleLimits {
-    let mut partition = limits.clone();
-    partition.max_in_flight_requests =
-        partition_capacity(limits.max_in_flight_requests, workers, worker);
-    partition.max_streaming_tasks = partition_capacity(limits.max_streaming_tasks, workers, worker);
-    partition.max_connections_per_peer = limits
-        .max_connections_per_peer
-        .map(|limit| partition_capacity(limit, workers, worker));
-    partition.connection_rate_limit_table_capacity =
-        partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
-    partition.connection_tracking = limits.connection_tracking.map(|tracking| {
-        tracking
-            .partition(workers, worker)
-            .expect("validated worker partition")
-    });
-    partition
-}
-
-fn partition_capacity(total: usize, workers: usize, worker: usize) -> usize {
-    let base = total / workers;
-    base + usize::from(worker < total % workers)
 }
 
 impl ThreadPerCoreConfig {
@@ -1363,12 +1340,36 @@ mod tests {
         drop(second_request);
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn worker_limits_require_one_rate_limit_slot_per_worker() {
         let limits = NacelleLimits::default().with_connection_rate_limit_table_capacity(1);
         let policy = ThreadPerCoreLimits::worker(limits, 2).expect("disabled rate");
+        policy
+            .control()
+            .set_global_connection_open_rate(Some(1))
+            .expect("global rate needs no peer slots");
+        let first = policy
+            .state_for(Worker {
+                index: 0,
+                core_id: 0,
+            })
+            .expect("first worker");
+        let second = policy
+            .state_for(Worker {
+                index: 1,
+                core_id: 1,
+            })
+            .expect("second worker");
+        drop(first.acquire_connection().expect("first rate share"));
         assert!(matches!(
-            policy.control().set_connection_open_rate(Some(1)),
+            second.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
+        assert!(matches!(
+            policy.control().set_peer_connection_open_rate(Some(1)),
             Err(NacelleError::Configuration(
                 nacelle_core::NacelleConfigurationError::ConnectionRateTableCapacity
             ))
@@ -1395,6 +1396,17 @@ mod tests {
             .expect("second");
         let permit = first.acquire_connection().expect("shared capacity");
         assert!(second.acquire_connection().is_err());
+        control.set_max_connections(None).expect("unlimited total");
+        control
+            .set_global_connection_open_rate(Some(1))
+            .expect("shared global rate");
+        drop(first.acquire_connection().expect("shared rate budget"));
+        assert!(matches!(
+            second.acquire_connection(),
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::ConnectionRate
+            ))
+        ));
         control.set_max_connections(Some(0)).expect("pause");
         drop(permit);
         assert!(second.acquire_connection().is_err());

@@ -5,7 +5,8 @@
 //! owned I/O and does not guarantee a graceful socket shutdown. The functions
 //! enforce [`NacelleRuntimeState`] limits plus [`NacelleTcpConfig`] and
 //! [`NacelleTcpLimits`]. Direct entry points acquire connection capacity and
-//! register with optional tracking before protocol setup.
+//! register with optional tracking before protocol setup. The explicit
+//! `*_with_admission` helpers instead consume an owned [`TcpConnectionAdmission`].
 //!
 //! # Errors
 //!
@@ -44,6 +45,7 @@ use nacelle_core::request::NacelleConnectionMeta;
 use nacelle_core::telemetry::{NacelleTelemetry, NacelleTelemetryObserver};
 use nacelle_core::tracking::NacelleConnectionActivity;
 
+mod admission;
 mod body;
 mod framing;
 mod io;
@@ -64,6 +66,8 @@ use request::{
     SharedRequestDispatch, run_request,
 };
 use response::{ResponseDelivery, write_error};
+
+pub use admission::TcpConnectionAdmission;
 
 /// Drive one TCP framed connection.
 pub async fn serve_connection<P, H, R, W, Observer>(
@@ -819,6 +823,80 @@ where
         activity,
     )
     .await
+}
+
+/// Serve owned I/O using an existing admission, without acquiring or charging again.
+///
+/// The token's metadata is retained. A token from another runtime state returns
+/// a configuration error before any protocol or I/O work.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_stream_with_admission<P, H, IO, Observer>(
+    io: IO,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    admission: TcpConnectionAdmission,
+) -> impl std::future::Future<Output = Result<(), NacelleError>>
+where
+    P: SharedProtocol,
+    H: crate::admission::TcpService<P>,
+    Observer: NacelleTelemetryObserver,
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    admission.run(runtime_state, move |connection, activity, runtime_state| {
+        serve_stream_admitted(
+            io,
+            protocol,
+            handler,
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+            activity,
+        )
+    })
+}
+
+/// Serve borrowed serial I/O using an existing admission exactly once.
+///
+/// Runtime identity, metadata, and tracking follow [`serve_stream_with_admission`].
+/// Cancellation leaves borrowed I/O with its caller; discard or finalize it
+/// rather than resuming the cancelled protocol.
+#[allow(clippy::too_many_arguments)]
+pub fn serve_serial_stream_with_admission<P, H, IO, Observer>(
+    io: &mut IO,
+    protocol: Arc<P>,
+    handler: Arc<H>,
+    config: NacelleTcpConfig,
+    telemetry: NacelleTelemetry<Observer>,
+    runtime_state: NacelleRuntimeState,
+    tcp_limits: NacelleTcpLimits,
+    admission: TcpConnectionAdmission,
+) -> impl std::future::Future<Output = Result<(), NacelleError>>
+where
+    P: Protocol,
+    P::ConnectionState: Send,
+    H: crate::admission::SerialTcpService<P>,
+    Observer: NacelleTelemetryObserver,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    admission.run(runtime_state, move |connection, activity, runtime_state| {
+        serve_serial_stream_admitted(
+            io,
+            protocol,
+            handler,
+            config,
+            telemetry,
+            runtime_state,
+            tcp_limits,
+            connection,
+            activity,
+        )
+    })
 }
 
 /// Drive worker-local I/O with connection capacity and optional registration.
