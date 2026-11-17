@@ -15,33 +15,33 @@ cargo hack "${command}" --workspace --all-features \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-core \
-    --features error-hints,phase-timing,rustls \
+    --features error-hints,peer-limits,phase-timing,rustls \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-core \
-    --features error-hints,openssl,phase-timing \
+    --features error-hints,openssl,peer-limits,phase-timing \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-tcp \
-    --features buffer-rotation,compact-connections,phase-timing,rustls,tls-self-signed \
+    --features buffer-rotation,compact-connections,peer-limits,phase-timing,rustls,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-tcp \
-    --features buffer-rotation,compact-connections,experimental-openssl-detection,openssl-vendored,phase-timing \
+    --features buffer-rotation,compact-connections,experimental-openssl-detection,openssl-vendored,peer-limits,phase-timing \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,compact-connections,error-hints,experimental-thread-per-core,fuzzing,http,phase-timing,rustls,tcp,tls-self-signed \
+    --features bench,buffer-rotation,compact-connections,error-hints,experimental-thread-per-core,fuzzing,http,peer-limits,phase-timing,rustls,tcp,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle \
     --no-default-features \
-    --features bench,buffer-rotation,compact-connections,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,phase-timing,tcp \
+    --features bench,buffer-rotation,compact-connections,error-hints,experimental-openssl-detection,experimental-thread-per-core,fuzzing,http,openssl-vendored,peer-limits,phase-timing,tcp \
     "${cargo_args[@]}"
 
 cargo "${command}" -p nacelle-examples \
     --no-default-features \
-    --features bench,http,tcp,tls-self-signed \
+    --features bench,http,peer-limits,tcp,tls-self-signed \
     "${cargo_args[@]}"
 cargo "${command}" -p nacelle-examples \
     --no-default-features \
-    --features bench,http,openssl,tcp \
+    --features bench,http,openssl,peer-limits,tcp \
     "${cargo_args[@]}"

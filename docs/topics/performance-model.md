@@ -37,6 +37,12 @@ partitioned worker mode uses independent windows and fixed quota shares. Keep
 both global and per-peer rate settings identical when comparing connection-churn
 profiles. These costs are not a measured throughput comparison.
 
+The default-off `peer-limits` feature compiles in per-peer concurrency and rate
+tracking. Keep its selection fixed between revisions; leaving thresholds
+disabled in a peer-enabled build is not the same build configuration as
+compiling the tracking out. Add `peer-limits` to the benchmark feature list to
+include peer admission and distinct-peer rate-table cases.
+
 ## Concurrent requests without pipelining
 
 Use pipeline depth 1 when evaluating request/response services. A connection

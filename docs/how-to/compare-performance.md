@@ -410,6 +410,8 @@ Treat it as a contention comparison, not isolated single-permit latency. Keep
 CPU affinity, worker count, metrics configuration, and the same benchmark
 harness fixed on both revisions. The `peer_rate_limit_distinct_peers` group
 measures the rate table directly, separately from runtime-state admission.
+It and the per-peer runtime-limit cases require `--features "bench tcp peer-limits"`.
+Keep that feature selection identical for both revisions.
 
 ## Profile Linux CPU and allocations
 

@@ -17,14 +17,15 @@ tcp_phase_duration = false
 
 [connection_limits]
 max_connections = 128000
-# Optional churn protection for direct edge tests.
+# Optional per-peer churn protection; requires the peer-limits feature.
 # max_connection_opens_per_peer_per_second = 2048
 # unlimited_connections = true
-# disable_connection_open_rate = true
+# disable_peer_connection_open_rate = true
 
 [limits]
-max_connections_per_peer = 4096
-connection_rate_limit_table_capacity = 16384
+# Requires the peer-limits feature.
+# max_connections_per_peer = 4096
+# connection_rate_limit_table_capacity = 16384
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
 max_request_body_bytes = 16777216

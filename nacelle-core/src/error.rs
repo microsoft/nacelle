@@ -11,7 +11,7 @@ pub enum NacelleConfigurationError {
     /// Use `None`, not the reserved `usize::MAX`, for unlimited connections.
     ConnectionLimit,
     /// The rate does not fit the limiter's finite counter representation.
-    ConnectionOpenRate,
+    PeerConnectionOpenRate,
     /// Use `None`, not the reserved `usize::MAX`, for a disabled global rate.
     GlobalConnectionOpenRate,
     /// Every enabled rate limiter needs nonzero reserved table capacity.
@@ -34,7 +34,7 @@ impl Display for NacelleConfigurationError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::ConnectionLimit => "finite connection limit must be below usize::MAX; use None for unlimited",
-            Self::ConnectionOpenRate => "connection-open rate must fit u32 and be below usize::MAX",
+            Self::PeerConnectionOpenRate => "per-peer connection-open rate must fit u32 and be below usize::MAX",
             Self::GlobalConnectionOpenRate => "global connection-open rate must be below usize::MAX; use None to disable",
             Self::ConnectionRateTableCapacity => "rate-table capacity must support every partition",
             Self::PartitionCount => "runtime partition count must be nonzero and match configured workers",
@@ -279,7 +279,7 @@ impl NacelleError {
                 "update NacelleRuntimeControl::set_global_connection_open_rate or slow connection admission attempts",
             ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRate) => Some(
-                "update NacelleRuntimeControl::set_connection_open_rate or slow reconnect churn",
+                "update NacelleRuntimeControl::set_peer_connection_open_rate or slow reconnect churn",
             ),
             Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTable)
             | Self::ResourceLimit(NacelleResourceLimitReason::PeerConnectionRateTableFull) => Some(

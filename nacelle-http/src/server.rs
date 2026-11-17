@@ -4,6 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(feature = "peer-limits")]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
@@ -35,6 +36,7 @@ use nacelle_core::tracking::{NacelleConnectionActivity, NacelleConnectionRegistr
 use nacelle_core::{
     AdmissionConfig, AdmissionContext, AdmissionRejection, NacelleConnectionCapabilities,
 };
+#[cfg(feature = "peer-limits")]
 use nacelle_core::{NacellePeerRateLimitResult, NacellePeerRateLimiter};
 #[cfg(feature = "rustls")]
 use nacelle_rustls::NacelleTlsConfig;
@@ -240,6 +242,7 @@ struct HttpRuntime<Observer> {
     access_log_enabled: bool,
     listener: Arc<str>,
     connection_accounting: NacelleConnectionAccounting,
+    #[cfg(feature = "peer-limits")]
     peer_rate_limiter: Option<Arc<NacellePeerRateLimiter>>,
 }
 
@@ -262,6 +265,7 @@ where
             access_log_enabled: false,
             listener: Arc::from("direct"),
             connection_accounting: NacelleConnectionAccounting::Metered,
+            #[cfg(feature = "peer-limits")]
             peer_rate_limiter: None,
         }
     }
@@ -286,21 +290,16 @@ pub struct LocalHyperServer<H, F = NoHttpConnectionState, Observer = NoopObserve
 
 /// Process-wide HTTP edge state shared by worker-local listeners.
 ///
-/// Clones share per-peer request-rate windows so thread-per-core execution
-/// preserves the same process-wide policy semantics as one shared listener.
-#[derive(Clone)]
+/// With `peer-limits`, clones share per-peer request-rate windows so
+/// thread-per-core execution preserves one process-wide request-rate policy.
+/// Without that feature, this type holds no tracking state.
+#[derive(Clone, Default)]
 pub struct LocalHttpSharedState {
+    #[cfg(feature = "peer-limits")]
     peer_rate_limiter: Arc<OnceLock<Arc<NacellePeerRateLimiter>>>,
 }
 
-impl Default for LocalHttpSharedState {
-    fn default() -> Self {
-        Self {
-            peer_rate_limiter: Arc::new(OnceLock::new()),
-        }
-    }
-}
-
+#[cfg(feature = "peer-limits")]
 impl LocalHttpSharedState {
     fn peer_rate_limiter(&self, policy: &NacelleHttpPolicy) -> Option<Arc<NacellePeerRateLimiter>> {
         policy.max_requests_per_peer_per_second.map(|_| {
@@ -315,6 +314,7 @@ impl LocalHttpSharedState {
     }
 }
 
+#[cfg(feature = "peer-limits")]
 fn peer_rate_limiter(policy: &NacelleHttpPolicy) -> Option<Arc<NacellePeerRateLimiter>> {
     policy.max_requests_per_peer_per_second.map(|_| {
         Arc::new(NacellePeerRateLimiter::new(
@@ -404,6 +404,7 @@ where
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 connection_accounting: self.runtime.connection_accounting,
+                #[cfg(feature = "peer-limits")]
                 peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         }
@@ -416,14 +417,15 @@ where
         mut self,
         telemetry: NacelleTelemetry<Next>,
         runtime_state: NacelleRuntimeState,
-        shared_state: LocalHttpSharedState,
+        _shared_state: LocalHttpSharedState,
     ) -> Result<LocalHyperServer<H, F, Next>, NacelleError>
     where
         Next: NacelleTelemetryObserver,
     {
         self.runtime.runtime_state.replace(runtime_state)?;
         telemetry.register_runtime_state(self.runtime.runtime_state.clone());
-        let peer_rate_limiter = shared_state.peer_rate_limiter(&self.runtime.http_policy);
+        #[cfg(feature = "peer-limits")]
+        let peer_rate_limiter = _shared_state.peer_rate_limiter(&self.runtime.http_policy);
         Ok(LocalHyperServer {
             handler: self.handler,
             connection_state_factory: self.connection_state_factory,
@@ -435,6 +437,7 @@ where
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 connection_accounting: self.runtime.connection_accounting,
+                #[cfg(feature = "peer-limits")]
                 peer_rate_limiter,
             },
         })
@@ -453,7 +456,10 @@ where
 
     /// Set worker-local HTTP edge policy.
     pub fn with_http_policy(mut self, policy: NacelleHttpPolicy) -> Self {
-        self.runtime.peer_rate_limiter = peer_rate_limiter(&policy);
+        #[cfg(feature = "peer-limits")]
+        {
+            self.runtime.peer_rate_limiter = peer_rate_limiter(&policy);
+        }
         self.runtime.http_policy = policy;
         self
     }
@@ -714,6 +720,7 @@ where
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 connection_accounting: self.runtime.connection_accounting,
+                #[cfg(feature = "peer-limits")]
                 peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         }
@@ -761,6 +768,7 @@ where
                 access_log_enabled: self.runtime.access_log_enabled,
                 listener: self.runtime.listener,
                 connection_accounting: self.runtime.connection_accounting,
+                #[cfg(feature = "peer-limits")]
                 peer_rate_limiter: self.runtime.peer_rate_limiter,
             },
         })
@@ -776,7 +784,10 @@ where
     }
 
     pub fn with_http_policy(mut self, http_policy: NacelleHttpPolicy) -> Self {
-        self.runtime.peer_rate_limiter = peer_rate_limiter(&http_policy);
+        #[cfg(feature = "peer-limits")]
+        {
+            self.runtime.peer_rate_limiter = peer_rate_limiter(&http_policy);
+        }
         self.runtime.http_policy = http_policy;
         self
     }
@@ -1137,6 +1148,7 @@ where
                 unread_body,
             );
         }
+        #[cfg(feature = "peer-limits")]
         if let Some(peer_ip) = effective_peer_ip {
             let rate_result = self.allow_peer_request(peer_ip);
             if !rate_result.is_allowed() {
@@ -1371,6 +1383,7 @@ where
         self.access_log_enabled || self.telemetry.request_duration_metrics_enabled()
     }
 
+    #[cfg(feature = "peer-limits")]
     fn allow_peer_request(&self, peer_ip: IpAddr) -> NacellePeerRateLimitResult {
         let Some(limit) = self.http_policy.max_requests_per_peer_per_second else {
             return NacellePeerRateLimitResult::Allowed;
@@ -1427,6 +1440,7 @@ where
     }
 }
 
+#[cfg(feature = "peer-limits")]
 fn peer_rate_rejection_reason(result: NacellePeerRateLimitResult) -> &'static str {
     match result {
         NacellePeerRateLimitResult::Allowed => unreachable!("allowed peers are not rejected"),
@@ -2245,6 +2259,7 @@ mod tests {
             .await;
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn local_http_workers_share_peer_rate_limit_state() {
         let shared_state = LocalHttpSharedState::default();
@@ -2289,6 +2304,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn http_peer_rate_table_rejects_new_peers_when_full() {
         let server = HyperServer::new(nacelle_core::pipeline::handler_fn(
@@ -3438,6 +3454,7 @@ mod tests {
         assert!(rejected_response.contains("x-frame-options: deny"));
     }
 
+    #[cfg(feature = "peer-limits")]
     #[tokio::test]
     async fn http_policy_rate_limits_requests_per_peer() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -3475,6 +3492,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "peer-limits")]
     #[tokio::test]
     async fn http_policy_ignores_forwarded_peer_by_default() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -3505,6 +3523,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "peer-limits")]
     #[tokio::test]
     async fn http_policy_uses_forwarded_peer_only_from_trusted_proxy() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -3548,6 +3567,7 @@ mod tests {
         server_task.abort();
     }
 
+    #[cfg(feature = "peer-limits")]
     #[tokio::test]
     async fn http_per_peer_connection_limit_rejects_second_connection() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -3649,6 +3669,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "peer-limits")]
     async fn one_shot_http(addr: SocketAddr, request: &[u8]) -> String {
         let mut client = tokio::net::TcpStream::connect(addr)
             .await

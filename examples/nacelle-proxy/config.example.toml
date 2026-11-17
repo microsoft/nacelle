@@ -13,7 +13,8 @@ max_upstream_response_bytes = 1048576
 # Startup-only Nacelle admission limits.
 max_connections = 64
 max_in_flight_requests = 32
-max_connections_per_peer = 16
+# Requires the peer-limits feature.
+# max_connections_per_peer = 16
 handler_timeout_ms = 60000
 
 # With the default tls-self-signed feature, omitting both paths creates an

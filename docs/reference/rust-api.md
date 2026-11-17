@@ -3,7 +3,7 @@
 Generate the Rust API reference with:
 
 ```bash
-cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,phase-timing,rustls,tcp,tls-self-signed --no-deps
+cargo doc -p nacelle --no-default-features --features buffer-rotation,error-hints,experimental-thread-per-core,http,peer-limits,phase-timing,rustls,tcp,tls-self-signed --no-deps
 cargo doc -p nacelle-openssl --all-features --no-deps
 ```
 
@@ -139,7 +139,9 @@ Start with these public entry points:
 - `nacelle::core::NacelleRuntimeControl` for live connection thresholds.
   `set_global_connection_open_rate(...)` sets admission attempts per second
   across metered listeners sharing the state, including Unix sockets;
-  `set_connection_open_rate(...)` remains per peer. Both default to disabled.
+  `set_peer_connection_open_rate(...)` limits each IP and requires `peer-limits`.
+  Both rates default to disabled. The feature also gates per-peer concurrency
+  and HTTP request-rate APIs; global controls need no extra feature.
   `NacelleRuntimeState::startup_limits()` contains only startup configuration;
   `control.snapshot()` observes live thresholds. Opt-in tracking adds bounded
   metadata snapshots and forced close for TCP/Unix and HTTP/HTTPS. Snapshot

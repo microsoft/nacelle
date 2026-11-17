@@ -168,7 +168,9 @@ struct ServerConfigFile {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LimitsConfigFile {
+    #[cfg(feature = "peer-limits")]
     max_connections_per_peer: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     connection_rate_limit_table_capacity: Option<usize>,
     max_in_flight_requests: Option<usize>,
     max_streaming_tasks: Option<usize>,
@@ -208,9 +210,11 @@ impl From<RequestMetricsConfig> for NacelleRequestMetrics {
 #[serde(deny_unknown_fields)]
 struct ConnectionLimitsConfigFile {
     max_connections: Option<usize>,
+    #[cfg(feature = "peer-limits")]
     max_connection_opens_per_peer_per_second: Option<usize>,
     unlimited_connections: Option<bool>,
-    disable_connection_open_rate: Option<bool>,
+    #[cfg(feature = "peer-limits")]
+    disable_peer_connection_open_rate: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -255,11 +259,12 @@ impl ServerConfig {
             if limits.max_connections.is_some() && limits.unlimited_connections == Some(true) {
                 return Err("choose max_connections or unlimited_connections, not both".into());
             }
+            #[cfg(feature = "peer-limits")]
             if limits.max_connection_opens_per_peer_per_second.is_some()
-                && limits.disable_connection_open_rate == Some(true)
+                && limits.disable_peer_connection_open_rate == Some(true)
             {
                 return Err(
-                    "choose a connection-open rate or disable_connection_open_rate, not both"
+                    "choose a connection-open rate or disable_peer_connection_open_rate, not both"
                         .into(),
                 );
             }
@@ -330,11 +335,13 @@ impl ServerConfig {
             if limits.unlimited_connections == Some(true) {
                 self.connection_limits.max_connections = None;
             }
+            #[cfg(feature = "peer-limits")]
             if let Some(rate) = limits.max_connection_opens_per_peer_per_second {
                 self.connection_limits
                     .max_connection_opens_per_peer_per_second = Some(rate);
             }
-            if limits.disable_connection_open_rate == Some(true) {
+            #[cfg(feature = "peer-limits")]
+            if limits.disable_peer_connection_open_rate == Some(true) {
                 self.connection_limits
                     .max_connection_opens_per_peer_per_second = None;
             }
@@ -391,9 +398,11 @@ impl ServerConfig {
     }
 
     fn apply_limits_file(&mut self, file: LimitsConfigFile) {
+        #[cfg(feature = "peer-limits")]
         if let Some(max_connections_per_peer) = file.max_connections_per_peer {
             self.limits.max_connections_per_peer = Some(max_connections_per_peer.max(1));
         }
+        #[cfg(feature = "peer-limits")]
         if let Some(capacity) = file.connection_rate_limit_table_capacity {
             self.limits.connection_rate_limit_table_capacity = capacity;
         }
@@ -584,7 +593,8 @@ pub fn build_runtime_state(config: &ServerConfig) -> Result<NacelleRuntimeState,
     runtime_state
         .control()
         .set_max_connections(config.connection_limits.max_connections)?;
-    runtime_state.control().set_connection_open_rate(
+    #[cfg(feature = "peer-limits")]
+    runtime_state.control().set_peer_connection_open_rate(
         config
             .connection_limits
             .max_connection_opens_per_peer_per_second,
@@ -870,6 +880,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
             .map(|max| max.to_string())
             .unwrap_or_else(|| "unlimited".to_string())
     );
+    #[cfg(feature = "peer-limits")]
     println!(
         "    max_connection_opens_per_peer_per_second: {}",
         config
@@ -879,6 +890,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
             .unwrap_or_else(|| "disabled".to_string())
     );
     println!("  limits:");
+    #[cfg(feature = "peer-limits")]
     println!(
         "    max_connections_per_peer: {}",
         config
@@ -887,6 +899,7 @@ pub fn print_config(config: &ServerConfig, runtime: &str, actual_server_threads:
             .map(|max| max.to_string())
             .unwrap_or_else(|| "null".to_string())
     );
+    #[cfg(feature = "peer-limits")]
     println!(
         "    connection_rate_limit_table_capacity: {}",
         config.limits.connection_rate_limit_table_capacity
@@ -1216,7 +1229,10 @@ mod tests {
             config.connection_limits.max_connections = Some(2);
             config.limits.max_in_flight_requests = 1;
             config.limits.max_streaming_tasks = 1;
-            config.limits.max_connections_per_peer = Some(1);
+            #[cfg(feature = "peer-limits")]
+            {
+                config.limits.max_connections_per_peer = Some(1);
+            }
             let state = build_runtime_state(&config).expect("runtime state");
             let telemetry = NacelleTelemetry::default().with_runtime_metrics(false);
             let server_a = {
@@ -1289,28 +1305,32 @@ mod tests {
                 .control()
                 .set_max_connections(Some(2))
                 .expect("raise live cap");
-            let peer = "127.0.0.1".parse().expect("peer");
-            let connection = state_a
-                .acquire_connection_for_peer(peer)
-                .expect("first peer connection");
-            assert!(matches!(
-                state_b.acquire_connection_for_peer(peer),
-                Err(NacelleError::ResourceLimit(
-                    NacelleResourceLimitReason::PeerConnections
-                ))
-            ));
-            drop(connection);
-            drop(
-                state_b
+            #[cfg(feature = "peer-limits")]
+            {
+                let peer = "127.0.0.1".parse().expect("peer");
+                let connection = state_a
                     .acquire_connection_for_peer(peer)
-                    .expect("released peer connection"),
-            );
+                    .expect("first peer connection");
+                assert!(matches!(
+                    state_b.acquire_connection_for_peer(peer),
+                    Err(NacelleError::ResourceLimit(
+                        NacelleResourceLimitReason::PeerConnections
+                    ))
+                ));
+                drop(connection);
+                drop(
+                    state_b
+                        .acquire_connection_for_peer(peer)
+                        .expect("released peer connection"),
+                );
+            }
             assert_eq!(state.active_connections(), 0);
             assert_eq!(state.active_requests(), 0);
             assert_eq!(state.active_streaming_tasks(), 0);
         }
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn worker_server_rebuild_preserves_connection_rate_history() {
         for handler_mode in [HandlerMode::Shared, HandlerMode::Serial] {
@@ -1341,7 +1361,7 @@ mod tests {
             );
             state
                 .control()
-                .set_connection_open_rate(None)
+                .set_peer_connection_open_rate(None)
                 .expect("disable rate");
             let server_b = build_server_with_runtime_state(
                 &config,
@@ -1362,7 +1382,7 @@ mod tests {
             );
             state_b
                 .control()
-                .set_connection_open_rate(Some(1))
+                .set_peer_connection_open_rate(Some(1))
                 .expect("reenable rate without clearing history");
             assert!(matches!(
                 state_b.acquire_connection_for_peer(peer),
@@ -1560,10 +1580,14 @@ mod tests {
     #[test]
     fn connection_limit_overlays_preserve_zero_and_reject_conflicts() {
         let mut config = ServerConfig::default();
-        for invalid in [
+        let invalid_configs = std::iter::once(
             "[connection_limits]\nmax_connections = 1\nunlimited_connections = true",
-            "[connection_limits]\nmax_connection_opens_per_peer_per_second = 1\ndisable_connection_open_rate = true",
-        ] {
+        );
+        #[cfg(feature = "peer-limits")]
+        let invalid_configs = invalid_configs.chain([
+            "[connection_limits]\nmax_connection_opens_per_peer_per_second = 1\ndisable_peer_connection_open_rate = true",
+        ]);
+        for invalid in invalid_configs {
             let file = toml::from_str::<ServerConfigFile>(invalid).expect("TOML");
             assert!(config.apply_config_file(file).is_err());
         }
@@ -1571,24 +1595,38 @@ mod tests {
             config.connection_limits,
             nacelle::core::NacelleConnectionLimits::default()
         );
-        let zero = toml::from_str::<ServerConfigFile>(
-            "[connection_limits]\nmax_connections = 0\nmax_connection_opens_per_peer_per_second = 0",
-        ).expect("TOML");
+        let peer_zero = if cfg!(feature = "peer-limits") {
+            "max_connection_opens_per_peer_per_second = 0"
+        } else {
+            ""
+        };
+        let zero = toml::from_str::<ServerConfigFile>(&format!(
+            "[connection_limits]\nmax_connections = 0\n{peer_zero}",
+        ))
+        .expect("TOML");
         config.apply_config_file(zero).expect("zero thresholds");
         assert_eq!(config.connection_limits.max_connections, Some(0));
+        #[cfg(feature = "peer-limits")]
         assert_eq!(
             config
                 .connection_limits
                 .max_connection_opens_per_peer_per_second,
             Some(0)
         );
-        let disabled = toml::from_str::<ServerConfigFile>(
-            "[connection_limits]\nunlimited_connections = true\ndisable_connection_open_rate = true",
-        ).expect("TOML");
+        let peer_disabled = if cfg!(feature = "peer-limits") {
+            "disable_peer_connection_open_rate = true"
+        } else {
+            ""
+        };
+        let disabled = toml::from_str::<ServerConfigFile>(&format!(
+            "[connection_limits]\nunlimited_connections = true\n{peer_disabled}",
+        ))
+        .expect("TOML");
         config
             .apply_config_file(disabled)
             .expect("disable thresholds");
         assert_eq!(config.connection_limits.max_connections, None);
+        #[cfg(feature = "peer-limits")]
         assert_eq!(
             config
                 .connection_limits
@@ -1607,7 +1645,18 @@ mod tests {
 
     #[test]
     fn toml_config_applies_limits() {
-        let toml = r#"
+        let peer_rate = if cfg!(feature = "peer-limits") {
+            "max_connection_opens_per_peer_per_second = 2048"
+        } else {
+            ""
+        };
+        let peer_concurrency = if cfg!(feature = "peer-limits") {
+            "max_connections_per_peer = 4096"
+        } else {
+            ""
+        };
+        let toml = format!(
+            r#"
 bind = "127.0.0.1:9000"
 server_threads = 4
 handler_mode = "serial"
@@ -1628,10 +1677,10 @@ tcp_phase_duration = false
 
 [connection_limits]
 max_connections = 128000
-max_connection_opens_per_peer_per_second = 2048
+{peer_rate}
 
 [limits]
-max_connections_per_peer = 4096
+{peer_concurrency}
 max_in_flight_requests = 64000
 max_streaming_tasks = 8192
 max_request_body_bytes = 16777216
@@ -1643,8 +1692,9 @@ read_timeout_ms = 30000
 write_timeout_ms = 30000
 shutdown_timeout_ms = 30000
 idle_timeout_ms = 120000
-"#;
-        let file = toml::from_str::<ServerConfigFile>(toml).unwrap();
+"#
+        );
+        let file = toml::from_str::<ServerConfigFile>(&toml).unwrap();
         let mut config = ServerConfig::default();
         config.apply_config_file(file).expect("configuration");
 
@@ -1670,7 +1720,9 @@ idle_timeout_ms = 120000
         assert!(!config.telemetry_diagnostics.tcp_phase_duration);
         assert!(config.tls_self_signed);
         assert_eq!(config.connection_limits.max_connections, Some(128_000));
+        #[cfg(feature = "peer-limits")]
         assert_eq!(config.limits.max_connections_per_peer, Some(4_096));
+        #[cfg(feature = "peer-limits")]
         assert_eq!(
             config
                 .connection_limits
@@ -1698,6 +1750,30 @@ idle_timeout_ms = 120000
             config.tcp_limits.idle_timeout,
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[cfg(not(feature = "peer-limits"))]
+    #[test]
+    fn rejects_peer_configuration_without_feature() {
+        for (section, field) in [
+            ("limits", "max_connections_per_peer"),
+            ("limits", "connection_rate_limit_table_capacity"),
+            (
+                "connection_limits",
+                "max_connection_opens_per_peer_per_second",
+            ),
+            ("connection_limits", "disable_peer_connection_open_rate"),
+        ] {
+            let value = if field.starts_with("disable_") {
+                "true"
+            } else {
+                "1"
+            };
+            let error =
+                toml::from_str::<ServerConfigFile>(&format!("[{section}]\n{field} = {value}"))
+                    .expect_err("peer setting must require peer-limits");
+            assert!(error.to_string().contains(field));
+        }
     }
 
     #[test]

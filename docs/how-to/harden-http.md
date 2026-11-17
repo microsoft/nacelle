@@ -56,7 +56,12 @@ lifetime](../reference/http-hardening.md#application-admission).
 - optional trusted proxy forwarded address handling through `with_trusted_proxy_ips`
 - optional security headers through `with_security_header(...)` or `with_default_security_headers()`
 - optional per-peer connection caps through `NacelleLimits::with_max_connections_per_peer`
-- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_connection_open_rate`
+- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_peer_connection_open_rate`
+
+Enable the default-off `peer-limits` Cargo feature for per-peer concurrency,
+connection-open rates, or HTTP request rates. Without it, their settings and
+tracking state are compiled out; trusted-proxy resolution and access logging
+remain available. Global connection limits do not require this feature.
 
 Rejected requests receive deterministic HTTP responses where the request parser has already accepted the request: `405`, `414`, `421`, `429`, or `431`. Rejections emit low-cardinality telemetry reasons such as `host`, `method_not_allowed`, `uri_too_long`, `header_count`, `header_bytes`, `peer_rate`, and `peer_rate_table_full`.
 

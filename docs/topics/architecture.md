@@ -183,7 +183,10 @@ handling does not read the live connection fields. Administrative updates
 neither reset counters nor revoke permits; rate-state initialization is lazy,
 bounded, and completed before enable. The global limiter uses one synchronized
 window per state, independent of bounded peer tables. Optional per-peer
-concurrency retains its sharded locks.
+concurrency retains its sharded locks. The default-off `peer-limits` feature
+compiles in peer concurrency maps, connection-open rate tables, HTTP request-rate
+tables, and their configuration APIs. Global controls, connection metadata,
+trusted-proxy resolution, and access logging do not require it.
 
 App, host, and direct-server handles remain attached to installed state.
 Replacing shared builder state is a configuration error. Global worker

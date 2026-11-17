@@ -25,8 +25,19 @@ a concurrency decision.
 
 `NacelleLimits` contains startup-only request, streaming, body, handler-timeout,
 per-peer concurrency, and rate-table capacity settings.
-`NacelleRuntimeControl` changes three connection thresholds on the installed
-state without restarting listeners or resetting counters.
+`NacelleRuntimeControl` changes connection thresholds on the installed state
+without restarting listeners or resetting counters. Per-peer settings require
+the default-off `peer-limits` Cargo feature; global controls do not.
+
+To use both global and peer controls, enable the feature on the facade:
+
+```toml
+nacelle = { version = "0.4.0-rc.1", features = ["peer-limits"] }
+```
+
+Applications depending directly on `nacelle-core`, `nacelle-tcp`, or
+`nacelle-http` can enable `peer-limits` on that crate instead. The following
+example includes peer configuration:
 
 ```rust
 use nacelle::core::{NacelleLimits, NacelleRuntimeState};
@@ -39,22 +50,25 @@ let app = NacelleApp::new().with_runtime_state(state)?;
 let control = app.runtime_control(); // Retain before moving the app into run().
 control.set_max_connections(Some(8_000))?;
 control.set_global_connection_open_rate(Some(1_000))?;
-control.set_connection_open_rate(Some(100))?;
+control.set_peer_connection_open_rate(Some(100))?;
 // Register listeners on app, then run it. The same handle remains live.
 control.set_max_connections(Some(0))?; // Pause new connections, not existing work.
 control.set_max_connections(None)?;   // Unlimited total connections.
 control.set_global_connection_open_rate(None)?; // Disable the global budget.
-control.set_connection_open_rate(None)?; // Disable the per-peer budget.
+control.set_peer_connection_open_rate(None)?; // Disable the per-peer budget.
 let observed = control.snapshot();
 ```
 
 The default total is `Some(16_384)` and both rates default to `None`.
 `set_global_connection_open_rate` limits admission attempts across all listeners
-sharing the state, including Unix sockets. `set_connection_open_rate` retains
-its per-peer meaning. Configure either rate independently or enable both; no
-extra Cargo feature is required. `control.snapshot().max_connections_per_second`
+sharing the state, including Unix sockets. `set_peer_connection_open_rate`
+requires `peer-limits` and limits each IP independently. Configure either rate
+independently or enable both. `control.snapshot().max_connections_per_second`
 observes the global rate, while `max_connection_opens_per_peer_per_second`
-observes the peer rate.
+observes the peer rate when the feature is enabled. Without `peer-limits`,
+per-peer settings, methods, concurrency maps, and rate tables are compiled out.
+Trusted-proxy resolution, connection metadata, and access logging remain
+available.
 
 `Some(0)` rejects all metered admissions for the total or global rate cap, or all
 IP-based admissions for the peer rate cap. `None` disables the respective
@@ -103,7 +117,14 @@ For applications migrating from 0.3.3, replace
 `NacelleLimits::with_max_connections_per_second(n)` with
 `control.set_global_connection_open_rate(Some(n))?` on the installed 0.4 state.
 The global budget remains disabled until configured. Do not substitute
-`set_connection_open_rate`: a per-peer budget is not a global budget.
+`set_peer_connection_open_rate`: a per-peer budget is not a global budget.
+
+For applications using the earlier 0.4 RC API, rename
+`set_connection_open_rate(...)` to `set_peer_connection_open_rate(...)` and
+enable `peer-limits`. The corresponding configuration-error variant is now
+`NacelleConfigurationError::PeerConnectionOpenRate`. Per-peer concurrency and
+HTTP request-rate APIs also require this feature. Their behavior is unchanged
+when enabled; compiling the feature does not enable any rate threshold.
 
 `state.control()`, app/host `runtime_control()`, and direct-server
 `runtime_control()` address their installed state. Use the app/host handle when

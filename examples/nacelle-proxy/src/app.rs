@@ -93,10 +93,11 @@ impl ProxyApp {
         println!("nacelle proxy listening on {listen_addr}");
         let limits = NacelleLimits::default()
             .with_max_in_flight_requests(startup.max_in_flight_requests)
-            .with_max_connections_per_peer(startup.max_connections_per_peer)
             .with_max_request_body_bytes(startup.max_request_body_bytes)
             .with_max_response_body_bytes(startup.max_response_body_bytes)
             .with_handler_timeout(startup.handler_timeout);
+        #[cfg(feature = "peer-limits")]
+        let limits = limits.with_max_connections_per_peer(startup.max_connections_per_peer);
         let runtime_state = nacelle::core::NacelleRuntimeState::new(limits);
         runtime_state
             .control()

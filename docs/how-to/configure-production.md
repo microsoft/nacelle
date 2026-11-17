@@ -14,8 +14,10 @@ boundary.
 
 Set finite live thresholds with `set_max_connections(Some(n))` for concurrent
 connections, `set_global_connection_open_rate(Some(n))` for global admission
-attempts per second, and `set_connection_open_rate(Some(n))` for opens per peer
+attempts per second, and `set_peer_connection_open_rate(Some(n))` for opens per peer
 per second. Both rate controls default to disabled and can be used independently.
+Enable the default-off `peer-limits` feature for per-peer concurrency,
+connection-open rates, and HTTP request rates; global controls do not require it.
 Global rates include Unix sockets; peer rates require an IP. Zero rejects new
 admissions without evicting existing connections; `None` disables that control.
 Obtain the app/host handle before serving and retain it
@@ -36,7 +38,7 @@ Recommended presets:
 - Internal service: keep defaults, set body limits to the largest expected payload, and run behind process supervision.
 - Internet-facing behind proxy: cap connections and requests to the container budget, keep 30 second transport timeouts, and let the proxy own coarse traffic filtering or certificate automation when desired.
 - Proxy-aware HTTP: trust only known proxy addresses and select the authoritative forwarding header; see [HTTP hardening](harden-http.md). `X-Forwarded-For` is the default; `Forwarded` requires explicit selection.
-- Direct HTTPS listener: enable `http,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
+- Direct HTTPS listener: enable `http,peer-limits,rustls`, load certificate/key material through `NacelleTlsConfig`, configure an SNI allowlist with `from_pem_with_allowed_server_names` or `from_der_with_allowed_server_names`, set a short TLS handshake timeout, configure `max_connections_per_peer` and `max_connection_opens_per_peer_per_second`, enable HTTP access logs, and attach `NacelleHttpPolicy` with Host, method, URI, header, security-header, and per-peer request-rate limits.
 - Direct TCP Rustls listener: enable `tcp,rustls`, load certificate/key material through `NacelleTlsConfig`, register it with `NacelleApp::tcp_tls(...)`, and keep protocol-level authentication/authorization in the application protocol.
 - Direct TCP OpenSSL listener: enable `tcp,openssl`, load certificate/key material through `NacelleOpenSslConfig`, register it with `NacelleApp::tcp_openssl(...)`, and configure the `SslAcceptor` yourself when you need OpenSSL-specific policy.
 - Optional TCP OpenSSL listener: enable `experimental-openssl-detection` (which implies `tcp,openssl`) and use `serve_tcp_optional_openssl(...)` or the matching host/app builder method when one listener must accept both plain and TLS clients; keep `NacelleTlsDetectionOptions::timeout` short enough to avoid tying up idle accepted connections.

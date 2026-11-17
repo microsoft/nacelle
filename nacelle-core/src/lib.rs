@@ -7,6 +7,7 @@ pub mod admission;
 pub mod error;
 pub mod lifecycle;
 pub mod limits;
+#[cfg(feature = "peer-limits")]
 pub mod peer_rate;
 pub mod pipeline;
 pub mod request;
@@ -26,6 +27,7 @@ pub use limits::{
     NacelleConnectionLimits, NacelleControlScope, NacelleLimits, NacelleRuntimeControl,
     NacelleRuntimeState, TrackedPermit,
 };
+#[cfg(feature = "peer-limits")]
 pub use peer_rate::{
     DEFAULT_PEER_RATE_LIMIT_TABLE_CAPACITY, NacellePeerRateLimitResult, NacellePeerRateLimiter,
 };

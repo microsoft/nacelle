@@ -27,7 +27,12 @@ Defaults:
 - optional security headers through `with_security_header(...)` or `with_default_security_headers()`
 - optional per-peer connection caps through `NacelleLimits::with_max_connections_per_peer`
 - optional live global connection admission rates through `NacelleRuntimeControl::set_global_connection_open_rate`
-- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_connection_open_rate`
+- optional live per-peer connection-open rate caps through `NacelleRuntimeControl::set_peer_connection_open_rate`
+
+Per-peer concurrent connections, connection-open rates, and HTTP request rates
+require the default-off `peer-limits` Cargo feature. Their settings and tracking
+state are compiled out without it. Trusted-proxy address resolution, metadata,
+access logging, and global connection controls remain available.
 
 Global connection rates count attempts before concurrent and peer checks or TLS
 setup, without refunds after a later rejection. Exhaustion closes the accepted

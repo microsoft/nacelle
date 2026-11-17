@@ -220,11 +220,14 @@ fn partition_limits(limits: &NacelleLimits, workers: usize, worker: usize) -> Na
     partition.max_in_flight_requests =
         partition_capacity(limits.max_in_flight_requests, workers, worker);
     partition.max_streaming_tasks = partition_capacity(limits.max_streaming_tasks, workers, worker);
-    partition.max_connections_per_peer = limits
-        .max_connections_per_peer
-        .map(|limit| partition_capacity(limit, workers, worker));
-    partition.connection_rate_limit_table_capacity =
-        partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+    #[cfg(feature = "peer-limits")]
+    {
+        partition.max_connections_per_peer = limits
+            .max_connections_per_peer
+            .map(|limit| partition_capacity(limit, workers, worker));
+        partition.connection_rate_limit_table_capacity =
+            partition_capacity(limits.connection_rate_limit_table_capacity, workers, worker);
+    }
     partition.connection_tracking = limits.connection_tracking.map(|tracking| {
         tracking
             .partition(workers, worker)
@@ -1363,6 +1366,7 @@ mod tests {
         drop(second_request);
     }
 
+    #[cfg(feature = "peer-limits")]
     #[test]
     fn worker_limits_require_one_rate_limit_slot_per_worker() {
         let limits = NacelleLimits::default().with_connection_rate_limit_table_capacity(1);
@@ -1391,7 +1395,7 @@ mod tests {
             ))
         ));
         assert!(matches!(
-            policy.control().set_connection_open_rate(Some(1)),
+            policy.control().set_peer_connection_open_rate(Some(1)),
             Err(NacelleError::Configuration(
                 nacelle_core::NacelleConfigurationError::ConnectionRateTableCapacity
             ))

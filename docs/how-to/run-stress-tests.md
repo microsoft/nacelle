@@ -40,16 +40,23 @@ max_connections = 16384
 # max_connection_opens_per_peer_per_second = 100
 
 [limits]
-connection_rate_limit_table_capacity = 16384
+# Requires the peer-limits feature, as does the optional peer rate above.
+# connection_rate_limit_table_capacity = 16384
 ```
 
 Connection totals and rates no longer belong in `[limits]`; old fields are
 rejected rather than ignored. Zero rejects new admissions. An overlay can use
-`unlimited_connections = true` or `disable_connection_open_rate = true` inside
+`unlimited_connections = true` or `disable_peer_connection_open_rate = true` inside
 `[connection_limits]` to clear an earlier finite value. A finite value and its
 true clearing flag in the same file are an error; omitted or false flags leave
 the prior value unchanged. These files configure startup thresholds, not a
 remote administrative endpoint.
+
+Peer keys are rejected unless the server is built with `--features peer-limits`.
+This includes `max_connections_per_peer`, `connection_rate_limit_table_capacity`,
+`max_connection_opens_per_peer_per_second`, and
+`disable_peer_connection_open_rate`. The last key replaces the earlier
+`disable_connection_open_rate` name.
 
 To measure opt-in bounded head reads, add this table to a copy of the plain TCP
 profile; leave the baseline profile unchanged:
