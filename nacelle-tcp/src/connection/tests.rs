@@ -1887,7 +1887,7 @@ impl SerialTcpHandler<SerialCounterProtocol> for SerialCounterHandler {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn public_serial_adapter_supports_automatic_and_owned_direct_admission() {
     for preadmitted in [false, true] {
         let runtime = NacelleRuntimeState::default();

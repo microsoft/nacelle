@@ -132,7 +132,7 @@ impl Protocol for TestProtocol {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn owned_admission_precedes_application_owned_rustls_setup() {
     let runtime = tracked_runtime(1);
     runtime.control().set_max_connections(Some(1)).unwrap();

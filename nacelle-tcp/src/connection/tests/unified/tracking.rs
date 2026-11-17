@@ -29,7 +29,7 @@ async fn pending<F: Future>(mut future: Pin<&mut F>) {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn owned_admission_handoff_keeps_capacity_metadata_and_single_rate_charge() {
     let runtime = tracked_runtime(1);
     let control = runtime.control();
@@ -96,7 +96,7 @@ async fn owned_admission_handoff_keeps_capacity_metadata_and_single_rate_charge(
     ));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn owned_admission_supports_borrowed_serial_serving() {
     let runtime = tracked_runtime(1);
     runtime.control().set_max_connections(Some(1)).unwrap();
@@ -159,7 +159,7 @@ async fn owned_admission_setup_cancellation_drops_io_before_capacity() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn owned_admission_setup_failure_or_close_releases_without_rate_refund() {
     for failure in [false, true] {
         let runtime = tracked_runtime(1);
