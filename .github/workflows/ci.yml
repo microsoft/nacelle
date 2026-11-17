@@ -6,12 +6,13 @@ permissions:
 
 on:
   pull_request:
-    # Ignore .github-only edits unless they change a .yml file.
+    # Include workflows, validation scripts, and test fixtures under .github.
     paths:
       - "**"
       - "!.github/**"
       - ".github/**/*.yml"
       - ".github/scripts/**"
+      - ".github/fixtures/**"
   push:
     branches: [main, "release/**"]
     paths:
@@ -19,6 +20,7 @@ on:
       - "!.github/**"
       - ".github/**/*.yml"
       - ".github/scripts/**"
+      - ".github/fixtures/**"
 
 env:
   RUSTFLAGS: -Dwarnings
@@ -39,7 +41,9 @@ jobs:
       - name: Install Rust
         run: rustup update stable
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: |
+          cargo fmt --all --check
+          rustfmt --edition 2024 --check .github/fixtures/peer-limit-unification.rs
 
   serving-docs:
     name: serving docs

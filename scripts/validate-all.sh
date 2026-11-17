@@ -5,6 +5,7 @@ python3 .github/scripts/test-architecture.py
 python3 .github/scripts/check-architecture.py
 python3 .github/scripts/test-public-api.py
 cargo fmt --all -- --check
+rustfmt --edition 2024 --check .github/fixtures/peer-limit-unification.rs
 cargo test --workspace --exclude nacelle-openssl --all-targets
 cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings
 cargo test -p nacelle-core --features peer-limits --all-targets

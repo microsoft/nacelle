@@ -31,7 +31,6 @@ nacelle-tcp = { path = "$repo_root/nacelle-tcp", default-features = false }
 path = "$repo_root/.github/fixtures/peer-limit-unification.rs"
 EOF
 
-rustfmt --edition 2024 --check "$repo_root/.github/fixtures/peer-limit-unification.rs"
 for feature in core-peer-limits tcp-peer-limits; do
     args=(--manifest-path "$fixture/Cargo.toml" --no-default-features --features "$feature")
     facade_features="$(cargo tree "${args[@]}" -i nacelle --depth 0 --prefix none --format '{f}')"

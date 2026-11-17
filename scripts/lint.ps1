@@ -14,6 +14,7 @@ function Invoke-Step {
 }
 
 Invoke-Step "cargo fmt" { cargo fmt --all -- --check }
+Invoke-Step "fixture rustfmt" { rustfmt --edition 2024 --check .github/fixtures/peer-limit-unification.rs }
 Invoke-Step "Rustls workspace clippy" { cargo clippy --workspace --exclude nacelle-openssl --all-targets -- -D warnings }
 Invoke-Step "nacelle-core OpenSSL clippy" { cargo clippy -p nacelle-core --features "openssl" --all-targets -- -D warnings }
 Invoke-Step "nacelle-rustls full clippy" { cargo clippy -p nacelle-rustls --all-features --all-targets -- -D warnings }
