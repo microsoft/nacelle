@@ -73,6 +73,10 @@ impl TcpHeadReadLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpRequestBodyMode {
     /// Read the complete declared body before invoking the handler.
+    ///
+    /// Incomplete bodies reserve their full storage fallibly. Reservation failure
+    /// returns `NacelleError::ResourceLimit(RequestBodyBytes)` before consuming
+    /// the buffered prefix. Reads stop at the declared body length.
     Buffered,
     /// Pump body chunks concurrently while the handler runs.
     Streaming,

@@ -397,7 +397,7 @@ mod tests {
                 result.expect("body pump");
             } else {
                 let mut body = super::super::body::read_buffered_request_body(
-                    transport, buffer, BODY_LEN, true, &limits,
+                    transport, buffer, BODY_LEN, &limits,
                 )
                 .await
                 .expect("buffered body");
