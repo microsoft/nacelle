@@ -319,6 +319,14 @@ concurrently for one TCP connection. Streaming request bodies use
 `request_body_channel_capacity` for backpressure between socket reads and the
 handler.
 
+With `TcpRequestBodyMode::Buffered`, an incomplete body reserves storage for its
+full declared length before consuming the buffered prefix. Reservation failure
+returns `NacelleError::ResourceLimit(RequestBodyBytes)` through the ordinary
+error-response and connection-close path. Additional reads stop at the declared
+body length, even without head read limits, leaving following-request bytes in
+the transport. Bodies already complete in the read buffer retain their existing
+shared-storage path.
+
 `SharedProtocol` marks protocols whose connection state is `Send + Sync` and is
 required by the existing `Arc`-backed shared server. Shared serial servers
 require state and handler futures to be `Send`, but not `Sync`, because each

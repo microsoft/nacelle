@@ -32,6 +32,7 @@ docs/internal
 .github/ledger/
 .data/
 .docs/
+.patch/
 
 # Generated Reports
 .reports/

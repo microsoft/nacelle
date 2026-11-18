@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::config::NacelleTcpConfig;
 use crate::limits::NacelleTcpLimits;
-use nacelle_core::error::{NacelleError, NacelleTimeoutReason};
+use nacelle_core::error::{NacelleError, NacelleResourceLimitReason, NacelleTimeoutReason};
 use nacelle_core::request::NacelleBody;
 
 use super::io::{read_buf_before_deadline, request_body_read_deadline};
@@ -13,7 +13,6 @@ pub(super) async fn read_buffered_request_body<R>(
     reader: &mut R,
     read_buf: &mut BytesMut,
     body_len: usize,
-    bounded_reads: bool,
     tcp_limits: &NacelleTcpLimits,
 ) -> Result<NacelleBody, NacelleError>
 where
@@ -24,25 +23,24 @@ where
     }
     let deadline = request_body_read_deadline(tcp_limits);
 
-    let mut body = BytesMut::with_capacity(body_len);
+    let mut body = Vec::new();
+    body.try_reserve_exact(body_len)
+        .map_err(|_| NacelleError::ResourceLimit(NacelleResourceLimitReason::RequestBodyBytes))?;
     if !read_buf.is_empty() {
         let take = body_len.min(read_buf.len());
         body.extend_from_slice(&read_buf.split_to(take));
     }
 
     while body.len() < body_len {
-        let bytes_read = if bounded_reads {
-            let remaining = body_len - body.len();
-            read_buf_before_deadline(reader, &mut (&mut body).limit(remaining), deadline).await?
-        } else {
-            read_buf_before_deadline(reader, &mut body, deadline).await?
-        };
+        let remaining = body_len - body.len();
+        let bytes_read =
+            read_buf_before_deadline(reader, &mut (&mut body).limit(remaining), deadline).await?;
         if bytes_read == 0 {
             return Err(NacelleError::UnexpectedEof);
         }
     }
 
-    Ok(NacelleBody::from_single_chunk(body.freeze(), body_len))
+    Ok(NacelleBody::from_single_chunk(Bytes::from(body), body_len))
 }
 
 pub(super) async fn pump_request_body<R>(
@@ -160,6 +158,51 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[tokio::test]
+    async fn buffered_body_reservation_failure_preserves_prefix() {
+        let mut reader = &b"unused"[..];
+        let mut prefix = BytesMut::from(&b"prefix"[..]);
+        let result = read_buffered_request_body(
+            &mut reader,
+            &mut prefix,
+            usize::MAX,
+            &NacelleTcpLimits::default(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(NacelleError::ResourceLimit(
+                NacelleResourceLimitReason::RequestBodyBytes
+            ))
+        ));
+        assert_eq!(prefix.as_ref(), b"prefix");
+        assert_eq!(reader, b"unused");
+    }
+
+    #[tokio::test]
+    async fn buffered_body_reads_exact_length_and_preserves_following_bytes() {
+        let mut reader = &b"llonext"[..];
+        let mut prefix = BytesMut::from(&b"he"[..]);
+        let mut body =
+            read_buffered_request_body(&mut reader, &mut prefix, 5, &NacelleTcpLimits::default())
+                .await
+                .expect("body should read");
+        assert_eq!(body.next_chunk().await.unwrap().unwrap(), b"hello"[..]);
+        assert!(body.next_chunk().await.is_none());
+        assert!(prefix.is_empty());
+        assert_eq!(reader, b"next");
+    }
+
+    #[tokio::test]
+    async fn buffered_body_rejects_truncation() {
+        let mut reader = &b"l"[..];
+        let mut prefix = BytesMut::from(&b"he"[..]);
+        let result =
+            read_buffered_request_body(&mut reader, &mut prefix, 5, &NacelleTcpLimits::default())
+                .await;
+        assert!(matches!(result, Err(NacelleError::UnexpectedEof)));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn body_failure_does_not_wait_for_error_channel_capacity() {
