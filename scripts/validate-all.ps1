@@ -36,8 +36,11 @@ Invoke-Step "nacelle-http full tests" { cargo test -p nacelle-http --features tl
 Invoke-Step "nacelle-http full clippy" { cargo clippy -p nacelle-http --features tls-self-signed --all-targets -- -D warnings }
 Invoke-Step "reference protocol tests" { cargo test -p nacelle-reference-protocol --all-targets }
 Invoke-Step "reference protocol clippy" { cargo clippy -p nacelle-reference-protocol --all-targets -- -D warnings }
-Invoke-Step "examples check" { cargo check -p nacelle-examples --all-features --all-targets }
-Invoke-Step "examples clippy" { cargo clippy -p nacelle-examples --all-features --all-targets -- -D warnings }
+# tls-self-signed selects Rustls, which cannot be combined with OpenSSL.
+Invoke-Step "examples Rustls check" { cargo check -p nacelle-examples --no-default-features --features "bench,http,tcp,tls-self-signed" --all-targets }
+Invoke-Step "examples Rustls clippy" { cargo clippy -p nacelle-examples --no-default-features --features "bench,http,tcp,tls-self-signed" --all-targets -- -D warnings }
+Invoke-Step "examples OpenSSL check" { cargo check -p nacelle-examples --no-default-features --features "bench,http,openssl,tcp" --all-targets }
+Invoke-Step "examples OpenSSL clippy" { cargo clippy -p nacelle-examples --no-default-features --features "bench,http,openssl,tcp" --all-targets -- -D warnings }
 Invoke-Step "examples HTTP-only check" { cargo check -p nacelle-examples --no-default-features --features http --all-targets }
 Invoke-Step "examples HTTP-only clippy" { cargo clippy -p nacelle-examples --no-default-features --features http --all-targets -- -D warnings }
 Invoke-Step "nacelle full tests" { cargo test -p nacelle --features "http" --all-targets }

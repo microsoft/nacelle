@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "core_affinity",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-codec"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "criterion",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-core"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-http"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-openssl"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "nacelle-core",
  "openssl",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-rustls"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "nacelle-core",
  "pem",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-common"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "nacelle",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-server"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "core_affinity",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-stress-test"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "mimalloc",
@@ -924,7 +924,7 @@ dependencies = [
 
 [[package]]
 name = "nacelle-tcp"
-version = "0.4.0-rc.1"
+version = "0.4.0-rc.2"
 dependencies = [
  "bytes",
  "criterion",
