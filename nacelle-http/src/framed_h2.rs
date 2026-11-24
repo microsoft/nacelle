@@ -44,6 +44,115 @@ where
 mod tests {
     use super::*;
     use std::time::Duration;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn request() -> Request<()> {
+        Request::post("https://localhost/").body(()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn refuses_excess_stream_without_dispatch_and_reuses_slot() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (peer, io) = tokio::io::duplex(8192);
+            let (started, mut gates) = mpsc::unbounded_channel();
+            let server = tokio::spawn(async move {
+                // Keep the h2 SETTINGS limit above the driver's task limit.
+                let mut builder = Builder::new();
+                builder.max_concurrent_streams(256);
+                serve_connection(io, &builder, move |_, mut respond| {
+                    let (release, wait) = oneshot::channel::<()>();
+                    started.send(release).unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        respond
+                            .send_response(http::Response::new(()), true)
+                            .unwrap();
+                    }
+                })
+                .await
+            });
+            let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let mut pending = Vec::new();
+            for _ in 0..128 {
+                client = client.ready().await.unwrap();
+                let (response, _) = client.send_request(request(), true).unwrap();
+                pending.push((gates.recv().await.unwrap(), response));
+            }
+            client = client.ready().await.unwrap();
+            let (overflow, _) = client.send_request(request(), true).unwrap();
+            assert_eq!(
+                overflow.await.unwrap_err().reason(),
+                Some(Reason::REFUSED_STREAM)
+            );
+            assert!(matches!(
+                gates.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+
+            let (release, response) = pending.pop().unwrap();
+            release.send(()).unwrap();
+            assert_eq!(response.await.unwrap().status(), 200);
+            client = client.ready().await.unwrap();
+            let (replacement, _) = client.send_request(request(), true).unwrap();
+            gates.recv().await.unwrap().send(()).unwrap();
+            assert_eq!(replacement.await.unwrap().status(), 200);
+            for (release, response) in pending {
+                release.send(()).unwrap();
+                assert_eq!(response.await.unwrap().status(), 200);
+            }
+            drop(client);
+            driver.await.unwrap().unwrap();
+            server.await.unwrap().unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn assert_handler_cancelled(disconnect_peer: bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (peer, io) = tokio::io::duplex(8192);
+            let (started, mut observed) = mpsc::unbounded_channel();
+            let server = tokio::spawn(async move {
+                serve_connection(io, &Builder::new(), move |_, response| {
+                    let started = started.clone();
+                    async move {
+                        let (alive, dropped) = oneshot::channel::<()>();
+                        started.send(dropped).unwrap();
+                        std::future::pending::<()>().await;
+                        drop((response, alive));
+                    }
+                })
+                .await
+            });
+            let (mut client, connection) = h2::client::handshake(peer).await.unwrap();
+            let driver = tokio::spawn(connection);
+            let (_response, _) = client.send_request(request(), true).unwrap();
+            let dropped = observed.recv().await.unwrap();
+            if disconnect_peer {
+                driver.abort();
+                assert!(driver.await.unwrap_err().is_cancelled());
+                let _connection_result = server.await.unwrap();
+            } else {
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+                driver.abort();
+            }
+            assert!(dropped.await.is_err());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_disconnect_drops_live_handler() {
+        assert_handler_cancelled(true).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_driver_drops_live_handler() {
+        assert_handler_cancelled(false).await;
+    }
 
     // Envelope transports need byte-exact DATA even when higher-level HTTP
     // frameworks would suppress it. Exercise the peer, not just the encoder.

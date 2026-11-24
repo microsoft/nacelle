@@ -38,3 +38,6 @@ tracing = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[package.metadata.docs.rs]
+features = ["framed-h2"]
