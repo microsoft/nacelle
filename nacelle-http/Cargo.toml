@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 
 [features]
 default = []
+framed-h2 = ["dep:h2"]
 peer-limits = ["nacelle-core/peer-limits"]
 rustls = ["dep:nacelle-rustls", "dep:rustls", "dep:tokio-rustls"]
 tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
@@ -20,6 +21,7 @@ tls-self-signed = ["rustls", "nacelle-rustls/self-signed"]
 [dependencies]
 bytes = { workspace = true }
 futures-core = { workspace = true }
+h2 = { workspace = true, optional = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["http1", "server"] }
@@ -36,3 +38,6 @@ tracing = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+
+[package.metadata.docs.rs]
+features = ["framed-h2"]
