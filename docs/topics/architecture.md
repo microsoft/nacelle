@@ -78,6 +78,15 @@ associated request, response, and connection-state types to decode request
 heads and encode bounded response frames. HTTP uses `nacelle-http` with Hyper
 HTTP/1 and a transport-owned typed request/response pipeline.
 
+For binary protocols tunneled over HTTP/2, the optional `framed-h2` feature
+exposes `nacelle::http::framed_h2::serve_connection`. Pass a negotiated async
+stream, an h2 server builder, and a per-stream handler. This is a low-level
+alternative, not an HTTP/1 policy pipeline: configure connection admission and
+TLS/ALPN before dispatch and enforce payload limits and deadlines in the handler.
+Non-h2 connections remain with the caller. Ordinary HTTP services should retain
+normal status/body semantics; this driver gives envelope protocols explicit
+control over DATA and END_STREAM without buffering or translating their payload.
+
 Connection metadata carries the transport, a stable connection id, listener
 label, peer and local addresses, local Unix socket path, effective peer IP, and
 TLS metadata. The typed TCP pipeline presents this immutable metadata to

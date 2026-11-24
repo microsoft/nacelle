@@ -9,6 +9,8 @@
 
 pub mod admission;
 mod encoder;
+#[cfg(feature = "framed-h2")]
+pub mod framed_h2;
 pub mod limits;
 pub mod pipeline;
 mod policy;

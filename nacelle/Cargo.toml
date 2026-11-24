@@ -21,6 +21,7 @@ peer-limits = ["nacelle-core/peer-limits", "nacelle-http?/peer-limits", "nacelle
 experimental-openssl-detection = ["tcp", "openssl", "nacelle-tcp/experimental-openssl-detection"]
 experimental-thread-per-core = ["dep:core_affinity", "dep:socket2"]
 http = ["dep:nacelle-http"]
+framed-h2 = ["http", "nacelle-http/framed-h2"]
 rustls = ["dep:nacelle-rustls", "nacelle-http?/rustls", "nacelle-tcp?/rustls"]
 openssl = ["dep:nacelle-openssl", "nacelle-tcp?/openssl"]
 openssl-vendored = ["openssl", "nacelle-openssl/vendored", "nacelle-tcp?/openssl-vendored"]
